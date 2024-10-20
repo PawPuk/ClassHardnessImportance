@@ -203,5 +203,5 @@ if __name__ == '__main__':
 
     # Train ensemble of 10 models on pruned data (without saving probe models)
     trainer = ModelTrainer(pruned_training_loader, test_loader, save_probe_models=False,
-                           timings_file='dataset_level_pruning.csv', save_dir='DatasetPruning')
+                           timings_file='dataset_level_pruning.csv', save_dir='Models/DatasetPruning/')
     trainer.train_ensemble(num_models=10)

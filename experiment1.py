@@ -30,15 +30,11 @@ test_loader = torch.utils.data.DataLoader(test_set, batch_size=BATCH_SIZE, shuff
 
 # Main script
 if __name__ == '__main__':
-    # Ensure directory for saving models exists
-    save_dir = './Exp1Models/'
-    os.makedirs(save_dir, exist_ok=True)
-
     # Create an instance of ModelTrainer
     trainer = ModelTrainer(
         training_loader=training_loader,
         test_loader=test_loader,
-        save_dir=save_dir,
+        save_dir='./Models/FullDataset/',
         save_probe_models=True,
         timings_file='ensemble_timings.csv',
     )
