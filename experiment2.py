@@ -16,18 +16,29 @@ SAVE_EPOCH = 20
 MODEL_DIR = './Exp1Models/'
 NUM_CLASSES = 10
 
-# Transformations for CIFAR-10 dataset
-transform = transforms.Compose([
+# Transformations for CIFAR-10 dataset (Training and Test sets)
+# Training set transformation includes data augmentation
+train_transform = transforms.Compose([
     transforms.RandomHorizontalFlip(),
     transforms.RandomCrop(32, padding=4),
     transforms.ToTensor(),
     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
+# Test set transformation: no augmentation, only normalization
+test_transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+])
+
 # CIFAR-10 Dataset (Training set)
-training_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+training_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=train_transform)
 training_loader = torch.utils.data.DataLoader(training_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
 TRAINING_SET_SIZE = len(training_set)
+
+# CIFAR-10 Dataset (Test set)
+test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
+test_loader = torch.utils.data.DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
 
 
 # Define the ResNet-18 model
@@ -191,6 +202,6 @@ if __name__ == '__main__':
                                                          num_workers=2)
 
     # Train ensemble of 10 models on pruned data (without saving probe models)
-    trainer = ModelTrainer(pruned_training_loader, training_loader, save_probe_models=False,
+    trainer = ModelTrainer(pruned_training_loader, test_loader, save_probe_models=False,
                            timings_file='dataset_level_pruning.csv', save_dir='DatasetPruning')
     trainer.train_ensemble(num_models=10)

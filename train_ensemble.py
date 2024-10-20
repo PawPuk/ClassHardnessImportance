@@ -1,6 +1,5 @@
 import os
 import time
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -43,6 +42,7 @@ class ModelTrainer:
         self.timings_dir = timings_dir
         self.timings_file = timings_file
 
+        # Ensure directories exist
         os.makedirs(self.save_dir, exist_ok=True)
         os.makedirs(self.timings_dir, exist_ok=True)
 
@@ -123,6 +123,10 @@ class ModelTrainer:
     def train_ensemble(self, num_models=10):
         """Train an ensemble of models and measure the timing."""
         timings = []  # To store the training times for each model
+
+        print(f"Starting training ensemble of {num_models} models...")
+        print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")
+        print(f"Number of samples in the test loader: {len(self.test_loader.dataset)}")
 
         for model_id in tqdm(range(num_models)):
             start_time = time.time()  # Start time for training the model
