@@ -2,18 +2,18 @@ import torch
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
-from torchvision.models import resnet18
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 
 from data_pruning import DataPruning
+from neural_networks import ResNet18LowRes
 from train_ensemble import ModelTrainer
 
 # Define constants
 BATCH_SIZE = 128
 SAVE_EPOCH = 20
-MODEL_DIR = './Exp1Models/'
+MODEL_DIR = './Models/FullDataset/'
 NUM_CLASSES = 10
 
 # Transformations for CIFAR-10 dataset (Training and Test sets)
@@ -43,7 +43,7 @@ test_loader = torch.utils.data.DataLoader(test_set, batch_size=BATCH_SIZE, shuff
 
 # Define the ResNet-18 model
 def create_model():
-    model = resnet18(num_classes=NUM_CLASSES)
+    model = ResNet18LowRes(num_classes=NUM_CLASSES)
     return model
 
 

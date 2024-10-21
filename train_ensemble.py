@@ -1,12 +1,14 @@
+import csv
 import os
 import time
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import numpy as np  # To calculate mean and standard deviation
-import csv  # For writing the timings to a CSV file
-from torchvision.models import resnet18
 from tqdm import tqdm
+
+from neural_networks import ResNet18LowRes
 
 
 class ModelTrainer:
@@ -49,7 +51,7 @@ class ModelTrainer:
     @staticmethod
     def create_model():
         """Creates and returns a ResNet-18 model."""
-        return resnet18(num_classes=10).cuda()
+        return ResNet18LowRes(num_classes=10).cuda()
 
     def evaluate_model(self, model, criterion):
         """Evaluate the model on the test set."""
