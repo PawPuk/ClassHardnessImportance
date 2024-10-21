@@ -1,3 +1,4 @@
+import argparse
 import torch
 import torch.nn.functional as F
 import torchvision
@@ -12,8 +13,8 @@ from train_ensemble import ModelTrainer
 
 # Define constants
 BATCH_SIZE = 128
-SAVE_EPOCH = 20
-MODEL_DIR = './Models/FullDataset/'
+SAVE_EPOCH = 20  # Models saved after 20 epochs
+MODEL_DIR = './Models/'
 NUM_CLASSES = 10
 
 # Transformations for CIFAR-10 dataset (Training and Test sets)
@@ -73,29 +74,30 @@ def compute_el2n(model, dataloader):
 
 
 # Function to load a saved model and return the EL2N scores
-def load_model_and_compute_el2n(model_id):
+def load_model_and_compute_el2n(model_id, dataset_name):
     model = create_model().cuda()
-    model_path = os.path.join(MODEL_DIR, f'model_{model_id}_epoch_{SAVE_EPOCH}.pth')
+    # Construct the model path based on pruning strategy, dataset name, and save epoch
+    model_path = os.path.join(MODEL_DIR, 'full', dataset_name, f'model_{model_id}_epoch_{SAVE_EPOCH}.pth')
 
     if os.path.exists(model_path):
         model.load_state_dict(torch.load(model_path))
-        print(f'Model {model_id} loaded successfully.')
+        print(f'Model {model_id} loaded successfully from epoch {SAVE_EPOCH}.')
 
         # Compute EL2N scores for this model on the training set
         el2n_scores = compute_el2n(model, training_loader)
         return el2n_scores
     else:
-        print(f'Model {model_id} not found.')
+        print(f'Model {model_id} not found at epoch {SAVE_EPOCH}.')
         return None
 
 
 # Function to aggregate EL2N scores across all models
-def collect_el2n_scores():
+def collect_el2n_scores(dataset_name):
     all_el2n_scores = [[] for _ in range(TRAINING_SET_SIZE)]  # List of lists to store scores from each model
 
     # Loop over all 10 models
     for model_id in range(10):
-        el2n_scores = load_model_and_compute_el2n(model_id)
+        el2n_scores = load_model_and_compute_el2n(model_id, dataset_name)
         if el2n_scores:
             # Store EL2N scores from this model into the master list
             for i in range(TRAINING_SET_SIZE):
@@ -107,12 +109,14 @@ def collect_el2n_scores():
 # Function to group EL2N scores by class
 def group_scores_by_class(el2n_scores, training_set):
     class_el2n_scores = {i: [] for i in range(NUM_CLASSES)}  # Dictionary to store scores by class
+    labels = []  # Store corresponding labels
 
     # Since we are not shuffling the data loader, we can directly match scores with their labels
     for i, (_, label) in enumerate(training_set):
         class_el2n_scores[label].append(el2n_scores[i])
+        labels.append(label)  # Collect the labels
 
-    return class_el2n_scores
+    return class_el2n_scores, labels
 
 
 # Function to compute statistics for candlestick chart
@@ -140,7 +144,7 @@ def compute_class_statistics(class_el2n_scores):
 
 
 # Function to plot candlestick chart for class-level EL2N scores
-def plot_class_level_candlestick(class_stats):
+def plot_class_level_candlestick(class_stats, dataset_name, pruning_strategy):
     # Prepare the data for plotting
     class_ids = list(class_stats.keys())
     q1_values = [class_stats[class_id]["q1"] for class_id in class_ids]
@@ -161,18 +165,23 @@ def plot_class_level_candlestick(class_stats):
     ax.set_xlabel("Classes")
     ax.set_ylabel("EL2N Score (L2 Norm)")
     ax.set_title("Class-Level EL2N Scores Candlestick Plot")
-    plt.savefig('Accuracies1.pdf')
+    os.makedirs('Figures/', exist_ok=True)
+    plt.savefig(f'{pruning_strategy}{dataset_name}_hardness_distribution.pdf')
 
     plt.show()
 
 
 # Function to create a pruned dataset
-def prune_dataset(el2n_scores, class_el2n_scores):
-    # Instantiate the DataPruning class
-    pruner = DataPruning(el2n_scores, class_el2n_scores)
+def prune_dataset(el2n_scores, class_el2n_scores, labels, pruning_strategy):
+    # Instantiate the DataPruning class with el2n_scores, class_el2n_scores, and labels
+    pruner = DataPruning(el2n_scores, class_el2n_scores, labels)
 
-    # Perform dataset-level pruning
-    pruned_indices = pruner.dataset_level_pruning()
+    if pruning_strategy == 'dlp':
+        pruned_indices = pruner.dataset_level_pruning()
+    elif pruning_strategy == 'fclp':
+        pruned_indices = pruner.fixed_class_level_pruning()
+    else:
+        raise ValueError('Wrong value of the parameter `pruning_strategy`.')
 
     # Create a new pruned dataset
     pruned_dataset = torch.utils.data.Subset(training_set, pruned_indices)
@@ -181,27 +190,40 @@ def prune_dataset(el2n_scores, class_el2n_scores):
 
 
 # Main script
-if __name__ == '__main__':
-    # Collect EL2N scores across all models for the training set
-    all_el2n_scores = collect_el2n_scores()
+def main(pruning_strategy, dataset_name):
 
-    # Group EL2N scores by class
-    class_el2n_scores = group_scores_by_class(all_el2n_scores, training_set)
+    # Collect EL2N scores across all models for the training set
+    all_el2n_scores = collect_el2n_scores(dataset_name)
+
+    # Group EL2N scores by class and get labels
+    class_el2n_scores, labels = group_scores_by_class(all_el2n_scores, training_set)
 
     # Compute class-level statistics for candlestick chart
     class_stats = compute_class_statistics(class_el2n_scores)
 
     # Plot the class-level candlestick chart
-    plot_class_level_candlestick(class_stats)
+    plot_class_level_candlestick(class_stats, dataset_name, pruning_strategy)
 
     # Perform dataset-level pruning
-    pruned_dataset = prune_dataset(all_el2n_scores, class_el2n_scores)
+    pruned_dataset = prune_dataset(all_el2n_scores, class_el2n_scores, labels, pruning_strategy)
 
     # Create data loader for pruned dataset
     pruned_training_loader = torch.utils.data.DataLoader(pruned_dataset, batch_size=BATCH_SIZE, shuffle=True,
                                                          num_workers=2)
 
     # Train ensemble of 10 models on pruned data (without saving probe models)
-    trainer = ModelTrainer(pruned_training_loader, test_loader, save_probe_models=False,
-                           timings_file='dataset_level_pruning.csv', save_dir='Models/DatasetPruning/')
+    trainer = ModelTrainer(pruned_training_loader, test_loader, save_probe_models=False, dataset_name=dataset_name,
+                           timings_file='dataset_level_pruning.csv', dataset_type=pruning_strategy)
     trainer.train_ensemble(num_models=10)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='EL2N Score Calculation and Dataset Pruning')
+    parser.add_argument('--pruning_strategy', type=str, default='dlp', choices=['fclp', 'dlp'],
+                        help='Choose pruning strategy: fclp (fixed class level pruning) or dlp (data level pruning)')
+    parser.add_argument('--dataset_name', type=str, default='CIFAR10',
+                        help='Specify the dataset name (default: CIFAR10)')
+
+    args = parser.parse_args()
+
+    main(args.pruning_strategy, args.dataset_name)
