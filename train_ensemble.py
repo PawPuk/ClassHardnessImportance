@@ -41,8 +41,8 @@ class ModelTrainer:
         self.save_epoch = config['save_epoch']
 
         # Incorporate dataset_name and pruning_type into directories to prevent overwriting
-        self.save_dir = os.path.join(config['save_dir'], pruning_type, dataset_name)
-        self.timings_dir = os.path.join(config['timings_dir'], pruning_type, dataset_name)
+        self.save_dir = str(os.path.join(config['save_dir'], pruning_type, dataset_name))
+        self.timings_dir = str(os.path.join(config['timings_dir'], pruning_type, dataset_name))
 
         # Ensure directories exist
         os.makedirs(self.save_dir, exist_ok=True)
