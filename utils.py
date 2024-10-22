@@ -1,5 +1,6 @@
 dataset_configs = {
     'CIFAR10': {
+        'batch_size': 128,
         'num_epochs': 200,
         'lr': 0.1,
         'momentum': 0.9,
@@ -11,7 +12,8 @@ dataset_configs = {
         'num_models': 10,
         'num_classes': 10
     },
-    'CIFAR100': {
+    """'CIFAR100': {
+        'batch_size': 128,
         'num_epochs': 200,
         'lr': 0.05,
         'momentum': 0.85,
@@ -21,6 +23,19 @@ dataset_configs = {
         'save_dir': './Models/',
         'timings_dir': './Timings/',
         'num_models': 8,
+        'num_classes': 100
+    }"""
+    'CIFAR100': {
+        'batch_size': 128,
+        'num_epochs': 200,
+        'lr': 0.1,
+        'momentum': 0.9,
+        'weight_decay': 0.0005,
+        'lr_decay_milestones': [60, 120, 160],
+        'save_epoch': 20,
+        'save_dir': './Models/',
+        'timings_dir': './Timings/',
+        'num_models': 10,
         'num_classes': 100
     }
 }

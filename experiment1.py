@@ -4,10 +4,8 @@ from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms as transforms
 
+from utils import get_config
 from train_ensemble import ModelTrainer
-
-# Define constants
-BATCH_SIZE = 128
 
 
 # Function to get data transforms
@@ -60,15 +58,16 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform):
 
 
 # Main function
-def main(args):
+def main(dataset_name):
+    batch_size = get_config(dataset_name)['batch_size']
     # Get the dataset transforms based on the dataset_name
-    train_transform, test_transform = get_data_transforms(args.dataset_name)
+    train_transform, test_transform = get_data_transforms(dataset_name)
 
     # Load the dataset
-    training_loader, test_loader = get_dataloader(args.dataset_name, BATCH_SIZE, train_transform, test_transform)
+    training_loader, test_loader = get_dataloader(dataset_name, batch_size, train_transform, test_transform)
 
     # Create an instance of ModelTrainer
-    trainer = ModelTrainer(training_loader, test_loader, args.dataset_name)
+    trainer = ModelTrainer(training_loader, test_loader, dataset_name)
 
     # Train the ensemble of models
     trainer.train_ensemble()
@@ -84,4 +83,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Run main function
-    main(args)
+    main(args.dataset_name)
