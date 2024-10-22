@@ -1,124 +1,197 @@
-import torch
-from torchvision.models import resnet18
-import torchvision
-import torchvision.transforms as transforms
 import os
+import torch
+import torch.nn as nn
 import numpy as np
 import matplotlib.pyplot as plt
-
-# Define constants
-BATCH_SIZE = 128
-NUM_CLASSES = 10
-MODEL_DIR = './Exp1Models/'  # Directory where the trained models are saved
-NUM_MODELS = 10  # Number of models in the ensemble
-
-# Transformations for the test set (no augmentations, just normalization)
-test_transform = transforms.Compose([
-    transforms.RandomHorizontalFlip(),
-    transforms.RandomCrop(32, padding=4),
-    transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-])
-
-# CIFAR-10 Dataset (Test set)
-testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
-testloader = torch.utils.data.DataLoader(testset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
+from neural_networks import ResNet18LowRes
+from torchvision import datasets, transforms
+from collections import defaultdict
 
 
-# Function to load a saved model
-def load_model(model_id):
-    model = resnet18(num_classes=NUM_CLASSES).cuda()
-    model_path = os.path.join(MODEL_DIR, f'model_{model_id}_epoch_200.pth')
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
-    return model
+class ModelEvaluator:
+    def __init__(self, base_dir='./Models/'):
+        """
+        Initialize the ModelEvaluator class.
+
+        :param base_dir: Base directory where the saved models are located.
+        """
+        self.base_dir = base_dir
+
+    def find_saved_model_paths(self):
+        """
+        Find all model paths that were saved after 200 epochs in the directory structure, categorized by pruning
+        strategy and dataset used.
+
+        :return: Dictionary where keys are tuples of (pruning_type, dataset_name) and values are lists of paths to saved
+        models.
+        """
+        saved_model_paths = defaultdict(list)
+
+        for root, dirs, files in os.walk(self.base_dir):
+            for file in files:
+                if file.endswith('.pth') and 'epoch_200' in file:
+                    path_parts = root.split(os.sep)
+                    if len(path_parts) >= 3:
+                        pruning_type = path_parts[-3]  # 'Models/pruning_type/dataset_name/...'
+                        dataset_name = path_parts[-2]
+                        saved_model_paths[(pruning_type, dataset_name)].append(os.path.join(root, file))
+
+        return saved_model_paths
+
+    @staticmethod
+    def load_model(model_path):
+        """
+        Load a ResNet-18 model from the given path.
+
+        :param model_path: Path to the saved model.
+        :return: Loaded model.
+        """
+        model = ResNet18LowRes(num_classes=10).cuda()
+        model.load_state_dict(torch.load(model_path))
+        model.eval()
+        return model
+
+    @staticmethod
+    def load_dataset(dataset_name):
+        """
+        Load the dataset based on the dataset name.
+
+        :param dataset_name: Name of the dataset (e.g., CIFAR10, CIFAR100).
+        :return: Test data loader.
+        """
+        if dataset_name == 'CIFAR10':
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2470, 0.2435, 0.2616])
+            ])
+            test_set = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
+        elif dataset_name == 'CIFAR100':
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5071, 0.4867, 0.4408], std=[0.2675, 0.2565, 0.2761])
+            ])
+            test_set = datasets.CIFAR100(root='./data', train=False, download=True, transform=transform)
+
+        else:
+            raise ValueError(f"Dataset {dataset_name} is not supported.")
+
+        test_loader = torch.utils.data.DataLoader(test_set, batch_size=100, shuffle=False, num_workers=2)
+        return test_loader
+
+    @staticmethod
+    def evaluate_model(model, test_loader):
+        """
+        Evaluate the model on the test set and return the accuracy and class-level accuracies.
+
+        :param model: The trained model to evaluate.
+        :param test_loader: DataLoader for the test set.
+        :return: (overall accuracy, class accuracies).
+        """
+        class_correct, class_total = np.zeros(10), np.zeros(10)
+        total_correct, total_samples = 0, 0
+
+        with torch.no_grad():
+            for inputs, labels in test_loader:
+                inputs, labels = inputs.cuda(), labels.cuda()
+                outputs = model(inputs)
+                _, predicted = torch.max(outputs.data, 1)
+
+                total_correct += (predicted == labels).sum().item()
+                total_samples += labels.size(0)
+
+                for i in range(10):  # Assuming 10 classes
+                    class_mask = (labels == i)
+                    class_correct[i] += (predicted[class_mask] == i).sum().item()
+                    class_total[i] += class_mask.sum().item()
+
+        overall_accuracy = 100 * total_correct / total_samples
+        class_accuracies = 100 * class_correct / class_total  # Per-class accuracies
+        return overall_accuracy, class_accuracies
+
+    def evaluate_ensemble(self, model_paths, test_loader):
+        """
+        Evaluate the ensemble of models and compute the average and std for the dataset-level accuracy and class-level
+        accuracies.
+
+        :param model_paths: List of paths to saved models.
+        :param test_loader: DataLoader for the test set.
+        :return: (avg_accuracy, std_accuracy, avg_class_accuracies, std_class_accuracies).
+        """
+        accuracies, class_accuracies = [], []
+
+        for model_path in model_paths:
+            model = self.load_model(model_path)
+            accuracy, class_acc = self.evaluate_model(model, test_loader)
+            accuracies.append(accuracy)
+            class_accuracies.append(class_acc)
+
+        # Convert to numpy for easy computation
+        accuracies, class_accuracies = np.array(accuracies), np.array(class_accuracies)
+        # Compute mean and std
+        avg_accuracy, std_accuracy = np.mean(accuracies), np.std(accuracies)
+        avg_class_accuracies = np.mean(class_accuracies, axis=0)
+        std_class_accuracies = np.std(class_accuracies, axis=0)
+
+        return avg_accuracy, std_accuracy, avg_class_accuracies, std_class_accuracies
+
+    @staticmethod
+    def plot_ensemble_results(avg_class_accuracies, std_class_accuracies, avg_accuracy, std_accuracy,
+                              dataset_name, pruning_type):
+        """
+        Plot the ensemble results as candlestick plot for class-level accuracies and fill_between for dataset-level accuracy.
+
+        :param avg_class_accuracies: Array of average class-level accuracies.
+        :param std_class_accuracies: Array of std class-level accuracies.
+        :param avg_accuracy: Average dataset-level accuracy.
+        :param std_accuracy: Std of dataset-level accuracy.
+        :param dataset_name: The name of the dataset.
+        :param pruning_type: The pruning type used.
+        """
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot candlesticks for class-level accuracies
+        for i in range(10):  # Assuming 10 classes
+            ax.errorbar(i + 1, avg_class_accuracies[i], yerr=std_class_accuracies[i], fmt='o', capsize=5,
+                        label=f'Class {i + 1}')
+
+        # Plot dataset-level accuracy as a filled region
+        x = np.arange(1, 11)
+        ax.fill_between(x, avg_accuracy - std_accuracy, avg_accuracy + std_accuracy, color='gray', alpha=0.3,
+                        label='Dataset Accuracy')
+        ax.plot(x, [avg_accuracy] * 10, color='black', linestyle='--')
+
+        ax.set_xlabel('Class')
+        ax.set_ylabel('Accuracy (%)')
+        ax.set_title(f'Ensemble Results for {dataset_name} with {pruning_type}')
+        ax.set_xticks(x)
+        ax.legend()
+        plt.show()
+
+    def evaluate_saved_models(self):
+        """
+        Iterate through all saved models grouped by pruning strategy and dataset, load them, and evaluate the ensemble.
+        """
+        saved_model_groups = self.find_saved_model_paths()
+
+        for (pruning_type, dataset_name), model_paths in saved_model_groups.items():
+            print(f'\nEvaluating ensemble for Dataset: {dataset_name}, Pruning Type: {pruning_type}')
+
+            # Load the test dataset based on dataset name
+            test_loader = self.load_dataset(dataset_name)
+
+            # Evaluate the ensemble
+            avg_accuracy, std_accuracy, avg_class_accuracies, std_class_accuracies = self.evaluate_ensemble(model_paths,
+                                                                                                            test_loader)
+
+            # Print overall ensemble accuracy
+            print(f'Average dataset accuracy: {avg_accuracy:.2f}% (±{std_accuracy:.2f}%)')
+
+            # Plot the results
+            self.plot_ensemble_results(avg_class_accuracies, std_class_accuracies, avg_accuracy, std_accuracy,
+                                       dataset_name, pruning_type)
 
 
-# Function to compute overall and class-level accuracies
-def compute_accuracies(model, dataloader):
-    class_correct = np.zeros(NUM_CLASSES)
-    class_total = np.zeros(NUM_CLASSES)
-    total_correct = 0
-    total_samples = 0
-
-    with torch.no_grad():
-        for inputs, labels in dataloader:
-            inputs, labels = inputs.cuda(), labels.cuda()
-            outputs = model(inputs)
-            _, predicted = torch.max(outputs, 1)
-            total_correct += (predicted == labels).sum().item()
-            total_samples += labels.size(0)
-
-            # Calculate per-class correct predictions
-            for i in range(len(labels)):
-                label = labels[i].item()
-                class_correct[label] += (predicted[i] == label).item()
-                class_total[label] += 1
-
-    overall_accuracy = total_correct / total_samples  # Overall dataset-level accuracy
-    class_accuracies = class_correct / class_total  # Class-level accuracies
-
-    return overall_accuracy, class_accuracies
-
-
-# Function to plot class-level accuracies using candlesticks and dataset-level accuracy with fill_between
-def plot_accuracies(overall_accuracies, class_accuracies_list):
-    classes = [f'Class {i}' for i in range(NUM_CLASSES)]
-    x = np.arange(NUM_CLASSES)
-
-    # Compute mean and std for class-level accuracies
-    mean_class_accuracies = np.mean(class_accuracies_list, axis=0)
-    std_class_accuracies = np.std(class_accuracies_list, axis=0)
-    min_class_accuracies = np.min(class_accuracies_list, axis=0)
-    max_class_accuracies = np.max(class_accuracies_list, axis=0)
-
-    # Compute mean and std for overall accuracy
-    mean_overall_accuracy = np.mean(overall_accuracies)
-    std_overall_accuracy = np.std(overall_accuracies)
-
-    plt.figure(figsize=(10, 6))
-
-    # Plot class-level accuracies as candlesticks
-    plt.errorbar(x, mean_class_accuracies, yerr=[mean_class_accuracies - min_class_accuracies, max_class_accuracies - mean_class_accuracies],
-                 fmt='o', color='blue', ecolor='black', elinewidth=2, capsize=5, label='Class-level Accuracies')
-
-    # Plot overall dataset-level accuracy with fill_between for mean ± std
-    plt.fill_between(
-        [-0.5, NUM_CLASSES - 0.5],  # X range
-        mean_overall_accuracy - std_overall_accuracy,  # Lower bound (mean - std)
-        mean_overall_accuracy + std_overall_accuracy,  # Upper bound (mean + std)
-        color='red', alpha=0.3, label=f'Dataset-level Accuracy (Mean ± Std)'
-    )
-    plt.axhline(y=mean_overall_accuracy, color='red', linestyle='--', label='Dataset-level Mean Accuracy')
-
-    plt.xticks(x, classes)
-    plt.ylabel('Accuracy')
-    plt.title('Class-level Accuracies with Candlesticks and Dataset-level Accuracy with Fill')
-    plt.legend()
-    plt.savefig('Accuracies.pdf')
-    plt.show()
-
-
-# Main script
-if __name__ == '__main__':
-    overall_accuracies = []
-    class_accuracies_list = []
-
-    # Loop through all saved models in the ensemble
-    for model_id in range(NUM_MODELS):
-        print(f"Evaluating Model {model_id}...")
-        model = load_model(model_id)
-
-        # Compute the accuracies for this model
-        overall_accuracy, class_accuracies = compute_accuracies(model, testloader)
-
-        # Store the accuracies
-        overall_accuracies.append(overall_accuracy)
-        class_accuracies_list.append(class_accuracies)
-
-    # Convert lists to numpy arrays for easier handling
-    overall_accuracies = np.array(overall_accuracies)
-    class_accuracies_list = np.array(class_accuracies_list)
-
-    # Plot the accuracies
-    plot_accuracies(overall_accuracies, class_accuracies_list)
+if __name__ == "__main__":
+    evaluator = ModelEvaluator(base_dir='./Models/')
+    evaluator.evaluate_saved_models()

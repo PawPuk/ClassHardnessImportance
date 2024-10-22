@@ -7,7 +7,7 @@ import numpy as np
 
 class DataPruning:
     def __init__(self, instance_hardness: List[List[float]], class_hardness: Dict[int, List[List[float]]],
-                 labels: List[int], prune_percentage: float = 0.5, dataset_name: str = 'MNIST'):
+                 labels: List[int], prune_percentage: int, dataset_name: str):
         """
         Initialize the DataPruning class.
 
@@ -15,7 +15,7 @@ class DataPruning:
         :param class_hardness: Dictionary where each key is a class and the value is a list of lists of class-level
         hardness scores.
         :param labels: List of class labels corresponding to each instance.
-        :param prune_percentage: Fraction of the data to prune (default is 0.5, i.e., 50%).
+        :param prune_percentage: Percentage of the data to prune (default is 50%).
         :param dataset_name: Name of the dataset we are working on (used for saving)
         """
         # Compute the average instance-level hardness for each sample across all models
@@ -26,15 +26,15 @@ class DataPruning:
             for class_id, class_scores in class_hardness.items()
         }
         self.labels = np.array(labels)
-        self.prune_percentage = prune_percentage
+        self.prune_percentage = prune_percentage / 100
         self.dataset_name = dataset_name
+        self.save_dir = 'Figures/'
 
-    def plot_class_level_sample_distribution(self, remaining_indices: List[int], file_name: str):
+    def plot_class_level_sample_distribution(self, remaining_indices: List[int]):
         """
         Plot the distribution of remaining samples across different classes after pruning.
 
         :param remaining_indices: List of indices of the remaining data samples after pruning.
-        :param file_name: Name of the file used for saving the Figure.
         """
         # Get the remaining labels using the indices
         remaining_labels = self.labels[remaining_indices]
@@ -48,9 +48,8 @@ class DataPruning:
         plt.ylabel('Number of Remaining Samples')
         plt.title('Class-level Distribution of Remaining Samples After Pruning')
 
-        os.makedirs('Figures/', exist_ok=True)
-        plt.savefig(file_name)
-        plt.show()
+        os.makedirs(self.save_dir, exist_ok=True)
+        plt.savefig(os.path.join(self.save_dir, 'class_level_sample_distribution.pdf'))
 
     def dataset_level_pruning(self):
         """
@@ -69,7 +68,8 @@ class DataPruning:
         remaining_indices = sorted_indices[-retain_count:]
 
         # Plot the class distribution after pruning
-        self.plot_class_level_sample_distribution(remaining_indices.tolist(), f'Figures/dd_dlp{self.dataset_name}.pdf')
+        self.save_dir = os.path.join(self.save_dir, 'dlp', self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices.tolist())
 
         return remaining_indices.tolist()
 
@@ -98,6 +98,7 @@ class DataPruning:
             remaining_indices.extend(global_indices[class_remaining_indices])
 
         # Plot the class distribution after pruning
-        self.plot_class_level_sample_distribution(remaining_indices, f'Figures/dd_fclp{self.dataset_name}.pdf')
+        self.save_dir = os.path.join(self.save_dir, 'fclp', self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices)
 
         return remaining_indices

@@ -9,47 +9,40 @@ import torch.optim as optim
 from tqdm import tqdm
 
 from neural_networks import ResNet18LowRes
+from utils import get_config
 
 
 class ModelTrainer:
-    def __init__(self, training_loader, test_loader, num_epochs=200, lr=0.1, momentum=0.9, weight_decay=0.0005,
-                 lr_decay_milestones=(60, 120, 160), save_epoch=20, save_dir='./Models/', dataset_type='full_',
-                 dataset_name='MNIST', save_probe_models=True, timings_dir='./Timings/',
-                 timings_file='ensemble_timings.csv'):
+    def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True):
         """
-        Initialize the ModelTrainer class.
+        Initialize the ModelTrainer class with configuration specific to the dataset.
 
         :param training_loader: DataLoader for the training dataset.
         :param test_loader: DataLoader for the test dataset.
-        :param num_epochs: Number of epochs for training (default: 200).
-        :param lr: Learning rate for the optimizer (default: 0.1).
-        :param momentum: Momentum for the optimizer (default: 0.9).
-        :param weight_decay: Weight decay for the optimizer (default: 0.0005).
-        :param lr_decay_milestones: List of epochs at which to decay the learning rate (default: [60, 120, 160]).
-        :param save_epoch: Epoch at which to optionally save the model (default: 20).
-        :param save_dir: Base directory to save the models (default: './Models/').
-        :param dataset_type: Type of dataset being used, e.g., 'full', 'fclp', 'dlp' (default: 'full').
-        :param dataset_name: Name of the dataset being used (default: 'default_dataset').
-        :param save_probe_models: Whether to save the probe models after save_epoch (default: True).
-        :param timings_dir: Directory to save the timings (default: './Timings/').
-        :param timings_file: File name to save ensemble timings (default: 'ensemble_timings.csv').
+        :param dataset_name: Name of the dataset being used.
+        :param pruning_type: Type of pruning being applied (default: 'none').
+        :param save_probe_models: Whether to save the probe models after a specified epoch (default: True).
         """
         self.training_loader = training_loader
         self.test_loader = test_loader
-        self.num_epochs = num_epochs
-        self.lr = lr
-        self.momentum = momentum
-        self.weight_decay = weight_decay
-        self.lr_decay_milestones = lr_decay_milestones
-        self.save_epoch = save_epoch
-        self.dataset_type = dataset_type
-        self.dataset_name = dataset_name  # New parameter for dataset name
+        self.pruning_type = pruning_type
+        self.dataset_name = dataset_name
         self.save_probe_models = save_probe_models
 
-        # Incorporate dataset_name and dataset_type into directories to prevent overwriting
-        self.save_dir = os.path.join(save_dir, dataset_type, dataset_name)
-        self.timings_dir = os.path.join(timings_dir, dataset_type, dataset_name)
-        self.timings_file = timings_file
+        # Fetch the dataset-specific configuration
+        config = get_config(self.dataset_name)
+
+        # Use the fetched config values
+        self.num_epochs = config['num_epochs']
+        self.lr = config['lr']
+        self.momentum = config['momentum']
+        self.weight_decay = config['weight_decay']
+        self.lr_decay_milestones = config['lr_decay_milestones']
+        self.save_epoch = config['save_epoch']
+
+        # Incorporate dataset_name and pruning_type into directories to prevent overwriting
+        self.save_dir = os.path.join(config['save_dir'], pruning_type, dataset_name)
+        self.timings_dir = os.path.join(config['timings_dir'], pruning_type, dataset_name)
 
         # Ensure directories exist
         os.makedirs(self.save_dir, exist_ok=True)
@@ -117,25 +110,27 @@ class ModelTrainer:
 
             # Optionally save the model at a specific epoch
             if self.save_probe_models and epoch + 1 == self.save_epoch:
-                save_path = os.path.join(self.save_dir, f'_model_{model_id}_epoch_{self.save_epoch}.pth')
+                save_path = os.path.join(self.save_dir, f'model_{model_id}_epoch_{self.save_epoch}.pth')
                 torch.save(model.state_dict(), save_path)
-                print(f'Model {model_id} ({self.dataset_name}, {self.dataset_type} dataset) saved at epoch '
+                print(f'Model {model_id} ({self.dataset_name}, {self.pruning_type} dataset) saved at epoch '
                       f'{self.save_epoch}')
 
             # Step the scheduler at the end of the epoch
             scheduler.step()
 
         # Save model after full training
-        final_save_path = os.path.join(self.save_dir, f'_model_{model_id}_epoch_{self.num_epochs}.pth')
+        final_save_path = os.path.join(self.save_dir, f'model_{model_id}_epoch_{self.num_epochs}.pth')
         torch.save(model.state_dict(), final_save_path)
-        print(f'Model {model_id} ({self.dataset_name}, {self.dataset_type} dataset) saved after full training at epoch '
+        print(f'Model {model_id} ({self.dataset_name}, {self.pruning_type} dataset) saved after full training at epoch '
               f'{self.num_epochs}')
 
-    def train_ensemble(self, num_models=10):
+    def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
         timings = []  # To store the training times for each model
+        config = get_config(self.dataset_name)
+        num_models = config['num_models']
 
-        print(f"Starting training ensemble of {num_models} models on {self.dataset_name} ({self.dataset_type}) "
+        print(f"Starting training ensemble of {num_models} models on {self.dataset_name} ({self.pruning_type}) "
               f"dataset...")
         print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")
         print(f"Number of samples in the test loader: {len(self.test_loader.dataset)}")
@@ -156,7 +151,7 @@ class ModelTrainer:
         std_time = np.std(timings)
 
         # Save the timings to a CSV file
-        timings_file_path = os.path.join(self.timings_dir, self.timings_file)
+        timings_file_path = os.path.join(self.timings_dir, 'ensemble_timings.csv')
         with open(timings_file_path, 'w', newline='') as csvfile:
             csvwriter = csv.writer(csvfile)
             # Write the header

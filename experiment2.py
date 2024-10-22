@@ -145,6 +145,11 @@ def compute_class_statistics(class_el2n_scores):
 
 # Function to plot candlestick chart for class-level EL2N scores
 def plot_class_level_candlestick(class_stats, dataset_name, pruning_strategy):
+    # Prepare the saving directory and file name
+    save_dir = os.path.join('Figures/', pruning_strategy, dataset_name)
+    os.makedirs(save_dir, exist_ok=True)
+    file_name = os.path.join(save_dir, f'{pruning_strategy}{dataset_name}_hardness_distribution.pdf')
+
     # Prepare the data for plotting
     class_ids = list(class_stats.keys())
     q1_values = [class_stats[class_id]["q1"] for class_id in class_ids]
@@ -165,16 +170,13 @@ def plot_class_level_candlestick(class_stats, dataset_name, pruning_strategy):
     ax.set_xlabel("Classes")
     ax.set_ylabel("EL2N Score (L2 Norm)")
     ax.set_title("Class-Level EL2N Scores Candlestick Plot")
-    os.makedirs('Figures/', exist_ok=True)
-    plt.savefig(f'{pruning_strategy}{dataset_name}_hardness_distribution.pdf')
-
-    plt.show()
+    plt.savefig(file_name)
 
 
 # Function to create a pruned dataset
-def prune_dataset(el2n_scores, class_el2n_scores, labels, pruning_strategy):
+def prune_dataset(el2n_scores, class_el2n_scores, labels, pruning_strategy, pruning_rate, dataset_name):
     # Instantiate the DataPruning class with el2n_scores, class_el2n_scores, and labels
-    pruner = DataPruning(el2n_scores, class_el2n_scores, labels)
+    pruner = DataPruning(el2n_scores, class_el2n_scores, labels, pruning_rate, dataset_name)
 
     if pruning_strategy == 'dlp':
         pruned_indices = pruner.dataset_level_pruning()
@@ -190,7 +192,7 @@ def prune_dataset(el2n_scores, class_el2n_scores, labels, pruning_strategy):
 
 
 # Main script
-def main(pruning_strategy, dataset_name):
+def main(pruning_strategy, dataset_name, pruning_rate):
 
     # Collect EL2N scores across all models for the training set
     all_el2n_scores = collect_el2n_scores(dataset_name)
@@ -205,16 +207,17 @@ def main(pruning_strategy, dataset_name):
     plot_class_level_candlestick(class_stats, dataset_name, pruning_strategy)
 
     # Perform dataset-level pruning
-    pruned_dataset = prune_dataset(all_el2n_scores, class_el2n_scores, labels, pruning_strategy)
+    pruned_dataset = prune_dataset(all_el2n_scores, class_el2n_scores, labels, pruning_strategy, pruning_rate,
+                                   dataset_name)
 
     # Create data loader for pruned dataset
     pruned_training_loader = torch.utils.data.DataLoader(pruned_dataset, batch_size=BATCH_SIZE, shuffle=True,
                                                          num_workers=2)
 
     # Train ensemble of 10 models on pruned data (without saving probe models)
-    trainer = ModelTrainer(pruned_training_loader, test_loader, save_probe_models=False, dataset_name=dataset_name,
-                           timings_file='dataset_level_pruning.csv', dataset_type=pruning_strategy)
-    trainer.train_ensemble(num_models=10)
+    trainer = ModelTrainer(pruned_training_loader, test_loader, dataset_name, f'{pruning_strategy + str(pruning_rate)}',
+                           False)
+    trainer.train_ensemble()
 
 
 if __name__ == "__main__":
@@ -223,7 +226,9 @@ if __name__ == "__main__":
                         help='Choose pruning strategy: fclp (fixed class level pruning) or dlp (data level pruning)')
     parser.add_argument('--dataset_name', type=str, default='CIFAR10',
                         help='Specify the dataset name (default: CIFAR10)')
+    parser.add_argument('--pruning_rate', type=int, default=50,
+                        help='Percentage of data samples that will be removed during data pruning (use integers).')
 
     args = parser.parse_args()
 
-    main(args.pruning_strategy, args.dataset_name)
+    main(args.pruning_strategy, args.dataset_name, args.pruning_rate)
