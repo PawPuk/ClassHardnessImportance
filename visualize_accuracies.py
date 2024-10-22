@@ -1,11 +1,13 @@
-import os
-import torch
-import torch.nn as nn
-import numpy as np
-import matplotlib.pyplot as plt
-from neural_networks import ResNet18LowRes
-from torchvision import datasets, transforms
 from collections import defaultdict
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+
+from neural_networks import ResNet18LowRes
 
 
 class ModelEvaluator:
@@ -16,6 +18,7 @@ class ModelEvaluator:
         :param base_dir: Base directory where the saved models are located.
         """
         self.base_dir = base_dir
+        self.baseline_results = {}  # To store baseline accuracies for comparison
 
     def find_saved_model_paths(self):
         """
@@ -76,7 +79,7 @@ class ModelEvaluator:
         else:
             raise ValueError(f"Dataset {dataset_name} is not supported.")
 
-        test_loader = torch.utils.data.DataLoader(test_set, batch_size=100, shuffle=False, num_workers=2)
+        test_loader = DataLoader(test_set, batch_size=100, shuffle=False, num_workers=2)
         return test_loader
 
     @staticmethod
@@ -166,30 +169,93 @@ class ModelEvaluator:
         ax.set_title(f'Ensemble Results for {dataset_name} with {pruning_type}')
         ax.set_xticks(x)
         ax.legend()
-        plt.show()
+        save_dir = os.path.join('Figures/', pruning_type, dataset_name)
+        os.makedirs(save_dir, exist_ok=True)
+        file_name = os.path.join(save_dir, f'ensemble_accuracies.pdf')
+        plt.savefig(file_name)
+
+    @staticmethod
+    def plot_accuracy_diff(class_accuracy_diff, dataset_accuracy_diff, dataset_name, pruning_type):
+        """
+        Plot the difference in accuracy between pruned and baseline models as a bar chart for class-level accuracy
+        and a horizontal line for dataset-level accuracy.
+
+        :param class_accuracy_diff: Array of differences in class-level accuracies.
+        :param dataset_accuracy_diff: Difference in dataset-level accuracy.
+        :param dataset_name: The name of the dataset.
+        :param pruning_type: The pruning type used.
+        """
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot class-level accuracy differences as bars
+        x = np.arange(10)  # Assuming 10 classes
+        ax.bar(x, class_accuracy_diff, color='b', alpha=0.7)
+
+        # Plot dataset-level accuracy difference as a horizontal line
+        ax.axhline(y=dataset_accuracy_diff, color='r', linestyle='--', label=f'Dataset accuracy difference: {dataset_accuracy_diff:.2f}%')
+
+        ax.set_xlabel('Class')
+        ax.set_ylabel('Accuracy Difference (%)')
+        ax.set_title(f'Accuracy Difference (Pruned vs Baseline) for {dataset_name} with {pruning_type}')
+        ax.set_xticks(x)
+        ax.set_xticklabels([f'Class {i+1}' for i in x])
+        ax.legend()
+        save_dir = os.path.join('Figures/', pruning_type, dataset_name)
+        os.makedirs(save_dir, exist_ok=True)
+        file_name = os.path.join(save_dir, f'ensemble_accuracy_improvements.pdf')
+        plt.savefig(file_name)
 
     def evaluate_saved_models(self):
         """
         Iterate through all saved models grouped by pruning strategy and dataset, load them, and evaluate the ensemble.
         """
         saved_model_groups = self.find_saved_model_paths()
-
+        # First, evaluate baseline (pruning_type == 'none') models
         for (pruning_type, dataset_name), model_paths in saved_model_groups.items():
-            print(f'\nEvaluating ensemble for Dataset: {dataset_name}, Pruning Type: {pruning_type}')
+            if pruning_type == 'none':
+                print(f'\nEvaluating baseline for Dataset: {dataset_name}')
+                test_loader = self.load_dataset(dataset_name)
+                # Evaluate the ensemble
+                avg_accuracy, std_accuracy, avg_class_accuracies, std_class_accuracies = self.evaluate_ensemble(
+                    model_paths, test_loader)
 
-            # Load the test dataset based on dataset name
-            test_loader = self.load_dataset(dataset_name)
+                self.baseline_results[dataset_name] = {
+                    'avg_accuracy': avg_accuracy,
+                    'avg_class_accuracies': avg_class_accuracies
+                }
+                # Print overall ensemble accuracy
+                print(f'Average dataset accuracy (baseline): {avg_accuracy:.2f}% (±{std_accuracy:.2f}%)')
+                # Plot the results
+                self.plot_ensemble_results(avg_class_accuracies, std_class_accuracies, avg_accuracy, std_accuracy,
+                                           dataset_name, pruning_type)
 
-            # Evaluate the ensemble
-            avg_accuracy, std_accuracy, avg_class_accuracies, std_class_accuracies = self.evaluate_ensemble(model_paths,
-                                                                                                            test_loader)
+        # Now evaluate the pruned models and compare them to baseline
+        for (pruning_type, dataset_name), model_paths in saved_model_groups.items():
+            if pruning_type != 'none':  # Evaluate pruned models only
+                print(f'\nEvaluating ensemble for Dataset: {dataset_name}, Pruning Type: {pruning_type}')
 
-            # Print overall ensemble accuracy
-            print(f'Average dataset accuracy: {avg_accuracy:.2f}% (±{std_accuracy:.2f}%)')
+                test_loader = self.load_dataset(dataset_name)
+                avg_accuracy, std_accuracy, avg_class_accuracies, std_class_accuracies = self.evaluate_ensemble(
+                    model_paths, test_loader)
 
-            # Plot the results
-            self.plot_ensemble_results(avg_class_accuracies, std_class_accuracies, avg_accuracy, std_accuracy,
-                                       dataset_name, pruning_type)
+                # Plot the original ensemble results for the pruned model
+                self.plot_ensemble_results(avg_class_accuracies, std_class_accuracies, avg_accuracy, std_accuracy,
+                                           dataset_name, pruning_type)
+
+                # Get baseline results for comparison
+                if dataset_name in self.baseline_results:
+                    baseline_accuracy = self.baseline_results[dataset_name]['avg_accuracy']
+                    baseline_class_accuracies = self.baseline_results[dataset_name]['avg_class_accuracies']
+
+                    # Compute the difference between pruned and baseline
+                    accuracy_diff = avg_accuracy - baseline_accuracy
+                    class_accuracy_diff = avg_class_accuracies - baseline_class_accuracies
+
+                    # Plot the comparison results
+                    self.plot_accuracy_diff(class_accuracy_diff, accuracy_diff, dataset_name, pruning_type)
+                else:
+                    raise Exception('This should never happen.')
+
 
 
 if __name__ == "__main__":

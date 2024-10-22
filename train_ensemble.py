@@ -39,6 +39,7 @@ class ModelTrainer:
         self.weight_decay = config['weight_decay']
         self.lr_decay_milestones = config['lr_decay_milestones']
         self.save_epoch = config['save_epoch']
+        self.num_classes = config['num_classes']
 
         # Incorporate dataset_name and pruning_type into directories to prevent overwriting
         self.save_dir = str(os.path.join(config['save_dir'], pruning_type, dataset_name))
@@ -48,10 +49,9 @@ class ModelTrainer:
         os.makedirs(self.save_dir, exist_ok=True)
         os.makedirs(self.timings_dir, exist_ok=True)
 
-    @staticmethod
-    def create_model():
-        """Creates and returns a ResNet-18 model."""
-        return ResNet18LowRes(num_classes=10).cuda()
+    def create_model(self):
+        """Creates and returns a ResNet-18 model with dynamic number of output classes."""
+        return ResNet18LowRes(num_classes=self.num_classes).cuda()
 
     def evaluate_model(self, model, criterion):
         """Evaluate the model on the test set."""

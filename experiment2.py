@@ -1,11 +1,13 @@
 import argparse
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
+from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
-import os
-import numpy as np
-import matplotlib.pyplot as plt
 
 from data_pruning import DataPruning
 from neural_networks import ResNet18LowRes
@@ -148,7 +150,7 @@ def plot_class_level_candlestick(class_stats, dataset_name, pruning_strategy):
     # Prepare the saving directory and file name
     save_dir = os.path.join('Figures/', pruning_strategy, dataset_name)
     os.makedirs(save_dir, exist_ok=True)
-    file_name = os.path.join(save_dir, f'{pruning_strategy}{dataset_name}_hardness_distribution.pdf')
+    file_name = os.path.join(save_dir, f'hardness_distribution.pdf')
 
     # Prepare the data for plotting
     class_ids = list(class_stats.keys())
@@ -170,7 +172,7 @@ def plot_class_level_candlestick(class_stats, dataset_name, pruning_strategy):
     ax.set_xlabel("Classes")
     ax.set_ylabel("EL2N Score (L2 Norm)")
     ax.set_title("Class-Level EL2N Scores Candlestick Plot")
-    plt.savefig(file_name)
+    fig.savefig(file_name)
 
 
 # Function to create a pruned dataset
@@ -211,7 +213,7 @@ def main(pruning_strategy, dataset_name, pruning_rate):
                                    dataset_name)
 
     # Create data loader for pruned dataset
-    pruned_training_loader = torch.utils.data.DataLoader(pruned_dataset, batch_size=BATCH_SIZE, shuffle=True,
+    pruned_training_loader = DataLoader(pruned_dataset, batch_size=BATCH_SIZE, shuffle=True,
                                                          num_workers=2)
 
     # Train ensemble of 10 models on pruned data (without saving probe models)

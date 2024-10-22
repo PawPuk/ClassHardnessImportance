@@ -8,10 +8,11 @@ dataset_configs = {
         'save_epoch': 20,
         'save_dir': './Models/',
         'timings_dir': './Timings/',
-        'num_models': 10
+        'num_models': 10,
+        'num_classes': 10
     },
     'CIFAR100': {
-        'num_epochs': 250,
+        'num_epochs': 200,
         'lr': 0.05,
         'momentum': 0.85,
         'weight_decay': 0.0001,
@@ -19,7 +20,8 @@ dataset_configs = {
         'save_epoch': 25,
         'save_dir': './Models/',
         'timings_dir': './Timings/',
-        'num_models': 8
+        'num_models': 8,
+        'num_classes': 100
     }
 }
 
