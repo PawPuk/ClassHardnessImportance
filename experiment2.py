@@ -202,7 +202,7 @@ class Experiment2:
         ax.set_xlabel("Classes")
         ax.set_ylabel("EL2N Score (L2 Norm)")
         ax.set_title("Class-Level EL2N Scores Candlestick Plot")
-        fig.savefig(file_name)
+        plt.savefig(file_name)
 
     def prune_dataset(self, el2n_scores, class_el2n_scores, labels):
         # Instantiate the DataPruning class with el2n_scores, class_el2n_scores, and labels

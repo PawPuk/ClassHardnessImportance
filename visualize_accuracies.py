@@ -37,8 +37,8 @@ class ModelEvaluator:
                 if file.endswith('.pth') and 'epoch_200' in file:
                     path_parts = root.split(os.sep)
                     if len(path_parts) >= 3:
-                        pruning_type = path_parts[-3]  # 'Models/pruning_type/dataset_name/...'
-                        dataset_name = path_parts[-2]
+                        pruning_type = path_parts[-2]  # 'Models/pruning_type/dataset_name/...'
+                        dataset_name = path_parts[-1]
                         saved_model_paths[(pruning_type, dataset_name)].append(os.path.join(root, file))
 
         return saved_model_paths
@@ -194,7 +194,7 @@ class ModelEvaluator:
 
         # Plot dataset-level overall metric as a filled region (for accuracy only)
         if metric_name.lower() == 'accuracy' and avg_overall is not None and std_overall is not None:
-            x = np.arange(1, 11)
+            x = np.arange(1, num_classes + 1)
             ax.fill_between(x, avg_overall - std_overall, avg_overall + std_overall, color='gray', alpha=0.3,
                             label=f'{metric_name} Overall')
             ax.plot(x, [avg_overall] * num_classes, color='black', linestyle='--')
@@ -202,7 +202,7 @@ class ModelEvaluator:
         ax.set_xlabel('Class')
         ax.set_ylabel(f'{metric_name} (%)')
         ax.set_title(f'{metric_name} for {dataset_name} with {pruning_type}')
-        ax.set_xticks(np.arange(1, 11))
+        ax.set_xticks(np.arange(1, num_classes + 1))
         save_dir = os.path.join('Figures/', pruning_type, dataset_name)
         os.makedirs(save_dir, exist_ok=True)
         file_name = os.path.join(save_dir, f'ensemble_{metric_name.lower()}.pdf')
@@ -261,7 +261,8 @@ class ModelEvaluator:
                 # Evaluate the ensemble (accuracy, precision, recall, and F1)
                 (avg_accuracy, std_accuracy, avg_class_accuracies, std_class_accuracies,
                  avg_class_precisions, std_class_precisions, avg_class_recalls, std_class_recalls,
-                 avg_class_f1_scores, std_class_f1_scores) = self.evaluate_ensemble(model_paths, test_loader)
+                 avg_class_f1_scores, std_class_f1_scores) = self.evaluate_ensemble(model_paths, test_loader,
+                                                                                    num_classes)
 
                 # Store baseline results
                 self.baseline_results[dataset_name] = {
@@ -288,6 +289,7 @@ class ModelEvaluator:
         # Now evaluate the pruned models and compare them to baseline
         for (pruning_type, dataset_name), model_paths in saved_model_groups.items():
             if pruning_type != 'none':  # Evaluate pruned models only
+                num_classes = utils.get_config(dataset_name)['num_classes']
                 print(f'\nEvaluating ensemble for Dataset: {dataset_name}, Pruning Type: {pruning_type}')
 
                 test_loader = self.load_dataset(dataset_name)

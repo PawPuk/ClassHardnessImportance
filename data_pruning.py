@@ -20,7 +20,7 @@ class DataPruning:
         """
         # Compute the average instance-level hardness for each sample across all models
         self.instance_hardness = np.mean(np.array(instance_hardness), axis=1)
-        # Compute the average class-level hardness for each class across all models
+        # Compute the average class-level hardness for each sample in specific class across all models
         self.class_hardness = {
             class_id: np.mean(np.array(class_scores), axis=1)
             for class_id, class_scores in class_hardness.items()
@@ -99,6 +99,83 @@ class DataPruning:
 
         # Plot the class distribution after pruning
         self.save_dir = os.path.join(self.save_dir, 'fclp', self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices)
+
+        return remaining_indices
+
+    def random_pruning(self):
+        """
+        Perform random pruning by removing the specified percentage of samples randomly.
+
+        :return: List of indices of the remaining data samples after random pruning.
+        """
+        # Number of samples to retain after pruning
+        total_samples = len(self.labels)
+        retain_count = int((1 - self.prune_percentage) * total_samples)
+
+        # Randomly select indices to retain
+        all_indices = np.arange(total_samples)
+        remaining_indices = np.random.choice(all_indices, size=retain_count, replace=False)
+
+        # Plot the class distribution after random pruning
+        self.save_dir = os.path.join(self.save_dir, 'rp', self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices.tolist())
+
+        return remaining_indices.tolist()
+
+    def adaptive_class_level_pruning(self, scaling_type="linear"):
+        """
+        Perform adaptive class-level pruning based on the average hardness of each class.
+        Harder classes will lose fewer samples, while easier classes will lose more.
+        Scaling type can be 'linear', 'exponential', or 'logarithmic'.
+
+        :param scaling_type: Type of scaling ('linear', 'exponential', 'logarithmic'). Default is 'linear'.
+        :return: List of indices of the remaining data samples after adaptive class-level pruning.
+        """
+        remaining_indices, epsilon = [], 1e-6
+
+        # Calculate the mean hardness of each class
+        class_mean_hardness = {class_id: np.mean(class_scores) for class_id, class_scores in
+                               self.class_hardness.items()}
+
+        # Get the min and max class hardness values
+        max_hardness, min_hardness = max(class_mean_hardness.values()), min(class_mean_hardness.values())
+
+        # Iterate over each class in class_hardness
+        for class_id, class_scores in self.class_hardness.items():
+            class_sample_count = len(class_scores)
+            mean_hardness = class_mean_hardness[class_id]
+
+            # Scale pruning rate based on class hardness (hardest class keeps all, easiest prunes at prune_percentage)
+            if max_hardness != min_hardness:
+                # Calculate scaling factor based on chosen scaling type
+                if scaling_type == "linear":
+                    scaling_factor = (mean_hardness - min_hardness) / (max_hardness - min_hardness)
+                elif scaling_type == "exponential":
+                    scaling_factor = np.exp(mean_hardness - min_hardness) / np.exp(max_hardness - min_hardness)
+                elif scaling_type == "logarithmic":
+                    scaling_factor = np.log(mean_hardness - min_hardness + epsilon) / np.log(
+                        max_hardness - min_hardness + epsilon)
+                else:
+                    raise ValueError("Unsupported scaling type. Choose 'linear', 'exponential', or 'logarithmic'.")
+            else:
+                scaling_factor = 1  # If all classes have the same hardness, treat all equally (no scaling)
+
+            class_prune_percentage = self.prune_percentage * (1 - scaling_factor)
+            retain_count = int((1 - class_prune_percentage) * class_sample_count)
+
+            # Get the indices that would sort the class-level hardness for this class
+            sorted_class_indices = np.argsort(class_scores)
+
+            # Retain the top 'retain_count' number of the hardest samples from this class
+            class_remaining_indices = sorted_class_indices[-retain_count:]
+
+            # Find global indices that belong to this class using the labels
+            global_indices = np.where(self.labels == class_id)[0]
+            remaining_indices.extend(global_indices[class_remaining_indices])
+
+        # Plot the class distribution after pruning
+        self.save_dir = os.path.join(self.save_dir, f'{scaling_type}_aclp', self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices)
 
         return remaining_indices
