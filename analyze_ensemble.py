@@ -77,10 +77,16 @@ def main(dataset_name):
     test_loader = load_test_loader(config, dataset_name)
 
     # Load model paths
-    model_paths = sorted([os.path.join(models_dir, fname) for fname in os.listdir(models_dir)
-                          if fname.endswith('.pth')])
+    model_paths = sorted([
+        os.path.join(models_dir, fname) for fname in os.listdir(models_dir)
+        if fname.endswith('.pth') and '_epoch_200' in fname
+    ])
     dataset_accuracies, models = [], []
     class_accuracies = [[] for _ in range(num_classes)]
+    print(f'Loaded {len(model_paths)} models.')
+    save_dir = os.path.join('Figures/', 'none', dataset_name)
+    os.makedirs(save_dir, exist_ok=True)
+    file_name = os.path.join(save_dir, f'ensemble_accuracies.pdf')
 
     # Sequentially load models, compute ensemble accuracy as we increase the ensemble size
     for i, model_path in enumerate(model_paths):
@@ -109,7 +115,7 @@ def main(dataset_name):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.show()
+    plt.savefig(file_name)
 
 
 if __name__ == "__main__":
