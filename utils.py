@@ -49,6 +49,11 @@ def get_config(dataset_name):
     Fetch the appropriate configuration based on the dataset name.
     """
     if dataset_name in dataset_configs:
-        return dataset_configs[dataset_name]
+        config = dataset_configs[dataset_name]
+        config['probe_base_seed'] = 42
+        config['probe_seed_step'] = 1
+        config['new_base_seed'] = 4242
+        config['new_seed_step'] = 42
+        return config
     else:
         raise ValueError(f"Configuration for dataset {dataset_name} not found!")

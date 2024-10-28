@@ -13,7 +13,8 @@ from utils import get_config
 
 
 class ModelTrainer:
-    def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True):
+    def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True,
+                 hardness = 'subjective'):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
@@ -22,6 +23,8 @@ class ModelTrainer:
         :param dataset_name: Name of the dataset being used.
         :param pruning_type: Type of pruning being applied (default: 'none').
         :param save_probe_models: Whether to save the probe models after a specified epoch (default: True).
+        :param hardness: Whether to use the same seed for measuring hardness (subjective) or different (objective) as
+        for training the probe networks and benchmark ensemble (ensemble trained on unpruned data)
         """
         self.training_loader = training_loader
         self.test_loader = test_loader
@@ -40,6 +43,12 @@ class ModelTrainer:
         self.lr_decay_milestones = config['lr_decay_milestones']
         self.save_epoch = config['save_epoch']
         self.num_classes = config['num_classes']
+        if hardness == 'subjective':
+            self.base_seed = config['probe_base_seed']
+            self.seed_step = config['probe_seed_step']
+        else:
+            self.base_seed = config['new_base_seed']
+            self.seed_step = config['new_seed_step']
 
         # Incorporate dataset_name and pruning_type into directories to prevent overwriting
         self.save_dir = str(os.path.join(config['save_dir'], pruning_type, dataset_name))
@@ -48,6 +57,13 @@ class ModelTrainer:
         # Ensure directories exist
         os.makedirs(self.save_dir, exist_ok=True)
         os.makedirs(self.timings_dir, exist_ok=True)
+
+    @staticmethod
+    def set_seed(seed):
+        """Set random seed for NumPy and PyTorch for reproducibility."""
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
 
     def create_model(self):
         """Creates and returns a ResNet-18 model with dynamic number of output classes."""
@@ -74,6 +90,9 @@ class ModelTrainer:
 
     def train_model(self, model_id):
         """Train a single model."""
+        seed = self.base_seed + model_id * self.seed_step
+        self.set_seed(seed)
+
         model = self.create_model()
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.SGD(model.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay,
