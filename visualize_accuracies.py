@@ -208,6 +208,34 @@ class ModelEvaluator:
         file_name = os.path.join(save_dir, f'ensemble_{metric_name.lower()}.pdf')
         plt.savefig(file_name)
 
+        # Now, create another plot with sorted classes by metric value
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Sort the classes by avg_values
+        sorted_indices = np.argsort(avg_values)
+        sorted_avg_values = avg_values[sorted_indices]
+        sorted_std_values = std_values[sorted_indices]
+
+        # Plot sorted values
+        for i in range(num_classes):
+            ax.errorbar(i + 1, sorted_avg_values[i], yerr=sorted_std_values[i], fmt='o', capsize=5,
+                        label=f'Class {sorted_indices[i] + 1}')
+
+        # Plot dataset-level overall metric as a filled region (for accuracy only)
+        if metric_name.lower() == 'accuracy' and avg_overall is not None and std_overall is not None:
+            x = np.arange(1, num_classes + 1)
+            ax.fill_between(x, avg_overall - std_overall, avg_overall + std_overall, color='gray', alpha=0.3,
+                            label=f'{metric_name} Overall')
+            ax.plot(x, [avg_overall] * num_classes, color='black', linestyle='--')
+
+        ax.set_xlabel('Class (Sorted)')
+        ax.set_ylabel(f'{metric_name} (%)')
+        ax.set_title(f'{metric_name} (Sorted) for {dataset_name} with {pruning_type}')
+        ax.set_xticks(np.arange(1, num_classes + 1))
+        save_dir = os.path.join('Figures/', pruning_type, dataset_name)
+        file_name_sorted = os.path.join(save_dir, f'ensemble_{metric_name.lower()}_sorted.pdf')
+        plt.savefig(file_name_sorted)
+
     @staticmethod
     def plot_metric_diff(class_metric_diff, overall_metric_diff, dataset_name, pruning_type, metric_name, num_classes):
         """
@@ -343,3 +371,4 @@ class ModelEvaluator:
 if __name__ == "__main__":
     evaluator = ModelEvaluator(base_dir='./Models/')
     evaluator.evaluate_saved_models()
+

@@ -179,3 +179,48 @@ class DataPruning:
         self.plot_class_level_sample_distribution(remaining_indices)
 
         return remaining_indices
+
+    def live_one_out_pruning(self):
+        """
+        Perform live-out-out pruning, where all classes are pruned equally based on the prune_percentage,
+        except for the hardest class, which is not pruned.
+
+        :return: List of indices of the remaining data samples after live-out-out pruning.
+        """
+        remaining_indices = []
+
+        # Calculate the mean hardness of each class
+        class_mean_hardness = {class_id: np.mean(class_scores) for class_id, class_scores in 
+                               self.class_hardness.items()}
+
+        # Find the hardest class (with the maximum average hardness)
+        hardest_class_id = max(class_mean_hardness, key=class_mean_hardness.get)
+
+        # Iterate over each class in class_hardness
+        for class_id, class_scores in self.class_hardness.items():
+            class_sample_count = len(class_scores)
+
+            if class_id == hardest_class_id:
+                # Don't prune the hardest class, retain all samples
+                retain_count = class_sample_count
+            else:
+                # Prune according to the prune_percentage for other classes
+                retain_count = int((1 - self.prune_percentage) * class_sample_count)
+
+            # Get the indices that would sort the class-level hardness for this class
+            sorted_class_indices = np.argsort(class_scores)
+
+            # Retain the top 'retain_count' number of the hardest samples from this class
+            class_remaining_indices = sorted_class_indices[-retain_count:]
+
+            # Find global indices that belong to this class using the labels
+            global_indices = np.where(self.labels == class_id)[0]
+            remaining_indices.extend(global_indices[class_remaining_indices])
+
+        # Plot the class distribution after pruning
+        self.save_dir = os.path.join(self.save_dir, 'loolp', self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices)
+
+        return remaining_indices
+
+

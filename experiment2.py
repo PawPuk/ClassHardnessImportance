@@ -15,10 +15,11 @@ from train_ensemble import ModelTrainer
 
 
 class Experiment2:
-    def __init__(self, dataset_name, pruning_strategy, pruning_rate):
+    def __init__(self, dataset_name, pruning_strategy, pruning_rate, scaling_type):
         self.dataset_name = dataset_name
         self.pruning_strategy = pruning_strategy
         self.pruning_rate = pruning_rate
+        self.scaling_type = scaling_type
 
         # Constants taken from config
         config = get_config(dataset_name)
@@ -78,7 +79,7 @@ class Experiment2:
             raise ValueError(f"Dataset {dataset_name} is not supported.")
 
         # Load training and test data
-        training_loader = torch.utils.data.DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=True,
+        training_loader = torch.utils.data.DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=False,
                                                       num_workers=2)
         test_loader = torch.utils.data.DataLoader(test_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2)
         training_set_size = len(training_set)
@@ -212,6 +213,12 @@ class Experiment2:
             pruned_indices = pruner.dataset_level_pruning()
         elif self.pruning_strategy == 'fclp':
             pruned_indices = pruner.fixed_class_level_pruning()
+        elif self.pruning_strategy == 'rp':
+            pruned_indices = pruner.random_pruning()
+        elif self.pruning_strategy == 'aclp':
+            pruned_indices = pruner.adaptive_class_level_pruning(self.scaling_type)
+        elif self.pruning_strategy == 'loop':
+            pruned_indices = pruner.live_one_out_pruning()
         else:
             raise ValueError('Wrong value of the parameter `pruning_strategy`.')
 
@@ -247,15 +254,18 @@ class Experiment2:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='EL2N Score Calculation and Dataset Pruning')
-    parser.add_argument('--pruning_strategy', type=str, default='dlp', choices=['fclp', 'dlp'],
+    parser.add_argument('--pruning_strategy', type=str, default='dlp', choices=['fclp', 'dlp', 'rp', 'aclp', 'loop'],
                         help='Choose pruning strategy: fclp (fixed class level pruning) or dlp (data level pruning)')
     parser.add_argument('--dataset_name', type=str, default='CIFAR10',
                         help='Specify the dataset name (default: CIFAR10)')
     parser.add_argument('--pruning_rate', type=int, default=50,
                         help='Percentage of data samples that will be removed during data pruning (use integers).')
+    parser.add_argument('--scaling_type', type=str, default='linear', choices=['linear', 'exponential', 'logarithmic'],
+                        help='Choose scaling type for adaptive class-level pruning: linear, exponential, logarithmic')
 
     args = parser.parse_args()
 
     # Initialize and run the experiment
-    experiment = Experiment2(args.dataset_name, args.pruning_strategy, args.pruning_rate)
+    experiment = Experiment2(args.dataset_name, args.pruning_strategy, args.pruning_rate, args.scaling_type)
     experiment.run_experiment()
+
