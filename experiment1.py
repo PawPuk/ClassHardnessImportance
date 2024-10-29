@@ -1,5 +1,8 @@
 import argparse
+import random
 
+import numpy as np
+import torch
 from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms as transforms
@@ -59,11 +62,19 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform):
 
 # Main function
 def main(dataset_name):
-    batch_size = get_config(dataset_name)['batch_size']
+    # Set seeds for reproducibility
+    seed = 42
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
     # Get the dataset transforms based on the dataset_name
     train_transform, test_transform = get_data_transforms(dataset_name)
 
     # Load the dataset
+    batch_size = get_config(dataset_name)['batch_size']
     training_loader, test_loader = get_dataloader(dataset_name, batch_size, train_transform, test_transform)
 
     # Create an instance of ModelTrainer

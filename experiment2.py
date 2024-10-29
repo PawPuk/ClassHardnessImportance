@@ -1,5 +1,7 @@
 import argparse
 import os
+import random
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -16,6 +18,13 @@ from train_ensemble import ModelTrainer
 
 class Experiment2:
     def __init__(self, dataset_name, pruning_strategy, pruning_rate, scaling_type):
+        seed = 42
+        np.random.seed(seed)
+        random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
         self.dataset_name = dataset_name
         self.pruning_strategy = pruning_strategy
         self.pruning_rate = pruning_rate
@@ -179,7 +188,7 @@ class Experiment2:
 
     def plot_class_level_candlestick(self, class_stats):
         # Prepare the saving directory and file name
-        save_dir = os.path.join('Figures/', self.pruning_strategy, self.dataset_name)
+        save_dir = os.path.join('Figures/', str(self.pruning_strategy) + str(self.pruning_rate), self.dataset_name)
         os.makedirs(save_dir, exist_ok=True)
         file_name = os.path.join(save_dir, f'hardness_distribution.pdf')
 

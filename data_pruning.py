@@ -68,7 +68,7 @@ class DataPruning:
         remaining_indices = sorted_indices[-retain_count:]
 
         # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, 'dlp', self.dataset_name)
+        self.save_dir = os.path.join(self.save_dir, 'dlp' + str(self.prune_percentage), self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices.tolist())
 
         return remaining_indices.tolist()
@@ -98,7 +98,7 @@ class DataPruning:
             remaining_indices.extend(global_indices[class_remaining_indices])
 
         # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, 'fclp', self.dataset_name)
+        self.save_dir = os.path.join(self.save_dir, 'fclp' + str(self.prune_percentage), self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices)
 
         return remaining_indices
@@ -118,7 +118,7 @@ class DataPruning:
         remaining_indices = np.random.choice(all_indices, size=retain_count, replace=False)
 
         # Plot the class distribution after random pruning
-        self.save_dir = os.path.join(self.save_dir, 'rp', self.dataset_name)
+        self.save_dir = os.path.join(self.save_dir, 'rp' + str(self.prune_percentage), self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices.tolist())
 
         return remaining_indices.tolist()
@@ -175,7 +175,7 @@ class DataPruning:
             remaining_indices.extend(global_indices[class_remaining_indices])
 
         # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, f'{scaling_type}_aclp', self.dataset_name)
+        self.save_dir = os.path.join(self.save_dir, f'{scaling_type}_aclp' + str(self.prune_percentage), self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices)
 
         return remaining_indices
@@ -218,7 +218,7 @@ class DataPruning:
             remaining_indices.extend(global_indices[class_remaining_indices])
 
         # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, 'loolp', self.dataset_name)
+        self.save_dir = os.path.join(self.save_dir, 'loolp' + str(self.prune_percentage), self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices)
 
         return remaining_indices
