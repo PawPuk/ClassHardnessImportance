@@ -1,6 +1,7 @@
 import csv
 import os
 import time
+import re
 
 import numpy as np
 import torch
@@ -14,7 +15,7 @@ from utils import get_config
 
 class ModelTrainer:
     def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True,
-                 hardness = 'subjective'):
+                 hardness='subjective'):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
@@ -58,6 +59,17 @@ class ModelTrainer:
         os.makedirs(self.save_dir, exist_ok=True)
         os.makedirs(self.timings_dir, exist_ok=True)
 
+    def get_latest_model_index(self):
+        """Find the latest model index from saved files in the save directory."""
+        max_index = -1
+        if os.path.exists(self.save_dir):
+            for filename in os.listdir(self.save_dir):
+                match = re.search(r'model_(\d+)_epoch_200\.pth$', filename)
+                if match:
+                    index = int(match.group(1))
+                    max_index = max(max_index, index)
+        return max_index
+
     @staticmethod
     def set_seed(seed):
         """Set random seed for NumPy and PyTorch for reproducibility."""
@@ -88,9 +100,9 @@ class ModelTrainer:
         avg_loss = running_loss / total
         return avg_loss, accuracy
 
-    def train_model(self, model_id):
+    def train_model(self, model_id, current_model_index):
         """Train a single model."""
-        seed = self.base_seed + model_id * self.seed_step
+        seed = self.base_seed + (model_id + current_model_index) * self.seed_step
         self.set_seed(seed)
 
         model = self.create_model()
@@ -123,25 +135,27 @@ class ModelTrainer:
             # Evaluate the model on the test set
             avg_test_loss, test_accuracy = self.evaluate_model(model, criterion)
 
-            print(f'Model {model_id}, Epoch [{epoch + 1}/{self.num_epochs}] '
+            print(f'Model {model_id + current_model_index}, Epoch [{epoch + 1}/{self.num_epochs}] '
                   f'Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}%, '
                   f'Test Loss: {avg_test_loss:.4f}, Test Acc: {test_accuracy:.2f}%')
 
             # Optionally save the model at a specific epoch
             if self.save_probe_models and epoch + 1 == self.save_epoch:
-                save_path = os.path.join(self.save_dir, f'model_{model_id}_epoch_{self.save_epoch}.pth')
+                save_path = os.path.join(self.save_dir,
+                                         f'model_{model_id + current_model_index}_epoch_{self.save_epoch}.pth')
                 torch.save(model.state_dict(), save_path)
-                print(f'Model {model_id} ({self.dataset_name}, {self.pruning_type} dataset) saved at epoch '
-                      f'{self.save_epoch}')
+                print(f'Model {model_id + current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved '
+                      f'at epoch {self.save_epoch}')
 
             # Step the scheduler at the end of the epoch
             scheduler.step()
 
         # Save model after full training
-        final_save_path = os.path.join(self.save_dir, f'model_{model_id}_epoch_{self.num_epochs}.pth')
+        final_save_path = os.path.join(self.save_dir,
+                                       f'model_{model_id + current_model_index}_epoch_{self.num_epochs}.pth')
         torch.save(model.state_dict(), final_save_path)
-        print(f'Model {model_id} ({self.dataset_name}, {self.pruning_type} dataset) saved after full training at epoch '
-              f'{self.num_epochs}')
+        print(f'Model {model_id + current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved after '
+              f'full training at epoch {self.num_epochs}')
 
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
@@ -154,29 +168,34 @@ class ModelTrainer:
         print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")
         print(f"Number of samples in the test loader: {len(self.test_loader.dataset)}")
 
+        latest_model_index = self.get_latest_model_index()
+
         for model_id in tqdm(range(num_models)):
             start_time = time.time()  # Start time for training the model
 
             # Train the model
-            self.train_model(model_id)
+            self.train_model(model_id, latest_model_index + 1)
 
             # Calculate the time taken for training this model
             training_time = time.time() - start_time
-            timings.append(training_time)
-            print(f'Time taken for Model {model_id}: {training_time:.2f} seconds')
+            timings.append((model_id + latest_model_index + 1, training_time))
+            print(f'Time taken for Model {model_id + latest_model_index + 1}: {training_time:.2f} seconds')
 
         # Calculate mean and standard deviation of the timings
-        mean_time = np.mean(timings)
-        std_time = np.std(timings)
+        timing_values = [timing[1] for timing in timings]
+        mean_time = np.mean(timing_values)
+        std_time = np.std(timing_values)
 
         # Save the timings to a CSV file
         timings_file_path = os.path.join(self.timings_dir, 'ensemble_timings.csv')
-        with open(timings_file_path, 'w', newline='') as csvfile:
+        file_exists = os.path.exists(timings_file_path)
+        with open(timings_file_path, 'a', newline='') as csvfile:
             csvwriter = csv.writer(csvfile)
             # Write the header
-            csvwriter.writerow(['Model ID', 'Training Time (seconds)'])
+            if not file_exists:
+                csvwriter.writerow(['Model ID', 'Training Time (seconds)'])
             # Write the timings for each model
-            for model_id, timing in enumerate(timings):
+            for model_id, timing in timings:
                 csvwriter.writerow([model_id, f'{timing:.2f}'])
             # Write the average and standard deviation
             csvwriter.writerow(['Average', f'{mean_time:.2f}'])
