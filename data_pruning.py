@@ -218,7 +218,7 @@ class DataPruning:
             remaining_indices.extend(global_indices[class_remaining_indices])
 
         # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, 'loolp' + str(self.prune_percentage), self.dataset_name)
+        self.save_dir = os.path.join(self.save_dir, 'loop' + str(self.prune_percentage), self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices)
 
         return remaining_indices
