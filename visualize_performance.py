@@ -24,23 +24,28 @@ def load_models(pruning_strategy: str, dataset_name: str) -> Dict[int, List[dict
 
     # Walk through each folder in the Models directory
     for root, dirs, files in os.walk(models_dir):
-        print('-'*20)
-        print(root)
-        print(pruning_strategy, dataset_name)
-        print(f"{pruning_strategy}" in root)
-        print(f"{dataset_name}" in root)
         # Check if the path matches the specified pruning strategy and dataset name
         if f"{pruning_strategy}" in root and f"{dataset_name}" in root:
             pruning_rate = int(root.split(pruning_strategy)[1].split("/")[0])
             models_by_rate.setdefault(pruning_rate, [])
             for file in files:
-                print(file)
                 if file.endswith(".pth") and "_epoch_200" in file:
                     model_path = os.path.join(root, file)
                     model_state = torch.load(model_path)
                     models_by_rate[pruning_rate].append(model_state)
                     print(f"Loaded model for pruning rate {pruning_rate}: {model_path}")
-        print('-'*20)
+
+    # Load models trained on the full dataset (no pruning)
+    full_dataset_dir = os.path.join(models_dir, "none", dataset_name)
+    if os.path.exists(full_dataset_dir):
+        models_by_rate[0] = []  # Use `0` to represent models without pruning
+        for file in os.listdir(full_dataset_dir):
+            if file.endswith(".pth") and "_epoch_200" in file:
+                model_path = os.path.join(full_dataset_dir, file)
+                model_state = torch.load(model_path)
+                models_by_rate[0].append(model_state)
+                print(f"Loaded model for full dataset (no pruning): {model_path}")
+
 
     print(f"Models loaded by pruning rate for {pruning_strategy} on {dataset_name}")
     return models_by_rate
