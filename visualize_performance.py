@@ -139,6 +139,60 @@ def evaluate_ensemble(ensemble: List[dict], test_loader) -> List[float]:
     return [dataset_accuracy] + class_accuracies
 
 
+def evaluate_individual_models(ensemble: List[dict], test_loader) -> List[float]:
+    """
+    Evaluate each model individually in the ensemble and return the average accuracy.
+
+    :param ensemble: List of model state dictionaries (one per model in the ensemble).
+    :param test_loader: DataLoader for the CIFAR-10 test set.
+    :return: List of 11 accuracies - one for the entire dataset and ten for each class, averaged across all models.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Initialize accuracy accumulators
+    dataset_accuracies, class_accuracies = [], []
+
+    for model_state in ensemble:
+        model = ResNet18LowRes(10)
+        model.load_state_dict(model_state)
+        model = model.to(device)
+        model.eval()
+
+        # Initialize counters
+        dataset_correct = 0
+        class_correct = torch.zeros(10)
+        class_counts = torch.zeros(10)
+
+        with torch.no_grad():
+            for images, labels in test_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                _, predicted = outputs.max(1)
+
+                # Dataset-level accuracy
+                dataset_correct += (predicted == labels).sum().item()
+
+                # Class-level accuracy
+                for class_id in range(10):
+                    class_mask = (labels == class_id)
+                    class_correct[class_id] += (predicted[class_mask] == class_id).sum().item()
+                    class_counts[class_id] += class_mask.sum().item()
+
+        # Compute accuracy for this model
+        dataset_accuracy = 100.0 * dataset_correct / len(test_loader.dataset)
+        per_class_accuracies = [100.0 * class_correct[i] / class_counts[i] for i in range(10)]
+
+        # Append to accuracy lists
+        dataset_accuracies.append(dataset_accuracy)
+        class_accuracies.append(per_class_accuracies)
+
+    # Average dataset accuracy and per-class accuracies across all models
+    avg_dataset_accuracy = sum(dataset_accuracies) / len(dataset_accuracies)
+    avg_class_accuracies = [sum(acc[i] for acc in class_accuracies) / len(class_accuracies) for i in range(10)]
+
+    return [avg_dataset_accuracy] + avg_class_accuracies
+
+
 def evaluate_all_ensembles(models_by_rate: Dict[int, List[dict]], test_loader) -> Dict[int, List[float]]:
     """
     Evaluate all ensembles and return accuracies per pruning rate.
@@ -156,7 +210,24 @@ def evaluate_all_ensembles(models_by_rate: Dict[int, List[dict]], test_loader) -
     return ensemble_accuracies
 
 
-def plot_accuracies(ensemble_accuracies: Dict[int, List[float]]):
+def evaluate_all_models_individually(models_by_rate: Dict[int, List[dict]], test_loader) -> Dict[int, List[float]]:
+    """
+    Evaluate individual model performance across pruning rates.
+
+    :param models_by_rate: Dictionary where keys are pruning rates and values are lists of model state dicts.
+    :param test_loader: DataLoader for the CIFAR-10 test set.
+    :return: Dictionary with pruning rates as keys and list of 11 accuracy values as values.
+    """
+    individual_model_accuracies = {}
+
+    for pruning_rate, ensemble in models_by_rate.items():
+        print(f"Evaluating individual models for pruning rate {pruning_rate}%...")
+        individual_model_accuracies[pruning_rate] = evaluate_individual_models(ensemble, test_loader)
+
+    return individual_model_accuracies
+
+
+def plot_ensemble_accuracies(ensemble_accuracies: Dict[int, List[float]]):
     """
     Plot class-level and dataset-level accuracies across pruning rates.
 
@@ -195,11 +266,49 @@ def plot_accuracies(ensemble_accuracies: Dict[int, List[float]]):
     plt.savefig('Figure.pdf')
 
 
+def plot_individual_model_accuracies(individual_model_accuracies: Dict[int, List[float]]):
+    """
+    Plot class-level and dataset-level accuracies across pruning rates for individual models.
+
+    :param individual_model_accuracies: Dictionary with pruning rates as keys and list of 11 accuracy values as values.
+                                        The first value in each list is the dataset-level accuracy, and the rest are
+                                        class-level accuracies.
+    """
+    pruning_rates = sorted(individual_model_accuracies.keys())
+
+    dataset_accuracies = [individual_model_accuracies[rate][0] for rate in pruning_rates]
+    class_accuracies = [[individual_model_accuracies[rate][i + 1] for rate in pruning_rates] for i in range(10)]
+
+    fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
+    fig.suptitle('Individual Model Class-Level and Dataset-Level Accuracy Across Pruning Rates', fontsize=16)
+
+    axes = axes.flatten()
+
+    for class_id in range(10):
+        ax = axes[class_id]
+        ax.plot(pruning_rates, class_accuracies[class_id], label=f'Class {class_id} Accuracy', marker='o')
+        ax.plot(pruning_rates, dataset_accuracies, label='Dataset Accuracy', linestyle='--', marker='x')
+
+        ax.set_title(f'Class {class_id} Accuracy')
+        ax.set_xlabel('Pruning Rate (%)')
+        ax.set_ylabel('Accuracy (%)')
+        ax.legend()
+        ax.grid(True)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.savefig('Figure1.pdf')
+    plt.close()
+
+
 def main(pruning_strategy, dataset_name):
     models = load_models(pruning_strategy, dataset_name)
     test_loader = load_cifar10_test_set(256)
-    ensemble_accuracies = evaluate_all_ensembles(models, test_loader)
-    plot_accuracies(ensemble_accuracies)
+    # Evaluate ensemble performance
+    ensemble_results = evaluate_all_ensembles(models, test_loader)
+    plot_ensemble_accuracies(ensemble_results)
+    # Evaluate individual models' performance
+    individual_model_results = evaluate_all_models_individually(models, test_loader)
+    plot_individual_model_accuracies(individual_model_results)
 
 
 if __name__ == "__main__":
