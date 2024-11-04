@@ -1,4 +1,5 @@
 import os
+import pickle
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
@@ -30,23 +31,38 @@ class DataPruning:
         self.dataset_name = dataset_name
         self.save_dir = 'Figures/'
 
-    def plot_class_level_sample_distribution(self, remaining_indices: List[int]):
-        """
-        Plot the distribution of remaining samples across different classes after pruning.
+        # Load or initialize class_level_sample_counts
+        try:
+            with open("class_level_sample_counts.pkl", "rb") as file:
+                self.class_level_sample_counts = pickle.load(file)
+        except (FileNotFoundError, EOFError):
+            self.class_level_sample_counts = {}
 
-        :param remaining_indices: List of indices of the remaining data samples after pruning.
-        """
-        # Get the remaining labels using the indices
+    def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str):
         remaining_labels = self.labels[remaining_indices]
 
         # Count the number of remaining samples for each class
         unique_classes, class_counts = np.unique(remaining_labels, return_counts=True)
 
+        # Create dictionary for current pruning type if it doesn't exist
+        if pruning_key not in self.class_level_sample_counts:
+            self.class_level_sample_counts[pruning_key] = {}
+
+        # Store the distribution of samples after pruning
+        self.class_level_sample_counts[pruning_key][int(self.prune_percentage * 100)] = [
+            class_counts[unique_classes.tolist().index(cls)] if cls in unique_classes else 0
+            for cls in range(10)
+        ]
+
+        # Save the updated class_level_sample_counts to a pickle file
+        with open("class_level_sample_counts.pkl", "wb") as file:
+            pickle.dump(self.class_level_sample_counts, file)
+
         # Plot the class distribution
         plt.bar(unique_classes, class_counts)
         plt.xlabel('Class ID')
         plt.ylabel('Number of Remaining Samples')
-        plt.title('Class-level Distribution of Remaining Samples After Pruning')
+        plt.title(f'Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
 
         os.makedirs(self.save_dir, exist_ok=True)
         plt.savefig(os.path.join(self.save_dir, 'class_level_sample_distribution.pdf'))
@@ -67,9 +83,8 @@ class DataPruning:
         # Retain the top 'retain_count' number of the hardest samples
         remaining_indices = sorted_indices[-retain_count:]
 
-        # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, 'dlp' + str(self.prune_percentage), self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices.tolist())
+        self.save_dir = os.path.join(self.save_dir, 'dlp' + str(int(self.prune_percentage * 100)), self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices.tolist(), pruning_key='dlp')
 
         return remaining_indices.tolist()
 
@@ -97,9 +112,8 @@ class DataPruning:
             global_indices = np.where(self.labels == class_id)[0]
             remaining_indices.extend(global_indices[class_remaining_indices])
 
-        # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, 'fclp' + str(self.prune_percentage), self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices)
+        self.save_dir = os.path.join(self.save_dir, 'fclp' + str(int(self.prune_percentage * 100)), self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices, pruning_key='fclp')
 
         return remaining_indices
 
@@ -117,9 +131,8 @@ class DataPruning:
         all_indices = np.arange(total_samples)
         remaining_indices = np.random.choice(all_indices, size=retain_count, replace=False)
 
-        # Plot the class distribution after random pruning
-        self.save_dir = os.path.join(self.save_dir, 'rp' + str(self.prune_percentage), self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices.tolist())
+        self.save_dir = os.path.join(self.save_dir, 'rp' + str(int(self.prune_percentage * 100)), self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices.tolist(), pruning_key='rp')
 
         return remaining_indices.tolist()
 
@@ -174,13 +187,14 @@ class DataPruning:
             global_indices = np.where(self.labels == class_id)[0]
             remaining_indices.extend(global_indices[class_remaining_indices])
 
-        # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, f'{scaling_type}_aclp' + str(self.prune_percentage), self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices)
+        pruning_key = f"{scaling_type}_aclp"
+        self.save_dir = os.path.join(self.save_dir, f'{pruning_key}{int(self.prune_percentage * 100)}',
+                                     self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices, pruning_key=pruning_key)
 
         return remaining_indices
 
-    def live_one_out_pruning(self):
+    def leave_one_out_pruning(self):
         """
         Perform live-out-out pruning, where all classes are pruned equally based on the prune_percentage,
         except for the hardest class, which is not pruned.
@@ -199,15 +213,8 @@ class DataPruning:
         # Iterate over each class in class_hardness
         for class_id, class_scores in self.class_hardness.items():
             class_sample_count = len(class_scores)
-
-            if class_id == hardest_class_id:
-                # Don't prune the hardest class, retain all samples
-                retain_count = class_sample_count
-            else:
-                # Prune according to the prune_percentage for other classes
-                retain_count = int((1 - self.prune_percentage) * class_sample_count)
-
-            # Get the indices that would sort the class-level hardness for this class
+            retain_count = class_sample_count if class_id == hardest_class_id else int(
+                (1 - self.prune_percentage) * class_sample_count)
             sorted_class_indices = np.argsort(class_scores)
 
             # Retain the top 'retain_count' number of the hardest samples from this class
@@ -217,10 +224,7 @@ class DataPruning:
             global_indices = np.where(self.labels == class_id)[0]
             remaining_indices.extend(global_indices[class_remaining_indices])
 
-        # Plot the class distribution after pruning
-        self.save_dir = os.path.join(self.save_dir, 'loop' + str(self.prune_percentage), self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices)
+        self.save_dir = os.path.join(self.save_dir, 'loop' + str(int(self.prune_percentage * 100)), self.dataset_name)
+        self.plot_class_level_sample_distribution(remaining_indices, pruning_key='loop')
 
         return remaining_indices
-
-
