@@ -1,13 +1,15 @@
 import argparse
 import os
+import pickle
 import random
+
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 import torchvision
 import torchvision.transforms as transforms
-import matplotlib.pyplot as plt
 
 from neural_networks import ResNet18LowRes
 from utils import get_config
@@ -21,6 +23,8 @@ class HardnessCalculator:
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = True
 
         self.dataset_name = dataset_name
         config = get_config(dataset_name)
@@ -130,6 +134,8 @@ class HardnessCalculator:
         return class_stats
 
     def plot_class_level_candlestick(self, class_stats):
+        # TODO: add sorted version of this figure
+
         class_ids = list(class_stats.keys())
         q1_values = [class_stats[class_id]["q1"] for class_id in class_ids]
         q3_values = [class_stats[class_id]["q3"] for class_id in class_ids]
@@ -228,7 +234,8 @@ class HardnessCalculator:
 
 
     def save_el2n_scores(self, el2n_scores):
-        np.save(f'{self.dataset_name}_el2n_scores.npy', el2n_scores)
+        with open(f'{self.dataset_name}_el2n_scores.pkl', 'wb') as file:
+            pickle.dump(el2n_scores, file)
 
     def run(self):
         all_el2n_scores = self.collect_el2n_scores()
@@ -251,3 +258,5 @@ if __name__ == "__main__":
 
     calculator = HardnessCalculator(args.dataset_name)
     calculator.run()
+
+# TODO: Currently the code works for objective hardness but not for subjective hardness.

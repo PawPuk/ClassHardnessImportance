@@ -69,6 +69,8 @@ def main(dataset_name):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = True
 
     # Get the dataset transforms based on the dataset_name
     train_transform, test_transform = get_data_transforms(dataset_name)

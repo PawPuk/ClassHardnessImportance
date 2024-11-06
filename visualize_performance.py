@@ -193,58 +193,82 @@ def evaluate_individual_models(ensemble: List[dict], test_loader) -> List[float]
     return [avg_dataset_accuracy] + avg_class_accuracies
 
 
-def evaluate_all_ensembles(models_by_rate: Dict[int, List[dict]], test_loader) -> Dict[int, List[float]]:
+def evaluate_all_ensembles(models_by_rate: Dict[int, List[dict]],
+                           test_loader) -> Dict[int, List[List[float]]]:
     """
-    Evaluate all ensembles and return accuracies per pruning rate.
+    Evaluate all ensembles incrementally for stability analysis.
 
-    :param models_by_rate: Dictionary where keys are pruning rates and values are lists of model state dicts.
+    :param models_by_rate: Dictionary where keys are pruning rates and values are lists of model state dictionaries.
     :param test_loader: DataLoader for the CIFAR-10 test set.
-    :return: Dictionary with pruning rates as keys and list of 11 accuracy values as values.
+    :return: Dictionary with pruning rates as keys and a list of accuracy dictionaries, each representing the accuracy for incremental ensemble sizes.
     """
-    ensemble_accuracies = {}
+    incremental_ensemble_accuracies = {}
 
     for pruning_rate, ensemble in models_by_rate.items():
-        print(f"Evaluating ensemble for pruning rate {pruning_rate}%...")
-        ensemble_accuracies[pruning_rate] = evaluate_ensemble(ensemble, test_loader)
+        print(f"Evaluating ensemble for pruning rate {pruning_rate}% with incremental model sizes...")
 
-    return ensemble_accuracies
+        # To store results for each incremental ensemble size
+        incremental_accuracies = []
+
+        # Evaluate accuracy for ensemble sizes from 1 to the full size of the ensemble (20 in your case)
+        for num_models in range(1, len(ensemble) + 1):
+            accuracy_for_current_size = evaluate_ensemble(ensemble[:num_models], test_loader)
+            incremental_accuracies.append(accuracy_for_current_size)
+
+        # Store the incremental results for this pruning rate
+        incremental_ensemble_accuracies[pruning_rate] = incremental_accuracies
+
+    return incremental_ensemble_accuracies
 
 
-def evaluate_all_models_individually(models_by_rate: Dict[int, List[dict]], test_loader) -> Dict[int, List[float]]:
+def evaluate_all_models_individually(models_by_rate: Dict[int, List[dict]],
+                                     test_loader) -> Dict[int, List[List[float]]]:
     """
-    Evaluate individual model performance across pruning rates.
+    Evaluate individual models incrementally across pruning rates.
 
-    :param models_by_rate: Dictionary where keys are pruning rates and values are lists of model state dicts.
+    :param models_by_rate: Dictionary where keys are pruning rates and values are lists of model state dictionaries.
     :param test_loader: DataLoader for the CIFAR-10 test set.
-    :return: Dictionary with pruning rates as keys and list of 11 accuracy values as values.
+    :return: Dictionary with pruning rates as keys and a list of accuracy dictionaries, each representing the accuracy for incremental model counts.
     """
-    individual_model_accuracies = {}
+    incremental_individual_accuracies = {}
 
     for pruning_rate, ensemble in models_by_rate.items():
-        print(f"Evaluating individual models for pruning rate {pruning_rate}%...")
-        individual_model_accuracies[pruning_rate] = evaluate_individual_models(ensemble, test_loader)
+        print(f"Evaluating individual models for pruning rate {pruning_rate}% with incremental model sizes...")
 
-    return individual_model_accuracies
+        # To store results for each incremental ensemble size
+        incremental_accuracies = []
+
+        # Evaluate accuracy for model counts from 1 to the full size of the ensemble
+        for num_models in range(1, len(ensemble) + 1):
+            accuracy_for_current_size = evaluate_individual_models(ensemble[:num_models], test_loader)
+            incremental_accuracies.append(accuracy_for_current_size)
+
+        # Store the incremental results for this pruning rate
+        incremental_individual_accuracies[pruning_rate] = incremental_accuracies
+
+    return incremental_individual_accuracies
 
 
-def plot_ensemble_accuracies(ensemble_accuracies: Dict[int, List[float]]):
+def plot_ensemble_accuracies(incremental_ensemble_accuracies: Dict[int, List[List[float]]]):
     """
-    Plot class-level and dataset-level accuracies across pruning rates.
+    Plot class-level and dataset-level accuracies across pruning rates for the full ensemble size.
 
-    :param ensemble_accuracies: Dictionary with pruning rates as keys and list of 11 accuracy values as values.
-                                The first value in each list is the dataset-level accuracy, and the rest are
-                                class-level accuracies.
+    :param incremental_ensemble_accuracies: Dictionary with pruning rates as keys and lists of accuracy dictionaries,
+                                            where each dictionary contains the accuracies for incremental ensemble sizes.
     """
     # Sort the pruning rates for consistent plotting
-    pruning_rates = sorted(ensemble_accuracies.keys())
+    pruning_rates = sorted(incremental_ensemble_accuracies.keys())
 
-    # Extract dataset and class accuracies across all pruning rates
-    dataset_accuracies = [ensemble_accuracies[rate][0] for rate in pruning_rates]
-    class_accuracies = [[ensemble_accuracies[rate][i + 1] for rate in pruning_rates] for i in range(10)]
+    # Extract the dataset and class accuracies for the full ensemble (last element in each list)
+    dataset_accuracies = [incremental_ensemble_accuracies[rate][-1][0] for rate in pruning_rates]
+    class_accuracies = [
+        [incremental_ensemble_accuracies[rate][-1][i + 1] for rate in pruning_rates]
+        for i in range(10)
+    ]
 
     # Create a figure with 10 subplots for each class
     fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
-    fig.suptitle('Class-Level and Dataset-Level Accuracy Across Pruning Rates', fontsize=16)
+    fig.suptitle('Class-Level and Dataset-Level Accuracy Across Pruning Rates for Full Ensemble', fontsize=16)
 
     # Flatten axes for easy iteration
     axes = axes.flatten()
@@ -263,24 +287,29 @@ def plot_ensemble_accuracies(ensemble_accuracies: Dict[int, List[float]]):
         ax.grid(True)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit title
-    plt.savefig('Figure.pdf')
+    plt.savefig('Figure_Full_Ensemble.pdf')
+    plt.close()
 
 
-def plot_individual_model_accuracies(individual_model_accuracies: Dict[int, List[float]]):
+
+def plot_individual_model_accuracies(incremental_individual_accuracies: Dict[int, List[List[float]]]):
     """
-    Plot class-level and dataset-level accuracies across pruning rates for individual models.
+    Plot class-level and dataset-level accuracies across pruning rates for individual models with the full ensemble size.
 
-    :param individual_model_accuracies: Dictionary with pruning rates as keys and list of 11 accuracy values as values.
-                                        The first value in each list is the dataset-level accuracy, and the rest are
-                                        class-level accuracies.
+    :param incremental_individual_accuracies: Dictionary with pruning rates as keys and lists of accuracy dictionaries,
+                                              where each dictionary contains the accuracies for incremental model counts.
     """
-    pruning_rates = sorted(individual_model_accuracies.keys())
+    pruning_rates = sorted(incremental_individual_accuracies.keys())
 
-    dataset_accuracies = [individual_model_accuracies[rate][0] for rate in pruning_rates]
-    class_accuracies = [[individual_model_accuracies[rate][i + 1] for rate in pruning_rates] for i in range(10)]
+    # Extract dataset and class accuracies for the full model count (last element in each list)
+    dataset_accuracies = [incremental_individual_accuracies[rate][-1][0] for rate in pruning_rates]
+    class_accuracies = [
+        [incremental_individual_accuracies[rate][-1][i + 1] for rate in pruning_rates]
+        for i in range(10)
+    ]
 
     fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
-    fig.suptitle('Individual Model Class-Level and Dataset-Level Accuracy Across Pruning Rates', fontsize=16)
+    fig.suptitle('Individual Model Class-Level and Dataset-Level Accuracy Across Pruning Rates for Full Model Count', fontsize=16)
 
     axes = axes.flatten()
 
@@ -296,7 +325,78 @@ def plot_individual_model_accuracies(individual_model_accuracies: Dict[int, List
         ax.grid(True)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.savefig('Figure1.pdf')
+    plt.savefig('Figure_Full_Individual_Models.pdf')
+    plt.close()
+
+
+def measure_total_ensemble_variability(incremental_results: Dict[int, List[List[float]]]) -> List[List[float]]:
+    """
+    Measure the total variability of each accuracy metric across incremental ensemble sizes.
+
+    :param incremental_results: Dictionary with pruning rates as keys and lists of accuracy lists.
+                                Each list contains accuracy results for incremental ensemble sizes.
+    :return: List of lists, where each inner list corresponds to the total variability for each accuracy metric
+             at each ensemble size across all pruning rates.
+    """
+    # Determine the maximum number of ensemble sizes from the incremental results
+    max_ensemble_size = max(len(v) for v in incremental_results.values())
+    num_metrics = len(next(iter(incremental_results.values()))[0])  # Get number of accuracy metrics
+
+    # Initialize total variability as a list of lists with zeros
+    total_variability = [[0.0 for _ in range(num_metrics)] for _ in range(max_ensemble_size - 1)]
+
+    for pruning_rate, results in incremental_results.items():
+        print(f"Calculating variability for pruning rate {pruning_rate}%...")
+
+        # Iterate over ensemble sizes, comparing accuracies for sizes i and i+1
+        for i in range(len(results) - 1):
+            current_results = results[i]
+            next_results = results[i + 1]
+
+            # Calculate variability for each accuracy metric
+            accuracy_changes = [abs(next_results[j] - current_results[j]) for j in range(num_metrics)]
+
+            # Add this pruning rate's variability to the total variability for this ensemble size
+            for j in range(num_metrics):
+                total_variability[i][j] += accuracy_changes[j]
+
+    return total_variability
+
+
+def plot_total_variability(total_variability: List[List[float]]):
+    """
+    Plot the total variability across ensemble sizes for each class and the dataset-level.
+
+    :param total_variability: List of lists where each inner list contains the variability for each accuracy metric
+                              (dataset-level and 10 class-level) at each ensemble size.
+    """
+    ensemble_sizes = range(1, len(total_variability) + 1)  # Ensemble sizes start from 1 to the max size
+
+    # Create a figure with 10 subplots for each class
+    fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
+    fig.suptitle('Total Variability Across Ensemble Sizes', fontsize=16)
+
+    # Flatten axes for easy iteration
+    axes = axes.flatten()
+
+    # Plot class-level and dataset-level variability for each class
+    for class_id in range(10):
+        ax = axes[class_id]
+        class_variability = [variability[class_id + 1] for variability in total_variability]  # Class-level variability
+        dataset_variability = [variability[0] for variability in total_variability]  # Dataset-level variability
+
+        ax.plot(ensemble_sizes, class_variability, label=f'Class {class_id} Variability', marker='o')
+        ax.plot(ensemble_sizes, dataset_variability, label='Dataset Variability', linestyle='--', marker='x')
+
+        # Customize each subplot
+        ax.set_title(f'Class {class_id} Variability')
+        ax.set_xlabel('Ensemble Size')
+        ax.set_ylabel('Variability')
+        ax.legend()
+        ax.grid(True)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit title
+    plt.savefig('Total_Variability.pdf')
     plt.close()
 
 
@@ -304,11 +404,15 @@ def main(pruning_strategy, dataset_name):
     models = load_models(pruning_strategy, dataset_name)
     test_loader = load_cifar10_test_set(256)
     # Evaluate ensemble performance
-    ensemble_results = evaluate_all_ensembles(models, test_loader)
-    plot_ensemble_accuracies(ensemble_results)
+    incremental_ensemble_results = evaluate_all_ensembles(models, test_loader)
+    plot_ensemble_accuracies(incremental_ensemble_results)
+    variabilities = measure_total_ensemble_variability(incremental_ensemble_results)
+    plot_total_variability(variabilities)
     # Evaluate individual models' performance
-    individual_model_results = evaluate_all_models_individually(models, test_loader)
-    plot_individual_model_accuracies(individual_model_results)
+    incremental_individual_results = evaluate_all_models_individually(models, test_loader)
+    plot_individual_model_accuracies(incremental_individual_results)
+    variabilities = measure_total_ensemble_variability(incremental_individual_results)
+    plot_total_variability(variabilities)
 
 
 if __name__ == "__main__":

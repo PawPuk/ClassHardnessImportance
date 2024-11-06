@@ -58,14 +58,29 @@ class DataPruning:
         with open("class_level_sample_counts.pkl", "wb") as file:
             pickle.dump(self.class_level_sample_counts, file)
 
-        # Plot the class distribution
+        # Plot the original class distribution
+        plt.figure()
         plt.bar(unique_classes, class_counts)
         plt.xlabel('Class ID')
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
-
         os.makedirs(self.save_dir, exist_ok=True)
         plt.savefig(os.path.join(self.save_dir, 'class_level_sample_distribution.pdf'))
+        plt.close()
+
+        # Sort classes by class_counts for imbalance visualization
+        sorted_indices = np.argsort(class_counts)
+        sorted_classes = unique_classes[sorted_indices]
+        sorted_counts = class_counts[sorted_indices]
+
+        # Plot sorted class distribution to highlight data imbalance
+        plt.figure()
+        plt.bar(sorted_classes, sorted_counts)
+        plt.xlabel('Class ID (Sorted by Remaining Samples)')
+        plt.ylabel('Number of Remaining Samples')
+        plt.title(f'Sorted Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
+        plt.savefig(os.path.join(self.save_dir, 'sorted_class_level_sample_distribution.pdf'))
+        plt.close()
 
     def dataset_level_pruning(self):
         """
@@ -136,13 +151,14 @@ class DataPruning:
 
         return remaining_indices.tolist()
 
-    def adaptive_class_level_pruning(self, scaling_type="linear"):
+    def adaptive_class_level_pruning(self, scaling_type="linear", alpha=3):
         """
         Perform adaptive class-level pruning based on the average hardness of each class.
         Harder classes will lose fewer samples, while easier classes will lose more.
-        Scaling type can be 'linear', 'exponential', or 'logarithmic'.
+        Scaling type can be 'linear', 'exponential', or 'inverted_exponential'.
 
-        :param scaling_type: Type of scaling ('linear', 'exponential', 'logarithmic'). Default is 'linear'.
+        :param scaling_type: Type of scaling ('linear', 'exponential', or 'inverted_exponential').
+        :param alpha: Parameter for exponential scaling to control fairness.
         :return: List of indices of the remaining data samples after adaptive class-level pruning.
         """
         remaining_indices, epsilon = [], 1e-6
@@ -154,26 +170,32 @@ class DataPruning:
         # Get the min and max class hardness values
         max_hardness, min_hardness = max(class_mean_hardness.values()), min(class_mean_hardness.values())
 
+        # Normalize hardness values to range from 0 to 1
+        hardness_range = max_hardness - min_hardness
+        if hardness_range == 0:
+            hardness_range = epsilon  # Avoid division by zero
+        normalized_class_mean_hardness = {
+            class_id: (mean_hardness - min_hardness) / hardness_range
+            for class_id, mean_hardness in class_mean_hardness.items()
+        }
+
         # Iterate over each class in class_hardness
         for class_id, class_scores in self.class_hardness.items():
             class_sample_count = len(class_scores)
-            mean_hardness = class_mean_hardness[class_id]
+            normalized_mean_hardness = normalized_class_mean_hardness[class_id]
 
-            # Scale pruning rate based on class hardness (hardest class keeps all, easiest prunes at prune_percentage)
-            if max_hardness != min_hardness:
-                # Calculate scaling factor based on chosen scaling type
-                if scaling_type == "linear":
-                    scaling_factor = (mean_hardness - min_hardness) / (max_hardness - min_hardness)
-                elif scaling_type == "exponential":
-                    scaling_factor = np.exp(mean_hardness - min_hardness) / np.exp(max_hardness - min_hardness)
-                elif scaling_type == "logarithmic":
-                    scaling_factor = np.log(mean_hardness - min_hardness + epsilon) / np.log(
-                        max_hardness - min_hardness + epsilon)
-                else:
-                    raise ValueError("Unsupported scaling type. Choose 'linear', 'exponential', or 'logarithmic'.")
+            # Calculate scaling factor based on chosen scaling type
+            if scaling_type == "linear":
+                scaling_factor = normalized_mean_hardness
+            elif scaling_type == "exponential":
+                scaling_factor = (np.exp(alpha * normalized_mean_hardness) - 1) / (np.exp(alpha) - 1)
+            elif scaling_type == "inverted_exponential":
+                scaling_factor = (1 - np.exp(-alpha * normalized_mean_hardness)) / (1 - np.exp(-alpha))
             else:
-                scaling_factor = 1  # If all classes have the same hardness, treat all equally (no scaling)
+                raise ValueError(
+                    "Unsupported scaling type. Choose 'linear', 'exponential', or 'inverted_exponential'.")
 
+            # Calculate class pruning percentage
             class_prune_percentage = self.prune_percentage * (1 - scaling_factor)
             retain_count = int((1 - class_prune_percentage) * class_sample_count)
 

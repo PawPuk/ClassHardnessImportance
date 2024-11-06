@@ -15,7 +15,7 @@ from utils import get_config
 
 class ModelTrainer:
     def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True,
-                 hardness='subjective'):
+                 hardness='objective'):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
