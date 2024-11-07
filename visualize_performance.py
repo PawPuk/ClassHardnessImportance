@@ -1,5 +1,6 @@
 import argparse
 import os
+import pickle
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
@@ -7,6 +8,7 @@ import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from neural_networks import ResNet18LowRes
 
@@ -22,18 +24,19 @@ def load_models(pruning_strategy: str, dataset_name: str) -> Dict[int, List[dict
     models_dir = "Models"
     models_by_rate = {}
 
-    # Walk through each folder in the Models directory
-    for root, dirs, files in os.walk(models_dir):
-        # Check if the path matches the specified pruning strategy and dataset name
-        if f"{pruning_strategy}" in root and f"{dataset_name}" in root:
-            pruning_rate = int(root.split(pruning_strategy)[1].split("/")[0])
-            models_by_rate.setdefault(pruning_rate, [])
-            for file in files:
-                if file.endswith(".pth") and "_epoch_200" in file:
-                    model_path = os.path.join(root, file)
-                    model_state = torch.load(model_path)
-                    models_by_rate[pruning_rate].append(model_state)
-                    print(f"Loaded model for pruning rate {pruning_rate}: {model_path}")
+    if pruning_strategy != 'none':
+        # Walk through each folder in the Models directory
+        for root, dirs, files in os.walk(models_dir):
+            # Check if the path matches the specified pruning strategy and dataset name
+            if f"{pruning_strategy}" in root and f"{dataset_name}" in root:
+                pruning_rate = int(root.split(pruning_strategy)[1].split("/")[0])
+                models_by_rate.setdefault(pruning_rate, [])
+                for file in files:
+                    if file.endswith(".pth") and "_epoch_200" in file:
+                        model_path = os.path.join(root, file)
+                        model_state = torch.load(model_path)
+                        models_by_rate[pruning_rate].append(model_state)
+                        print(f"Loaded model for pruning rate {pruning_rate}: {model_path}")
 
     # Load models trained on the full dataset (no pruning)
     full_dataset_dir = os.path.join(models_dir, "none", dataset_name)
@@ -45,7 +48,6 @@ def load_models(pruning_strategy: str, dataset_name: str) -> Dict[int, List[dict
                 model_state = torch.load(model_path)
                 models_by_rate[0].append(model_state)
                 print(f"Loaded model for full dataset (no pruning): {model_path}")
-
 
     print(f"Models loaded by pruning rate for {pruning_strategy} on {dataset_name}")
     return models_by_rate
@@ -204,7 +206,7 @@ def evaluate_all_ensembles(models_by_rate: Dict[int, List[dict]],
     """
     incremental_ensemble_accuracies = {}
 
-    for pruning_rate, ensemble in models_by_rate.items():
+    for pruning_rate, ensemble in tqdm(models_by_rate.items(), desc='Iterating over pruning rates.'):
         print(f"Evaluating ensemble for pruning rate {pruning_rate}% with incremental model sizes...")
 
         # To store results for each incremental ensemble size
@@ -232,7 +234,7 @@ def evaluate_all_models_individually(models_by_rate: Dict[int, List[dict]],
     """
     incremental_individual_accuracies = {}
 
-    for pruning_rate, ensemble in models_by_rate.items():
+    for pruning_rate, ensemble in tqdm(models_by_rate.items(), desc='Iterating over pruning rates.'):
         print(f"Evaluating individual models for pruning rate {pruning_rate}% with incremental model sizes...")
 
         # To store results for each incremental ensemble size
@@ -402,17 +404,22 @@ def plot_total_variability(total_variability: List[List[float]]):
 
 def main(pruning_strategy, dataset_name):
     models = load_models(pruning_strategy, dataset_name)
-    test_loader = load_cifar10_test_set(256)
+    test_loader = load_cifar10_test_set(1024)
     # Evaluate ensemble performance
     incremental_ensemble_results = evaluate_all_ensembles(models, test_loader)
     plot_ensemble_accuracies(incremental_ensemble_results)
     variabilities = measure_total_ensemble_variability(incremental_ensemble_results)
     plot_total_variability(variabilities)
+    with open("incremental_ensemble_results.pkl", "wb") as file:
+        pickle.dump(incremental_ensemble_results, file)
+
     # Evaluate individual models' performance
     incremental_individual_results = evaluate_all_models_individually(models, test_loader)
     plot_individual_model_accuracies(incremental_individual_results)
     variabilities = measure_total_ensemble_variability(incremental_individual_results)
     plot_total_variability(variabilities)
+    with open("incremental_individual_results.pkl", "wb") as file:
+        pickle.dump(incremental_individual_results, file)
 
 
 if __name__ == "__main__":

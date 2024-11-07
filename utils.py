@@ -55,7 +55,7 @@ def get_config(dataset_name):
     if dataset_name in dataset_configs:
         config = dataset_configs[dataset_name]
         config['probe_base_seed'] = 42
-        config['probe_seed_step'] = 1
+        config['probe_seed_step'] = 42
         config['new_base_seed'] = 4242
         config['new_seed_step'] = 42
         return config

@@ -61,9 +61,9 @@ class DataPruning:
         # Plot the original class distribution
         plt.figure()
         plt.bar(unique_classes, class_counts)
-        plt.xlabel('Class ID')
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
+        plt.xticks([])
         os.makedirs(self.save_dir, exist_ok=True)
         plt.savefig(os.path.join(self.save_dir, 'class_level_sample_distribution.pdf'))
         plt.close()
@@ -75,10 +75,10 @@ class DataPruning:
 
         # Plot sorted class distribution to highlight data imbalance
         plt.figure()
-        plt.bar(sorted_classes, sorted_counts)
-        plt.xlabel('Class ID (Sorted by Remaining Samples)')
+        plt.bar(range(len(sorted_classes)), sorted_counts)
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Sorted Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
+        plt.xticks([])
         plt.savefig(os.path.join(self.save_dir, 'sorted_class_level_sample_distribution.pdf'))
         plt.close()
 
