@@ -12,7 +12,8 @@ dataset_configs = {
         'num_models': 10,
         'num_classes': 10,
         'mean': (0.4914, 0.4822, 0.4465),
-        'std': (0.2023, 0.1994, 0.2010)
+        'std': (0.2023, 0.1994, 0.2010),
+        'num_training_samples': 50000
     },
     'CIFAR100': {
         'batch_size': 128,
@@ -27,7 +28,8 @@ dataset_configs = {
         'num_models': 10,
         'num_classes': 100,
         'mean': (0.5071, 0.4867, 0.4408),
-        'std': (0.2675, 0.2565, 0.2761)
+        'std': (0.2675, 0.2565, 0.2761),
+        'num_training_samples': 50000
     }
 }
 

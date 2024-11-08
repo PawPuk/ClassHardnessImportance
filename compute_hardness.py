@@ -35,7 +35,9 @@ class HardnessCalculator:
 
         self.training_loader, _, self.training_set_size = self.load_dataset(self.dataset_name)
         self.figure_save_dir = os.path.join('Figures/', self.dataset_name)
+        self.results_save_dir = os.path.join('Results/', self.dataset_name)
         os.makedirs(self.figure_save_dir, exist_ok=True)
+        os.makedirs(self.results_save_dir, exist_ok=True)
 
     def load_dataset(self, dataset_name):
         if dataset_name == 'CIFAR10':
@@ -94,6 +96,7 @@ class HardnessCalculator:
 
     def collect_el2n_scores(self):
         all_el2n_scores = [[] for _ in range(self.training_set_size)]
+        # TODO: Modify in the future to use all the available probe networks (or make it a parameter)
         for model_id in range(10):
             el2n_scores = self.load_model_and_compute_el2n(model_id)
             if el2n_scores:
@@ -134,8 +137,7 @@ class HardnessCalculator:
         return class_stats
 
     def plot_class_level_candlestick(self, class_stats):
-        # TODO: add sorted version of this figure
-
+        # Unsorted Plot
         class_ids = list(class_stats.keys())
         q1_values = [class_stats[class_id]["q1"] for class_id in class_ids]
         q3_values = [class_stats[class_id]["q3"] for class_id in class_ids]
@@ -147,14 +149,32 @@ class HardnessCalculator:
             ax.plot([i, i], [min_values[i], max_values[i]], color='black')
             ax.plot([i, i], [q1_values[i], q3_values[i]], color='blue', lw=6)
 
-        ax.set_xticks(range(self.NUM_CLASSES))
-        ax.set_xticklabels([f'Class {i}' for i in range(self.NUM_CLASSES)])
-        ax.set_xlabel("Classes")
+        ax.set_xticks([])
         ax.set_ylabel("EL2N Score (L2 Norm)")
         ax.set_title("Class-Level EL2N Scores Candlestick Plot")
 
-        file_name = os.path.join(self.figure_save_dir, f'hardness_distribution.pdf')
-        plt.savefig(file_name)
+        unsorted_file_name = os.path.join(self.figure_save_dir, 'hardness_distribution.pdf')
+        plt.savefig(unsorted_file_name)
+        plt.close()
+
+        # Sorted Plot by Q1 for more monotonic appearance
+        sorted_class_ids = sorted(class_ids, key=lambda cid: class_stats[cid]["q1"])
+        sorted_q1_values = [class_stats[class_id]["q1"] for class_id in sorted_class_ids]
+        sorted_q3_values = [class_stats[class_id]["q3"] for class_id in sorted_class_ids]
+        sorted_min_values = [class_stats[class_id]["min"] for class_id in sorted_class_ids]
+        sorted_max_values = [class_stats[class_id]["max"] for class_id in sorted_class_ids]
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for i in range(self.NUM_CLASSES):
+            ax.plot([i, i], [sorted_min_values[i], sorted_max_values[i]], color='black')
+            ax.plot([i, i], [sorted_q1_values[i], sorted_q3_values[i]], color='blue', lw=6)
+
+        ax.set_xticks([])
+        ax.set_ylabel("EL2N Score (L2 Norm)")
+        ax.set_title("Sorted Class-Level EL2N Scores Candlestick Plot")
+
+        sorted_file_name = os.path.join(self.figure_save_dir, 'hardness_distribution_sorted.pdf')
+        plt.savefig(sorted_file_name)
         plt.close()
 
     def plot_dataset_level_distribution(self, all_el2n_scores):
@@ -173,7 +193,9 @@ class HardnessCalculator:
         plt.xlabel("Data Sample Index (Sorted)")
         plt.ylabel("Average EL2N Score")
         plt.title("Dataset-Level Hardness Distribution (Without Std)")
-        plt.savefig(os.path.join("Figures", self.dataset_name, "dataset_level_hardness_distribution_no_std.pdf"))
+
+        file_name = os.path.join(self.figure_save_dir, f'dataset_level_hardness_distribution_no_std.pdf')
+        plt.savefig(file_name)
         plt.close()
 
         # Plot with standard deviation using fill_between
@@ -189,7 +211,9 @@ class HardnessCalculator:
         plt.xlabel("Data Sample Index (Sorted)")
         plt.ylabel("Average EL2N Score")
         plt.title("Dataset-Level Hardness Distribution (With Std)")
-        plt.savefig(os.path.join("Figures", self.dataset_name, "dataset_level_hardness_distribution_with_std.pdf"))
+
+        file_name = os.path.join(self.figure_save_dir, f'dataset_level_hardness_distribution_with_std.pdf')
+        plt.savefig(file_name)
         plt.close()
 
     def plot_class_level_distribution(self, class_el2n_scores):
@@ -205,7 +229,9 @@ class HardnessCalculator:
         ax.set_xlabel("Data Sample Index (Sorted)")
         ax.set_ylabel("Average EL2N Score")
         ax.set_title("Class-Level Hardness Distribution (Without Std)")
-        plt.savefig(os.path.join("Figures", self.dataset_name, "class_level_hardness_distribution_no_std.pdf"))
+
+        file_name = os.path.join(self.figure_save_dir, f'class_level_hardness_distribution_no_std.pdf')
+        plt.savefig(file_name)
         plt.close()
 
         # Plot with standard deviation using fill_between
@@ -229,12 +255,14 @@ class HardnessCalculator:
         ax.set_xlabel("Data Sample Index (Sorted)")
         ax.set_ylabel("Average EL2N Score")
         ax.set_title("Class-Level Hardness Distribution (With Std)")
-        plt.savefig(os.path.join("Figures", self.dataset_name, "class_level_hardness_distribution_with_std.pdf"))
+
+        file_name = os.path.join(self.figure_save_dir, f'class_level_hardness_distribution_with_std.pdf')
+        plt.savefig(file_name)
         plt.close()
 
 
     def save_el2n_scores(self, el2n_scores):
-        with open(f'{self.dataset_name}_el2n_scores.pkl', 'wb') as file:
+        with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
             pickle.dump(el2n_scores, file)
 
     def run(self):

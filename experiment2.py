@@ -1,4 +1,5 @@
 import argparse
+import os
 import pickle
 import random
 
@@ -28,6 +29,7 @@ class Experiment2:
         self.pruning_strategy = pruning_strategy
         self.pruning_rate = pruning_rate
         self.scaling_type = scaling_type
+        self.results_save_dir = os.path.join('Results/', self.dataset_name)
 
         # Constants taken from config
         config = get_config(dataset_name)
@@ -95,7 +97,7 @@ class Experiment2:
         return training_loader, test_loader, training_set_size
 
     def load_el2n_scores(self):
-        with open(f'{self.dataset_name}_el2n_scores.pkl', 'rb') as file:
+        with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'rb') as file:
             return pickle.load(file)
 
     def prune_dataset(self, el2n_scores, class_el2n_scores, labels):

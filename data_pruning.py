@@ -5,6 +5,8 @@ from typing import Dict, List
 import matplotlib.pyplot as plt
 import numpy as np
 
+from utils import get_config
+
 
 class DataPruning:
     def __init__(self, instance_hardness: List[List[float]], class_hardness: Dict[int, List[List[float]]],
@@ -29,7 +31,9 @@ class DataPruning:
         self.labels = np.array(labels)
         self.prune_percentage = prune_percentage / 100
         self.dataset_name = dataset_name
-        self.save_dir = 'Figures/'
+        self.fig_save_dir = 'Figures/'
+        self.res_save_dir = 'Results/'
+        self.num_classes = get_config(dataset_name)['num_classes']
 
         # Load or initialize class_level_sample_counts
         try:
@@ -39,9 +43,11 @@ class DataPruning:
             self.class_level_sample_counts = {}
 
     def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str):
-        remaining_labels = self.labels[remaining_indices]
+        os.makedirs(self.fig_save_dir, exist_ok=True)
+        os.makedirs(self.res_save_dir, exist_ok=True)
 
         # Count the number of remaining samples for each class
+        remaining_labels = self.labels[remaining_indices]
         unique_classes, class_counts = np.unique(remaining_labels, return_counts=True)
 
         # Create dictionary for current pruning type if it doesn't exist
@@ -51,11 +57,11 @@ class DataPruning:
         # Store the distribution of samples after pruning
         self.class_level_sample_counts[pruning_key][int(self.prune_percentage * 100)] = [
             class_counts[unique_classes.tolist().index(cls)] if cls in unique_classes else 0
-            for cls in range(10)
+            for cls in range(self.num_classes)
         ]
 
         # Save the updated class_level_sample_counts to a pickle file
-        with open("class_level_sample_counts.pkl", "wb") as file:
+        with open(os.path.join(self.res_save_dir, "class_level_sample_counts.pkl"), "wb") as file:
             pickle.dump(self.class_level_sample_counts, file)
 
         # Plot the original class distribution
@@ -64,8 +70,7 @@ class DataPruning:
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
         plt.xticks([])
-        os.makedirs(self.save_dir, exist_ok=True)
-        plt.savefig(os.path.join(self.save_dir, 'class_level_sample_distribution.pdf'))
+        plt.savefig(os.path.join(self.fig_save_dir, 'class_level_sample_distribution.pdf'))
         plt.close()
 
         # Sort classes by class_counts for imbalance visualization
@@ -79,7 +84,7 @@ class DataPruning:
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Sorted Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
         plt.xticks([])
-        plt.savefig(os.path.join(self.save_dir, 'sorted_class_level_sample_distribution.pdf'))
+        plt.savefig(os.path.join(self.fig_save_dir, 'sorted_class_level_sample_distribution.pdf'))
         plt.close()
 
     def dataset_level_pruning(self):
@@ -98,7 +103,10 @@ class DataPruning:
         # Retain the top 'retain_count' number of the hardest samples
         remaining_indices = sorted_indices[-retain_count:]
 
-        self.save_dir = os.path.join(self.save_dir, 'dlp' + str(int(self.prune_percentage * 100)), self.dataset_name)
+        self.fig_save_dir = os.path.join(self.fig_save_dir, 'dlp' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
+        self.res_save_dir = os.path.join(self.res_save_dir, 'dlp' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices.tolist(), pruning_key='dlp')
 
         return remaining_indices.tolist()
@@ -127,7 +135,10 @@ class DataPruning:
             global_indices = np.where(self.labels == class_id)[0]
             remaining_indices.extend(global_indices[class_remaining_indices])
 
-        self.save_dir = os.path.join(self.save_dir, 'fclp' + str(int(self.prune_percentage * 100)), self.dataset_name)
+        self.fig_save_dir = os.path.join(self.fig_save_dir, 'fclp' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
+        self.res_save_dir = os.path.join(self.res_save_dir, 'fclp' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices, pruning_key='fclp')
 
         return remaining_indices
@@ -146,7 +157,10 @@ class DataPruning:
         all_indices = np.arange(total_samples)
         remaining_indices = np.random.choice(all_indices, size=retain_count, replace=False)
 
-        self.save_dir = os.path.join(self.save_dir, 'rp' + str(int(self.prune_percentage * 100)), self.dataset_name)
+        self.fig_save_dir = os.path.join(self.fig_save_dir, 'rp' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
+        self.res_save_dir = os.path.join(self.res_save_dir, 'rp' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices.tolist(), pruning_key='rp')
 
         return remaining_indices.tolist()
@@ -210,8 +224,10 @@ class DataPruning:
             remaining_indices.extend(global_indices[class_remaining_indices])
 
         pruning_key = f"{scaling_type}_aclp"
-        self.save_dir = os.path.join(self.save_dir, f'{pruning_key}{int(self.prune_percentage * 100)}',
+        self.fig_save_dir = os.path.join(self.fig_save_dir, f'{pruning_key}{int(self.prune_percentage * 100)}',
                                      self.dataset_name)
+        self.res_save_dir = os.path.join(self.res_save_dir, f'{pruning_key}{int(self.prune_percentage * 100)}',
+                                         self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices, pruning_key=pruning_key)
 
         return remaining_indices
@@ -246,7 +262,10 @@ class DataPruning:
             global_indices = np.where(self.labels == class_id)[0]
             remaining_indices.extend(global_indices[class_remaining_indices])
 
-        self.save_dir = os.path.join(self.save_dir, 'loop' + str(int(self.prune_percentage * 100)), self.dataset_name)
+        self.fig_save_dir = os.path.join(self.fig_save_dir, 'loop' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
+        self.res_save_dir = os.path.join(self.res_save_dir, 'loop' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices, pruning_key='loop')
 
         return remaining_indices
