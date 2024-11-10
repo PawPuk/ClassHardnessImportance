@@ -32,6 +32,7 @@ class HardnessCalculator:
         self.SAVE_EPOCH = config['save_epoch']
         self.MODEL_DIR = config['save_dir']
         self.NUM_CLASSES = config['num_classes']
+        self.NUM_MODELS = config['num_models']
 
         self.training_loader, _, self.training_set_size = self.load_dataset(self.dataset_name)
         self.figure_save_dir = os.path.join('Figures/', self.dataset_name)
@@ -96,8 +97,7 @@ class HardnessCalculator:
 
     def collect_el2n_scores(self):
         all_el2n_scores = [[] for _ in range(self.training_set_size)]
-        # TODO: Modify in the future to use all the available probe networks (or make it a parameter)
-        for model_id in range(10):
+        for model_id in range(self.NUM_MODELS):
             el2n_scores = self.load_model_and_compute_el2n(model_id)
             if el2n_scores:
                 for i in range(self.training_set_size):
@@ -259,7 +259,6 @@ class HardnessCalculator:
         file_name = os.path.join(self.figure_save_dir, f'class_level_hardness_distribution_with_std.pdf')
         plt.savefig(file_name)
         plt.close()
-
 
     def save_el2n_scores(self, el2n_scores):
         with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
