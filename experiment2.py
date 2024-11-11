@@ -15,7 +15,7 @@ from train_ensemble import ModelTrainer
 
 
 class Experiment2:
-    def __init__(self, dataset_name, pruning_strategy, pruning_rate, scaling_type):
+    def __init__(self, dataset_name, pruning_strategy, pruning_rate, scaling_type, protect_prototypes, hardness_type):
         seed = 42
         np.random.seed(seed)
         random.seed(seed)
@@ -29,6 +29,8 @@ class Experiment2:
         self.pruning_strategy = pruning_strategy
         self.pruning_rate = pruning_rate
         self.scaling_type = scaling_type
+        self.protect_prototypes = protect_prototypes
+        self.hardness_type = hardness_type
         self.results_save_dir = os.path.join('Results/', self.dataset_name)
 
         # Constants taken from config
@@ -102,14 +104,13 @@ class Experiment2:
 
     def prune_dataset(self, el2n_scores, class_el2n_scores, labels):
         # Instantiate the DataPruning class with el2n_scores, class_el2n_scores, and labels
-        pruner = DataPruning(el2n_scores, class_el2n_scores, labels, self.pruning_rate, self.dataset_name)
+        pruner = DataPruning(el2n_scores, class_el2n_scores, labels, self.pruning_rate, self.dataset_name,
+                             self.protect_prototypes)
 
         if self.pruning_strategy == 'dlp':
             pruned_indices = pruner.dataset_level_pruning()
         elif self.pruning_strategy == 'fclp':
             pruned_indices = pruner.fixed_class_level_pruning()
-        elif self.pruning_strategy == 'rp':
-            pruned_indices = pruner.random_pruning()
         elif self.pruning_strategy == 'aclp':
             pruned_indices = pruner.adaptive_class_level_pruning(self.scaling_type)
         elif self.pruning_strategy == 'loop':
@@ -132,15 +133,16 @@ class Experiment2:
         # Create data loader for pruned dataset
         pruned_training_loader = DataLoader(pruned_dataset, batch_size=self.BATCH_SIZE, shuffle=True, num_workers=2)
 
-        # Train ensemble of 10 models on pruned data (without saving probe models)
-        trainer = ModelTrainer(pruned_training_loader, self.test_loader, self.dataset_name,
-                               f'{self.pruning_strategy + str(self.pruning_rate)}', False)
+        # Train ensemble on pruned data (without saving probe models)
+        model_save_dir = (f"{['unprotected', 'protected'][self.protect_prototypes]}_{self.hardness_type}_"
+                          f"{self.pruning_strategy}{self.pruning_rate}")
+        trainer = ModelTrainer(pruned_training_loader, self.test_loader, self.dataset_name, model_save_dir, False)
         trainer.train_ensemble()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='EL2N Score Calculation and Dataset Pruning')
-    parser.add_argument('--pruning_strategy', type=str, default='dlp', choices=['fclp', 'dlp', 'rp', 'aclp', 'loop'],
+    parser.add_argument('--pruning_strategy', type=str, default='dlp', choices=['fclp', 'dlp', 'aclp', 'loop'],
                         help='Choose pruning strategy: fclp (fixed class level pruning) or dlp (data level pruning)')
     parser.add_argument('--dataset_name', type=str, default='CIFAR10',
                         help='Specify the dataset name (default: CIFAR10)')
@@ -150,10 +152,18 @@ if __name__ == "__main__":
                         choices=['linear', 'exponential', 'inverted_exponential'],
                         help='Choose scaling type for adaptive class-level pruning: linear, exponential, '
                              'inverted_exponential')
+    parser.add_argument('--protect_prototypes', action='store_true',
+                        help="Raise this flag to protect the prototypes from pruning - don't prune 1% of the easiest "
+                             "samples.")
+    parser.add_argument('--hardness_type', type='str', choices=['objective', 'subjective'],
+                        help="If set to 'subjective', each model will use the hardness of probe network obtained using "
+                             "the same seed (similar to self-paced learning). For 'objective', the average hardness "
+                             "computed using all probe networks is used (similar to transfer learning).")
 
     args = parser.parse_args()
 
     # Initialize and run the experiment
-    experiment = Experiment2(args.dataset_name, args.pruning_strategy, args.pruning_rate, args.scaling_type)
+    experiment = Experiment2(args.dataset_name, args.pruning_strategy, args.pruning_rate, args.scaling_type,
+                             args.protect_prototypes, args.hardness_type)
     experiment.run_experiment()
 
