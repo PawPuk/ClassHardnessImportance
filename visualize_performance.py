@@ -14,12 +14,15 @@ from neural_networks import ResNet18LowRes
 from utils import get_config
 
 
-def load_models(pruning_strategy: str, dataset_name: str) -> Dict[int, List[dict]]:
+def load_models(pruning_strategy: str, dataset_name: str, protect_prototypes: bool,
+                hardness_type: str) -> Dict[int, List[dict]]:
     """
     Load all models for the specified pruning strategy and dataset.
 
     :param pruning_strategy: Abbreviated pruning strategy (e.g., 'loop' for leave_one_out_pruning).
     :param dataset_name: Name of the dataset (e.g., 'CIFAR10').
+    :param protect_prototypes: Determines if the easiest 1% of the samples (prototypes) are pruned
+    :param hardness_type: Type of hardness (objective vs subjective)
     :return: Dictionary where keys are pruning rates and values are lists of model state dictionaries.
     """
     models_dir = "Models"
@@ -29,7 +32,8 @@ def load_models(pruning_strategy: str, dataset_name: str) -> Dict[int, List[dict
         # Walk through each folder in the Models directory
         for root, dirs, files in os.walk(models_dir):
             # Check if the path matches the specified pruning strategy and dataset name
-            if f"{pruning_strategy}" in root and f"{dataset_name}" in root:
+            if f"{pruning_strategy}" in root and f"{dataset_name}" in root and hardness_type in root \
+                    and ['unprotected', 'protected'][protect_prototypes]:
                 pruning_rate = int(root.split(pruning_strategy)[1].split("/")[0])
                 models_by_rate.setdefault(pruning_rate, [])
                 for file in files:
@@ -481,9 +485,9 @@ def save_file(save_dir, filename, data):
         pickle.dump(data, file)
 
 
-def main(pruning_strategy, dataset_name):
+def main(pruning_strategy, dataset_name, protect_prototypes, hardness_type):
     result_dir = os.path.join("Results", dataset_name, pruning_strategy)
-    models = load_models(pruning_strategy, dataset_name)
+    models = load_models(pruning_strategy, dataset_name, protect_prototypes, hardness_type)
     test_loader = load_cifar10_test_set(1024)
     pruned_percentages = compute_pruned_percentage(pruning_strategy, dataset_name, models)
 
@@ -516,6 +520,14 @@ if __name__ == "__main__":
                         help="Abbreviated pruning strategy (e.g., 'loop' for leave_one_out_pruning)")
     parser.add_argument("--dataset_name", type=str, required=True,
                         help="Name of the dataset (e.g., 'CIFAR10')")
+    parser.add_argument('--protect_prototypes', action='store_true',
+                        help="Raise this flag to protect the prototypes from pruning - don't prune 1% of the easiest "
+                             "samples.")
+    parser.add_argument('--hardness_type', type=str, choices=['objective', 'subjective'],
+                        help="If set to 'subjective', each model will use the hardness of probe network obtained using "
+                             "the same seed (similar to self-paced learning). For 'objective', the average hardness "
+                             "computed using all probe networks is used (similar to transfer learning).")
+
     args = parser.parse_args()
 
     figure_save_dir = os.path.join('Figures/', args.pruning_strategy, args.dataset_name)
@@ -523,4 +535,4 @@ if __name__ == "__main__":
     num_classes = config['num_classes']
     num_samples = [config['num_training_samples'] / num_classes for _ in range(num_classes)]
     os.makedirs(figure_save_dir, exist_ok=True)
-    main(args.pruning_strategy, args.dataset_name)
+    main(args.pruning_strategy, args.dataset_name, args.protect_prototypes, args.hardness_type)

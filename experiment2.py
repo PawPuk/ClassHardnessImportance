@@ -134,8 +134,10 @@ class Experiment2:
         pruned_training_loader = DataLoader(pruned_dataset, batch_size=self.BATCH_SIZE, shuffle=True, num_workers=2)
 
         # Train ensemble on pruned data (without saving probe models)
-        model_save_dir = (f"{['unprotected', 'protected'][self.protect_prototypes]}_{self.hardness_type}_"
-                          f"{self.pruning_strategy}{self.pruning_rate}")
+        model_save_dir = f"{['unprotected', 'protected'][self.protect_prototypes]}_{self.hardness_type}_"
+        if self.pruning_strategy == 'aclp':
+            model_save_dir += f'{self.scaling_type}_'
+        model_save_dir += f"{self.pruning_strategy}{self.pruning_rate}"
         trainer = ModelTrainer(pruned_training_loader, self.test_loader, self.dataset_name, model_save_dir, False)
         trainer.train_ensemble()
 
@@ -155,7 +157,7 @@ if __name__ == "__main__":
     parser.add_argument('--protect_prototypes', action='store_true',
                         help="Raise this flag to protect the prototypes from pruning - don't prune 1% of the easiest "
                              "samples.")
-    parser.add_argument('--hardness_type', type='str', choices=['objective', 'subjective'],
+    parser.add_argument('--hardness_type', type=str, choices=['objective', 'subjective'],
                         help="If set to 'subjective', each model will use the hardness of probe network obtained using "
                              "the same seed (similar to self-paced learning). For 'objective', the average hardness "
                              "computed using all probe networks is used (similar to transfer learning).")

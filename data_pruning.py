@@ -82,7 +82,8 @@ class DataPruning:
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
         plt.xticks([])
-        plt.savefig(os.path.join(self.fig_save_dir, 'class_level_sample_distribution.pdf'))
+        plt.savefig(os.path.join(self.fig_save_dir, f"{['unprotected', 'protected'][self.protect_prototypes]}"
+                                                    f"_class_level_sample_distribution.pdf"))
         plt.close()
 
         # Sort classes by class_counts for imbalance visualization
@@ -96,7 +97,8 @@ class DataPruning:
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Sorted Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
         plt.xticks([])
-        plt.savefig(os.path.join(self.fig_save_dir, 'sorted_class_level_sample_distribution.pdf'))
+        plt.savefig(os.path.join(self.fig_save_dir, f"{['unprotected', 'protected'][self.protect_prototypes]}"
+                                                    f"_sorted_class_level_sample_distribution.pdf"))
         plt.close()
 
     def dataset_level_pruning(self):
