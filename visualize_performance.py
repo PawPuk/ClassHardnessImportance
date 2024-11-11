@@ -92,14 +92,17 @@ def compute_pruned_percentage(pruning_strategy: str, dataset_name: str,
 
     # Iterate over each pruning rate in models_by_rate
     for pruning_rate in pruning_rates:
-        pkl_path = os.path.join("Results", pruning_strategy + str(pruning_rate), dataset_name,
-                                "class_level_sample_counts.pkl")
-        with open(pkl_path, "rb") as file:
-            class_level_sample_counts = pickle.load(file)
-        remaining_data_count = class_level_sample_counts[pruning_strategy][pruning_rate]
-        for c in range(num_classes):
-            pruned_percentage = 100.0 * (num_samples[c] - remaining_data_count[c]) / num_samples[c]
-            pruned_percentages[pruning_rate].append(pruned_percentage)
+        if pruning_rate != 0:
+            pkl_path = os.path.join("Results", pruning_strategy + str(pruning_rate), dataset_name,
+                                    "class_level_sample_counts.pkl")
+            with open(pkl_path, "rb") as file:
+                class_level_sample_counts = pickle.load(file)
+            remaining_data_count = class_level_sample_counts[pruning_strategy][pruning_rate]
+            for c in range(num_classes):
+                pruned_percentage = 100.0 * (num_samples[c] - remaining_data_count[c]) / num_samples[c]
+                pruned_percentages[pruning_rate].append(pruned_percentage)
+        else:
+            pruned_percentages[0] = [0.0 for _ in range(num_classes)]
 
     return pruned_percentages
 
@@ -167,7 +170,7 @@ def evaluate_ensemble(ensemble: List[dict], test_loader) -> List[float]:
 
     # Calculate overall accuracy and per-class accuracies
     dataset_accuracy = 100.0 * dataset_correct / len(test_loader.dataset)
-    class_accuracies = [100.0 * class_correct[i] / class_counts[i] for i in range(num_classes)]
+    class_accuracies = [(100.0 * class_correct[i] / class_counts[i]).item() for i in range(num_classes)]
 
     return [dataset_accuracy] + class_accuracies
 
@@ -221,7 +224,8 @@ def evaluate_individual_models(ensemble: List[dict], test_loader) -> List[float]
 
     # Average dataset accuracy and per-class accuracies across all models
     avg_dataset_accuracy = sum(dataset_accuracies) / len(dataset_accuracies)
-    avg_class_accuracies = [sum(acc[i] for acc in class_accuracies) / len(class_accuracies) for i in range(num_classes)]
+    avg_class_accuracies = [(sum(acc[i] for acc in class_accuracies) / len(class_accuracies)).item()
+                            for i in range(num_classes)]
 
     return [avg_dataset_accuracy] + avg_class_accuracies
 
@@ -315,21 +319,22 @@ def plot_ensemble_accuracies(incremental_ensemble_accuracies: Dict[int, List[Lis
 
     # Plot class-level and dataset-level accuracy for each class
     for class_id in range(10):
+        class_pruning_rates = [pruning_rates[i][class_id] for i in range(num_classes)]
+        if set(class_pruning_rates) == {0.0}:
+            class_pruning_rates = pruning_parameters
         ax = axes[class_id]
-        ax.plot(pruning_rates, class_accuracies[class_id], label=f'Class {class_id} Accuracy', marker='o')
-        ax.plot(pruning_rates, dataset_accuracies, label='Dataset Accuracy', linestyle='--', marker='x')
+        ax.plot(class_pruning_rates, class_accuracies[class_id], marker='o')
+        ax.plot(class_pruning_rates, dataset_accuracies, linestyle='--', marker='x')
 
         # Customize each subplot
         ax.set_title(f'Class {class_id} Accuracy')
         ax.set_xlabel('Pruning Rate (%)')
         ax.set_ylabel('Accuracy (%)')
-        ax.legend()
         ax.grid(True)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit title
     plt.savefig(os.path.join(figure_save_dir, 'Figure_Full_Ensemble.pdf'))
     plt.close()
-
 
 
 def plot_individual_model_accuracies(incremental_individual_accuracies: Dict[int, List[List[float]]],
@@ -359,15 +364,25 @@ def plot_individual_model_accuracies(incremental_individual_accuracies: Dict[int
 
     pruning_rates = [pruned_percentages[pruning_parameter] for pruning_parameter in pruning_parameters]
 
+    print(incremental_individual_accuracies)
+    print(pruned_percentages)
+    print(len(incremental_individual_accuracies[60]), len(incremental_individual_accuracies[60][0]))
+
     for class_id in range(10):
+        class_pruning_rates = [pruning_rates[i][class_id] for i in range(num_classes)]
+        if set(class_pruning_rates) == {0.0}:
+            class_pruning_rates = pruning_parameters
         ax = axes[class_id]
-        ax.plot(pruning_rates, class_accuracies[class_id], label=f'Class {class_id} Accuracy', marker='o')
-        ax.plot(pruning_rates, dataset_accuracies, label='Dataset Accuracy', linestyle='--', marker='x')
+        print('-'*20)
+        print(class_accuracies)
+        print(dataset_accuracies)
+        print(class_pruning_rates)
+        ax.plot(class_pruning_rates, class_accuracies[class_id], marker='o')
+        ax.plot(class_pruning_rates, dataset_accuracies, linestyle='--', marker='x')
 
         ax.set_title(f'Class {class_id} Accuracy')
         ax.set_xlabel('Pruning Rate (%)')
         ax.set_ylabel('Accuracy (%)')
-        ax.legend()
         ax.grid(True)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
@@ -406,7 +421,7 @@ def measure_total_ensemble_variability(incremental_results: Dict[int, List[List[
 
             # Add this pruning rate's variability to the total variability for this ensemble size
             for j in range(num_metrics):
-                total_variability[i][j][pruning_rate_index] += accuracy_changes[j]
+                total_variability[pruning_rate_index][i][j] += accuracy_changes[j]
 
     return total_variability
 
@@ -446,13 +461,12 @@ def plot_total_variability(total_variability: List[List[List[float]]], pruning_r
             #                        for ensemble_size in range(len(total_variability))]
 
             # Plot class-level variability for this pruning rate
-            ax.plot(ensemble_sizes, class_variability, label=f'Pruning {pruning_rate}%', color=str(color))
+            ax.plot(ensemble_sizes, class_variability, color=str(color))
 
         # Customize each subplot
         ax.set_title(f'Class {class_id} Variability')
         ax.set_xlabel('Ensemble Size')
         ax.set_ylabel('Variability')
-        ax.legend()
         ax.grid(True)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit title
@@ -474,16 +488,24 @@ def main(pruning_strategy, dataset_name):
     pruned_percentages = compute_pruned_percentage(pruning_strategy, dataset_name, models)
 
     # Evaluate ensemble performance
-    incremental_ensemble_results = evaluate_all_ensembles(models, test_loader)
-    save_file(result_dir, "incremental_ensemble_results.pkl", incremental_ensemble_results)
+    if os.path.exists(os.path.join(result_dir, "incremental_ensemble_results.pkl")):
+        with open(os.path.join(result_dir, "incremental_ensemble_results.pkl"), 'rb') as f:
+            incremental_ensemble_results = pickle.load(f)
+    else:
+        incremental_ensemble_results = evaluate_all_ensembles(models, test_loader)
+        save_file(result_dir, "incremental_ensemble_results.pkl", incremental_ensemble_results)
     plot_ensemble_accuracies(incremental_ensemble_results, pruned_percentages)
     variabilities = measure_total_ensemble_variability(incremental_ensemble_results)
     plot_total_variability(variabilities, list(incremental_ensemble_results.keys()), 'Ensemble_Variability.pdf')
 
     # Evaluate individual models' performance
-    incremental_individual_results = evaluate_all_models_individually(models, test_loader)
-    save_file(result_dir, "incremental_individual_results.pkl", incremental_individual_results)
-    plot_individual_model_accuracies(incremental_individual_results)
+    if os.path.exists(os.path.join(result_dir, "incremental_individual_results.pkl")):
+        with open(os.path.join(result_dir, "incremental_individual_results.pkl"), 'rb') as f:
+            incremental_individual_results = pickle.load(f)
+    else:
+        incremental_individual_results = evaluate_all_models_individually(models, test_loader)
+        save_file(result_dir, "incremental_individual_results.pkl", incremental_individual_results)
+    plot_individual_model_accuracies(incremental_individual_results, pruned_percentages)
     variabilities = measure_total_ensemble_variability(incremental_individual_results)
     plot_total_variability(variabilities, list(incremental_individual_results.keys()), 'Individual_Variability.pdf')
 
