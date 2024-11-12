@@ -17,13 +17,13 @@ from utils import get_config
 
 class HardnessCalculator:
     def __init__(self, dataset_name):
-        seed = 42
-        np.random.seed(seed)
-        random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.benchmark = True
+        self.seed = 42
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        torch.cuda.manual_seed(self.seed)
+        torch.cuda.manual_seed_all(self.seed)
+        torch.backends.cudnn.benchmark = True  # Set to False for reproducibility
         torch.backends.cudnn.deterministic = True
 
         self.dataset_name = dataset_name
@@ -62,7 +62,12 @@ class HardnessCalculator:
         else:
             raise ValueError(f"Dataset {dataset_name} is not supported.")
 
-        training_loader = DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2)
+        def worker_init_fn(worker_id):
+            np.random.seed(self.seed + worker_id)
+            random.seed(self.seed + worker_id)
+
+        training_loader = DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2,
+                                     worker_init_fn=worker_init_fn)
         return training_loader, None, len(training_set)
 
     def create_model(self):
@@ -260,6 +265,78 @@ class HardnessCalculator:
         plt.savefig(file_name)
         plt.close()
 
+    @staticmethod
+    def normalize_el2n_scores(all_el2n_scores):
+        # Compute average EL2N score per sample across models
+        avg_el2n_scores = [np.mean(scores) for scores in all_el2n_scores]
+
+        # Compute global min and max of averaged scores
+        min_score, max_score = min(avg_el2n_scores), max(avg_el2n_scores)
+
+        # Normalize the averaged EL2N scores
+        normalized_avg_el2n_scores = [(score - min_score) / (max_score - min_score) for score in avg_el2n_scores]
+
+        return normalized_avg_el2n_scores
+
+    @staticmethod
+    def normalize_class_el2n_scores(class_el2n_scores):
+        normalized_class_el2n_scores = {}
+        for class_id, scores in class_el2n_scores.items():
+            # Compute average EL2N score per sample across models within the class
+            avg_scores = [np.mean(sample_scores) for sample_scores in scores]
+
+            # Compute min and max for these averaged scores
+            min_score, max_score = min(avg_scores), max(avg_scores)
+
+            # Normalize the averaged scores
+            normalized_scores = [(score - min_score) / (max_score - min_score) for score in avg_scores]
+
+            normalized_class_el2n_scores[class_id] = normalized_scores
+        return normalized_class_el2n_scores
+
+    def plot_pruning_rates(self, normalized_el2n_scores, normalized_class_el2n_scores, labels):
+        # Define hardness thresholds
+        thresholds = np.linspace(0, 1, 100)
+
+        # Initialize arrays to store pruning percentages
+        dataset_pruning_percentages = []
+        class_pruning_percentages = {class_id: [] for class_id in range(self.NUM_CLASSES)}
+
+        total_samples = len(normalized_el2n_scores)
+        class_sample_counts = {class_id: labels.count(class_id) for class_id in range(self.NUM_CLASSES)}
+
+        for threshold in thresholds:
+            # Compute dataset-level pruning percentage
+            num_pruned = sum(1 for score in normalized_el2n_scores if score < threshold)
+            dataset_pruning_percentage = (num_pruned / total_samples) * 100
+            dataset_pruning_percentages.append(dataset_pruning_percentage)
+
+            # Compute class-level pruning percentages
+            for class_id in range(self.NUM_CLASSES):
+                class_scores = normalized_class_el2n_scores[class_id]
+                num_pruned_class = sum(1 for score in class_scores if score < threshold)
+                class_pruning_percentage = (num_pruned_class / class_sample_counts[class_id]) * 100
+                class_pruning_percentages[class_id].append(class_pruning_percentage)
+
+        # Plotting
+        fig, axes = plt.subplots(nrows=2, ncols=5, figsize=(20, 8))
+        axes = axes.flatten()
+
+        for class_id in range(self.NUM_CLASSES):
+            ax = axes[class_id]
+            ax.plot(thresholds, dataset_pruning_percentages)
+            ax.plot(thresholds, class_pruning_percentages[class_id])
+            ax.set_xlabel('Hardness Threshold')
+            ax.set_ylabel('Percentage of Data Pruned')
+            ax.set_title(f'Class {class_id}')
+            ax.legend()
+            ax.grid(True)
+
+        plt.tight_layout()
+        file_name = os.path.join(self.figure_save_dir, 'pruning_rates_vs_hardness.pdf')
+        plt.savefig(file_name)
+        plt.close()
+
     def save_el2n_scores(self, el2n_scores):
         with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
             pickle.dump(el2n_scores, file)
@@ -270,11 +347,19 @@ class HardnessCalculator:
         self.save_el2n_scores((all_el2n_scores, class_el2n_scores, labels))
         print("Hardness scores computed and saved. Now producing visualization figures.")
 
+        # Normalize EL2N scores after averaging across models
+        normalized_el2n_scores = self.normalize_el2n_scores(all_el2n_scores)
+        normalized_class_el2n_scores = self.normalize_class_el2n_scores(class_el2n_scores)
+        print("Normalized EL2N scores computed. Now producing visualization figures.")
+
         # Generate and save additional distribution plots
         class_stats = self.compute_class_statistics(class_el2n_scores)
         self.plot_class_level_candlestick(class_stats)
         self.plot_dataset_level_distribution(all_el2n_scores)
         self.plot_class_level_distribution(class_el2n_scores)
+
+        # Plot pruning rates using the normalized scores
+        self.plot_pruning_rates(normalized_el2n_scores, normalized_class_el2n_scores, labels)
 
 
 if __name__ == "__main__":

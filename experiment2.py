@@ -16,12 +16,12 @@ from train_ensemble import ModelTrainer
 
 class Experiment2:
     def __init__(self, dataset_name, pruning_strategy, pruning_rate, scaling_type, protect_prototypes, hardness_type):
-        seed = 42
-        np.random.seed(seed)
-        random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+        self.seed = 42
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        torch.cuda.manual_seed(self.seed)
+        torch.cuda.manual_seed_all(self.seed)
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = True
 
@@ -91,9 +91,13 @@ class Experiment2:
             raise ValueError(f"Dataset {dataset_name} is not supported.")
 
         # Load training and test data
+        def worker_init_fn(worker_id):
+            np.random.seed(self.seed + worker_id)
+            random.seed(self.seed + worker_id)
         training_loader = torch.utils.data.DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=False,
-                                                      num_workers=2)
-        test_loader = torch.utils.data.DataLoader(test_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2)
+                                                      num_workers=2, worker_init_fn=worker_init_fn)
+        test_loader = torch.utils.data.DataLoader(test_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2,
+                                                  worker_init_fn=worker_init_fn)
         training_set_size = len(training_set)
 
         return training_loader, test_loader, training_set_size
@@ -138,17 +142,18 @@ class Experiment2:
         if self.pruning_strategy == 'aclp':
             model_save_dir += f'{self.scaling_type}_'
         model_save_dir += f"{self.pruning_strategy}{self.pruning_rate}"
-        trainer = ModelTrainer(pruned_training_loader, self.test_loader, self.dataset_name, model_save_dir, False)
+        trainer = ModelTrainer(pruned_training_loader, self.test_loader, self.dataset_name, model_save_dir, False,
+                               hardness='objective')
         trainer.train_ensemble()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='EL2N Score Calculation and Dataset Pruning')
-    parser.add_argument('--pruning_strategy', type=str, default='dlp', choices=['fclp', 'dlp', 'aclp', 'loop'],
+    parser.add_argument('--pruning_strategy', type=str, choices=['fclp', 'dlp', 'aclp', 'loop'],
                         help='Choose pruning strategy: fclp (fixed class level pruning) or dlp (data level pruning)')
-    parser.add_argument('--dataset_name', type=str, default='CIFAR10',
+    parser.add_argument('--dataset_name', type=str,
                         help='Specify the dataset name (default: CIFAR10)')
-    parser.add_argument('--pruning_rate', type=int, default=50,
+    parser.add_argument('--pruning_rate', type=int,
                         help='Percentage of data samples that will be removed during data pruning (use integers).')
     parser.add_argument('--scaling_type', type=str, default='linear',
                         choices=['linear', 'exponential', 'inverted_exponential'],
@@ -157,7 +162,7 @@ if __name__ == "__main__":
     parser.add_argument('--protect_prototypes', action='store_true',
                         help="Raise this flag to protect the prototypes from pruning - don't prune 1% of the easiest "
                              "samples.")
-    parser.add_argument('--hardness_type', type=str, choices=['objective', 'subjective'],
+    parser.add_argument('--hardness_type', type=str, choices=['objective', 'subjective'], default='objective',
                         help="If set to 'subjective', each model will use the hardness of probe network obtained using "
                              "the same seed (similar to self-paced learning). For 'objective', the average hardness "
                              "computed using all probe networks is used (similar to transfer learning).")

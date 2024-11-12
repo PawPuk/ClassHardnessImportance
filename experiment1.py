@@ -44,7 +44,7 @@ def get_data_transforms(dataset_name):
 
 
 # Function to load dataset
-def get_dataloader(dataset_name, batch_size, train_transform, test_transform):
+def get_dataloader(dataset_name, batch_size, train_transform, test_transform, seed):
     if dataset_name == 'CIFAR10':
         train_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=train_transform)
         test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
@@ -54,8 +54,14 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform):
     else:
         raise ValueError(f"Dataset {dataset_name} is not supported. Choose either CIFAR10 or CIFAR100.")
 
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=2)
-    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=2)
+    def worker_init_fn(worker_id):
+        np.random.seed(seed + worker_id)
+        random.seed(seed + worker_id)
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=2,
+                              worker_init_fn=worker_init_fn)
+    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=2,
+                             worker_init_fn=worker_init_fn)
 
     return train_loader, test_loader
 
@@ -77,7 +83,7 @@ def main(dataset_name):
 
     # Load the dataset
     batch_size = get_config(dataset_name)['batch_size']
-    training_loader, test_loader = get_dataloader(dataset_name, batch_size, train_transform, test_transform)
+    training_loader, test_loader = get_dataloader(dataset_name, batch_size, train_transform, test_transform, seed)
 
     # Create an instance of ModelTrainer
     trainer = ModelTrainer(training_loader, test_loader, dataset_name)

@@ -24,11 +24,6 @@ class DataPruning:
         """
         # Compute the average instance-level hardness for each sample across all models
         self.instance_hardness = np.mean(np.array(instance_hardness), axis=1)
-        # Compute the average class-level hardness for each sample in specific class across all models
-        self.class_hardness = {
-            class_id: np.mean(np.array(class_scores), axis=1)
-            for class_id, class_scores in class_hardness.items()
-        }
         self.labels = np.array(labels)
         self.prune_percentage = prune_percentage / 100
         self.dataset_name = dataset_name
@@ -36,6 +31,19 @@ class DataPruning:
         self.fig_save_dir = 'Figures/'
         self.res_save_dir = 'Results/'
         self.num_classes = get_config(dataset_name)['num_classes']
+
+        # Compute the average class-level hardness for each sample in specific class across all models
+        if self.protect_prototypes:
+            self.class_hardness = {}
+            for class_id, class_scores in class_hardness.items():
+                # Prototypes should not be taken under consideration when measuring hardness, as they are not pruned.
+                one_percent = int(0.01 * len(class_scores))
+                self.class_hardness[class_id] = np.mean(np.array(class_scores)[one_percent:], axis=1)
+        else:
+            self.class_hardness = {
+                class_id: np.mean(np.array(class_scores), axis=1)
+                for class_id, class_scores in class_hardness.items()
+            }
 
         # Load or initialize class_level_sample_counts
         try:
@@ -73,7 +81,8 @@ class DataPruning:
         ]
 
         # Save the updated class_level_sample_counts to a pickle file
-        with open(os.path.join(self.res_save_dir, "class_level_sample_counts.pkl"), "wb") as file:
+        with open(os.path.join(self.res_save_dir, f"{['unprotected', 'protected'][self.protect_prototypes]}"
+                                                    f"_class_level_sample_counts.pkl"), "wb") as file:
             pickle.dump(self.class_level_sample_counts, file)
 
         # Plot the original class distribution

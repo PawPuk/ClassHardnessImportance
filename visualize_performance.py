@@ -14,14 +14,12 @@ from neural_networks import ResNet18LowRes
 from utils import get_config
 
 
-def load_models(pruning_strategy: str, dataset_name: str, protect_prototypes: bool,
-                hardness_type: str) -> Dict[int, List[dict]]:
+def load_models(pruning_strategy: str, dataset_name: str, hardness_type: str) -> Dict[int, List[dict]]:
     """
     Load all models for the specified pruning strategy and dataset.
 
     :param pruning_strategy: Abbreviated pruning strategy (e.g., 'loop' for leave_one_out_pruning).
     :param dataset_name: Name of the dataset (e.g., 'CIFAR10').
-    :param protect_prototypes: Determines if the easiest 1% of the samples (prototypes) are pruned
     :param hardness_type: Type of hardness (objective vs subjective)
     :return: Dictionary where keys are pruning rates and values are lists of model state dictionaries.
     """
@@ -98,7 +96,7 @@ def compute_pruned_percentage(pruning_strategy: str, dataset_name: str,
     for pruning_rate in pruning_rates:
         if pruning_rate != 0:
             pkl_path = os.path.join("Results", pruning_strategy + str(pruning_rate), dataset_name,
-                                    "class_level_sample_counts.pkl")
+                                    f"{['unprotected', 'protected'][protect_prototypes]}_class_level_sample_counts.pkl")
             with open(pkl_path, "rb") as file:
                 class_level_sample_counts = pickle.load(file)
             remaining_data_count = class_level_sample_counts[pruning_strategy][pruning_rate]
@@ -368,19 +366,11 @@ def plot_individual_model_accuracies(incremental_individual_accuracies: Dict[int
 
     pruning_rates = [pruned_percentages[pruning_parameter] for pruning_parameter in pruning_parameters]
 
-    print(incremental_individual_accuracies)
-    print(pruned_percentages)
-    print(len(incremental_individual_accuracies[60]), len(incremental_individual_accuracies[60][0]))
-
     for class_id in range(10):
         class_pruning_rates = [pruning_rates[i][class_id] for i in range(num_classes)]
         if set(class_pruning_rates) == {0.0}:
             class_pruning_rates = pruning_parameters
         ax = axes[class_id]
-        print('-'*20)
-        print(class_accuracies)
-        print(dataset_accuracies)
-        print(class_pruning_rates)
         ax.plot(class_pruning_rates, class_accuracies[class_id], marker='o')
         ax.plot(class_pruning_rates, dataset_accuracies, linestyle='--', marker='x')
 
@@ -485,9 +475,10 @@ def save_file(save_dir, filename, data):
         pickle.dump(data, file)
 
 
-def main(pruning_strategy, dataset_name, protect_prototypes, hardness_type):
-    result_dir = os.path.join("Results", dataset_name, pruning_strategy)
-    models = load_models(pruning_strategy, dataset_name, protect_prototypes, hardness_type)
+def main(pruning_strategy, dataset_name, hardness_type):
+    result_dir = os.path.join("Results", dataset_name, f"{['unprotected', 'protected'][protect_prototypes]}_"
+                                                       f"{hardness_type}_{pruning_strategy}")
+    models = load_models(pruning_strategy, dataset_name, hardness_type)
     test_loader = load_cifar10_test_set(1024)
     pruned_percentages = compute_pruned_percentage(pruning_strategy, dataset_name, models)
 
@@ -530,9 +521,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    figure_save_dir = os.path.join('Figures/', args.pruning_strategy, args.dataset_name)
+    protect_prototypes = args.protect_prototypes
+    figure_save_dir = os.path.join('Figures/', f"{['unprotected', 'protected'][protect_prototypes]}_"
+                                               f"{args.hardness_type}_{args.pruning_strategy}", args.dataset_name)
     config = get_config(args.dataset_name)
     num_classes = config['num_classes']
     num_samples = [config['num_training_samples'] / num_classes for _ in range(num_classes)]
     os.makedirs(figure_save_dir, exist_ok=True)
-    main(args.pruning_strategy, args.dataset_name, args.protect_prototypes, args.hardness_type)
+    main(args.pruning_strategy, args.dataset_name, args.hardness_type)

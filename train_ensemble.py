@@ -15,7 +15,7 @@ from utils import get_config
 
 class ModelTrainer:
     def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True,
-                 hardness='objective'):
+                 hardness='subjective'):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
@@ -76,6 +76,7 @@ class ModelTrainer:
         np.random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
     def create_model(self):
         """Creates and returns a ResNet-18 model with dynamic number of output classes."""
