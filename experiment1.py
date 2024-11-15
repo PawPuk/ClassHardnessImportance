@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms as transforms
 
+from datasets import CINIC10
 from utils import get_config
 from train_ensemble import ModelTrainer
 
@@ -37,6 +38,33 @@ def get_data_transforms(dataset_name):
             transforms.ToTensor(),
             transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
         ])
+    elif dataset_name == 'SVHN':
+        train_transform = transforms.Compose([
+            transforms.RandomCrop(32, padding=4),
+            transforms.RandomRotation(10),
+            transforms.ToTensor(),
+            transforms.Normalize((0.4377, 0.4438, 0.4728),
+                                 (0.1980, 0.2010, 0.1970)),
+        ])
+
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.4524, 0.4525, 0.4690),
+                                 (0.2194, 0.2268, 0.2280)),
+        ])
+    elif dataset_name == 'CINIC10':
+        train_transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomCrop(32, padding=4),
+            transforms.ToTensor(),
+            transforms.Normalize((0.47889522, 0.47227842, 0.43047404),
+                                 (0.24205776, 0.23828046, 0.25874835)),
+        ])
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.47889522, 0.47227842, 0.43047404),
+                                 (0.24205776, 0.23828046, 0.25874835)),
+        ])
     else:
         raise ValueError(f"Dataset {dataset_name} is not supported. Choose either CIFAR10 or CIFAR100.")
 
@@ -51,6 +79,12 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform, se
     elif dataset_name == 'CIFAR100':
         train_set = torchvision.datasets.CIFAR100(root='./data', train=True, download=True, transform=train_transform)
         test_set = torchvision.datasets.CIFAR100(root='./data', train=False, download=True, transform=test_transform)
+    elif dataset_name == 'SVHN':
+        train_set = torchvision.datasets.SVHN(root='./data', split='train', download=True, transform=train_transform)
+        test_set = torchvision.datasets.SVHN(root='./data', split='test', download=True, transform=test_transform)
+    elif dataset_name == 'CINIC10':
+        train_set = CINIC10(root_dir='./data/cinic-10', split='train', transform=train_transform)
+        test_set = CINIC10(root_dir='./data/cinic-10', split='test', transform=test_transform)
     else:
         raise ValueError(f"Dataset {dataset_name} is not supported. Choose either CIFAR10 or CIFAR100.")
 
@@ -95,7 +129,7 @@ def main(dataset_name):
 if __name__ == '__main__':
     # Setup argument parser
     parser = argparse.ArgumentParser(description='Train an ensemble of models on CIFAR-10 or CIFAR-100.')
-    parser.add_argument('--dataset_name', type=str, required=True, choices=['CIFAR10', 'CIFAR100'],
+    parser.add_argument('--dataset_name', type=str, required=True, choices=['CIFAR10', 'CIFAR100', 'SVHN', 'CINIC10'],
                         help='Dataset name: CIFAR10 or CIFAR100')
 
     # Parse arguments

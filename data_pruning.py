@@ -58,7 +58,10 @@ class DataPruning:
         if self.protect_prototypes:
             # Protect the easiest 1% samples
             one_percent = int(0.01 * len(hardness_scores))
-            return sorted_indices[one_percent:one_percent + retain_count]
+            hardest_samples_count = retain_count - one_percent
+            easiest_indices = sorted_indices[:one_percent]
+            hardest_indices = sorted_indices[-hardest_samples_count:]
+            return np.concatenate((easiest_indices, hardest_indices))
         else:
             return sorted_indices[-retain_count:]
 

@@ -321,7 +321,7 @@ def plot_ensemble_accuracies(incremental_ensemble_accuracies: Dict[int, List[Lis
 
     # Plot class-level and dataset-level accuracy for each class
     for class_id in range(10):
-        class_pruning_rates = [pruning_rates[i][class_id] for i in range(num_classes)]
+        class_pruning_rates = [pruning_rates[i][class_id] for i in range(len(pruning_parameters))]
         if set(class_pruning_rates) == {0.0}:
             class_pruning_rates = pruning_parameters
         ax = axes[class_id]
@@ -367,7 +367,7 @@ def plot_individual_model_accuracies(incremental_individual_accuracies: Dict[int
     pruning_rates = [pruned_percentages[pruning_parameter] for pruning_parameter in pruning_parameters]
 
     for class_id in range(10):
-        class_pruning_rates = [pruning_rates[i][class_id] for i in range(num_classes)]
+        class_pruning_rates = [pruning_rates[i][class_id] for i in range(len(pruning_parameters))]
         if set(class_pruning_rates) == {0.0}:
             class_pruning_rates = pruning_parameters
         ax = axes[class_id]
@@ -490,8 +490,6 @@ def main(pruning_strategy, dataset_name, hardness_type):
         incremental_ensemble_results = evaluate_all_ensembles(models, test_loader)
         save_file(result_dir, "incremental_ensemble_results.pkl", incremental_ensemble_results)
     plot_ensemble_accuracies(incremental_ensemble_results, pruned_percentages)
-    variabilities = measure_total_ensemble_variability(incremental_ensemble_results)
-    plot_total_variability(variabilities, list(incremental_ensemble_results.keys()), 'Ensemble_Variability.pdf')
 
     # Evaluate individual models' performance
     if os.path.exists(os.path.join(result_dir, "incremental_individual_results.pkl")):
@@ -501,6 +499,9 @@ def main(pruning_strategy, dataset_name, hardness_type):
         incremental_individual_results = evaluate_all_models_individually(models, test_loader)
         save_file(result_dir, "incremental_individual_results.pkl", incremental_individual_results)
     plot_individual_model_accuracies(incremental_individual_results, pruned_percentages)
+
+    variabilities = measure_total_ensemble_variability(incremental_ensemble_results)
+    plot_total_variability(variabilities, list(incremental_ensemble_results.keys()), 'Ensemble_Variability.pdf')
     variabilities = measure_total_ensemble_variability(incremental_individual_results)
     plot_total_variability(variabilities, list(incremental_individual_results.keys()), 'Individual_Variability.pdf')
 
