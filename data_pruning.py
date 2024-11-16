@@ -1,11 +1,64 @@
 import os
 import pickle
+import random
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
+from torch.utils.data import Subset
+
 import numpy as np
 
 from utils import get_config
+
+
+class DataResampling:
+    def __init__(self, dataset, num_classes):
+        """
+        Initialize with the dataset and number of classes.
+        """
+        self.dataset = dataset
+        self.num_classes = num_classes
+
+    @staticmethod
+    def undersample(current_indices, desired_count):
+        """
+        Perform random undersampling to match the desired count.
+        """
+        return random.sample(current_indices, desired_count)
+
+    @staticmethod
+    def oversample(current_indices, desired_count):
+        """
+        Perform random oversampling to match the desired count.
+        Elegantly ensures that all available samples are reused.
+        """
+        additional_indices = random.choices(current_indices, k=desired_count - len(current_indices))
+        return current_indices + additional_indices
+
+    def resample_data(self, samples_per_class):
+        """
+        Perform resampling to match the desired samples_per_class.
+        Uses undersampling and oversampling methods for modularity.
+        """
+        # Organize dataset by class
+        class_indices = {i: [] for i in range(self.num_classes)}
+        for idx, (_, label) in enumerate(self.dataset):
+            class_indices[label].append(idx)
+
+        # Perform resampling for each class
+        resampled_indices = []
+        for class_id, desired_count in samples_per_class.items():
+            current_indices = class_indices[class_id]
+
+            if len(current_indices) > desired_count:
+                resampled_indices.extend(self.undersample(current_indices, desired_count))
+            elif len(current_indices) < desired_count:
+                resampled_indices.extend(self.oversample(current_indices, desired_count))
+            else:
+                resampled_indices.extend(current_indices)  # No resampling needed
+
+        # Create the resampled dataset
+        return Subset(self.dataset, resampled_indices)
 
 
 class DataPruning:
