@@ -13,7 +13,7 @@ dataset_configs = {
         'num_classes': 10,
         'mean': (0.4914, 0.4822, 0.4465),
         'std': (0.2023, 0.1994, 0.2010),
-        'num_training_samples': 50000
+        'num_training_samples': [5000 for _ in range(10)]
     },
     'CIFAR100': {
         'batch_size': 128,
@@ -29,7 +29,39 @@ dataset_configs = {
         'num_classes': 100,
         'mean': (0.5071, 0.4867, 0.4408),
         'std': (0.2675, 0.2565, 0.2761),
-        'num_training_samples': 50000
+        'num_training_samples': [500 for _ in range(100)]
+    },
+    'SVHN': {
+        'batch_size': 128,
+        'num_epochs': 200,
+        'lr': 0.1,
+        'momentum': 0.9,
+        'weight_decay': 0.0005,
+        'lr_decay_milestones': [60, 120, 160],
+        'save_epoch': 20,
+        'save_dir': './Models/',
+        'timings_dir': './Timings/',
+        'num_models': 20,
+        'num_classes': 10,
+        'mean': (0.4377, 0.4438, 0.4728),
+        'std': (0.1980, 0.2010, 0.1970),
+        'num_training_samples': [4948, 13861, 10585, 8497, 7458, 6882, 5727, 5595, 5045, 4659]
+    },
+    'CINIC': {
+        'batch_size': 128,
+        'num_epochs': 200,
+        'lr': 0.1,
+        'momentum': 0.9,
+        'weight_decay': 0.0005,
+        'lr_decay_milestones': [60, 120, 160],
+        'save_epoch': 20,
+        'save_dir': './Models/',
+        'timings_dir': './Timings/',
+        'num_models': 20,
+        'num_classes': 10,
+        'mean': (0.4789, 0.4723, 0.4305),
+        'std': (0.2421, 0.2383, 0.2587),
+        'num_training_samples': [9000 for _ in range(10)]
     }
 }
 

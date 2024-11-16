@@ -527,6 +527,6 @@ if __name__ == "__main__":
                                                f"{args.hardness_type}_{args.pruning_strategy}", args.dataset_name)
     config = get_config(args.dataset_name)
     num_classes = config['num_classes']
-    num_samples = [config['num_training_samples'] / num_classes for _ in range(num_classes)]
+    num_samples = config['num_training_samples']
     os.makedirs(figure_save_dir, exist_ok=True)
     main(args.pruning_strategy, args.dataset_name, args.hardness_type)
