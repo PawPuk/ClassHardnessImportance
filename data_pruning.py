@@ -12,22 +12,24 @@ from utils import get_config
 
 
 class DataResampling:
-    def __init__(self, dataset, num_classes):
+    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy):
         """
-        Initialize with the dataset and number of classes.
+        Initialize with the dataset, number of classes, and resampling strategies.
         """
         self.dataset = dataset
         self.num_classes = num_classes
+        self.oversampling_strategy = oversampling_strategy
+        self.undersampling_strategy = undersampling_strategy
 
     @staticmethod
-    def undersample(current_indices, desired_count):
+    def random_undersample(current_indices, desired_count):
         """
         Perform random undersampling to match the desired count.
         """
         return random.sample(current_indices, desired_count)
 
     @staticmethod
-    def oversample(current_indices, desired_count):
+    def random_oversample(current_indices, desired_count):
         """
         Perform random oversampling to match the desired count.
         Elegantly ensures that all available samples are reused.
@@ -35,11 +37,33 @@ class DataResampling:
         additional_indices = random.choices(current_indices, k=desired_count - len(current_indices))
         return current_indices + additional_indices
 
+    def select_undersampling_method(self):
+        """
+        Select the appropriate undersampling method based on the strategy.
+        """
+        if self.undersampling_strategy == "random":
+            return self.random_undersample
+        else:
+            raise ValueError(f"Undersampling strategy {self.undersampling_strategy} is not supported.")
+
+    def select_oversampling_method(self):
+        """
+        Select the appropriate oversampling method based on the strategy.
+        """
+        if self.oversampling_strategy == "random":
+            return self.random_oversample
+        else:
+            raise ValueError(f"Oversampling strategy {self.oversampling_strategy} is not supported.")
+
     def resample_data(self, samples_per_class):
         """
         Perform resampling to match the desired samples_per_class.
-        Uses undersampling and oversampling methods for modularity.
+        Uses the selected undersampling and oversampling methods.
         """
+        # Select resampling methods
+        undersample = self.select_undersampling_method()
+        oversample = self.select_oversampling_method()
+
         # Organize dataset by class
         class_indices = {i: [] for i in range(self.num_classes)}
         for idx, (_, label) in enumerate(self.dataset):
@@ -51,9 +75,9 @@ class DataResampling:
             current_indices = class_indices[class_id]
 
             if len(current_indices) > desired_count:
-                resampled_indices.extend(self.undersample(current_indices, desired_count))
+                resampled_indices.extend(undersample(current_indices, desired_count))
             elif len(current_indices) < desired_count:
-                resampled_indices.extend(self.oversample(current_indices, desired_count))
+                resampled_indices.extend(oversample(current_indices, desired_count))
             else:
                 resampled_indices.extend(current_indices)  # No resampling needed
 

@@ -7,13 +7,17 @@ import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 from utils import get_config
-from data_pruning import DataResampling  # Assuming DataResampling is in a separate file
+
+from data_pruning import DataResampling
+from train_ensemble import ModelTrainer
 
 
 class Experiment3:
-    def __init__(self, dataset_name, desired_dataset_size):
+    def __init__(self, dataset_name, desired_dataset_size, oversampling_strategy, undersampling_strategy):
         self.dataset_name = dataset_name
         self.desired_dataset_size = desired_dataset_size
+        self.oversampling_strategy = oversampling_strategy
+        self.undersampling_strategy = undersampling_strategy
         self.results_file = os.path.join('Results', dataset_name, 'el2n_scores.pkl')
         self.config = get_config(dataset_name)
         self.num_classes = self.config['num_classes']
@@ -34,23 +38,27 @@ class Experiment3:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    def load_dataset(self):
+    def load_dataset(self, train=True):
         """
-        Load the dataset based on dataset_name.
+        Load the dataset based on dataset_name. Apply data augmentation only for training.
         """
         transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.RandomCrop(32, padding=4),
             transforms.ToTensor(),
             transforms.Normalize(self.config['mean'], self.config['std']),
+        ]) if train else transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(self.config['mean'], self.config['std']),
         ])
 
         if self.dataset_name == 'CIFAR10':
-            return datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+            return datasets.CIFAR10(root='./data', train=train, download=True, transform=transform)
         elif self.dataset_name == 'CIFAR100':
-            return datasets.CIFAR100(root='./data', train=True, download=True, transform=transform)
+            return datasets.CIFAR100(root='./data', train=train, download=True, transform=transform)
         elif self.dataset_name == 'SVHN':
-            return datasets.SVHN(root='./data', split='train', download=True, transform=transform)
+            split = 'train' if train else 'test'
+            return datasets.SVHN(root='./data', split=split, download=True, transform=transform)
         else:
             raise ValueError(f"Dataset {self.dataset_name} is not supported.")
 
@@ -110,10 +118,10 @@ class Experiment3:
         """
         Use DataResampling to modify the dataset to match the samples_per_class.
         """
-        resampler = DataResampling(dataset, self.num_classes)
+        resampler = DataResampling(dataset, self.num_classes, self.oversampling_strategy, self.undersampling_strategy)
         return resampler.resample_data(samples_per_class)
 
-    def get_dataloader(self, dataset):
+    def get_dataloader(self, dataset, shuffle=True):
         """
         Create a DataLoader with deterministic worker initialization.
         """
@@ -121,12 +129,13 @@ class Experiment3:
             np.random.seed(self.seed + worker_id)
             random.seed(self.seed + worker_id)
 
-        return DataLoader(dataset, batch_size=self.config['batch_size'], shuffle=True,
+        return DataLoader(dataset, batch_size=self.config['batch_size'], shuffle=shuffle,
                           num_workers=2, worker_init_fn=worker_init_fn)
 
     def main(self):
-        # Load dataset and results
-        dataset = self.load_dataset()
+        # Load training and test datasets
+        train_dataset = self.load_dataset(train=True)
+        test_dataset = self.load_dataset(train=False)
         _, _, _, dataset_accuracies, class_accuracies = self.load_results()
 
         # Compute hardness-based ratios and sample allocation
@@ -134,15 +143,22 @@ class Experiment3:
         samples_per_class = self.compute_sample_allocation(ratios)
 
         # Perform resampling
-        resampled_dataset = self.resample_dataset(dataset, samples_per_class)
+        resampled_dataset = self.resample_dataset(train_dataset, samples_per_class)
 
-        # Get DataLoader for resampled dataset
-        resampled_loader = self.get_dataloader(resampled_dataset)
+        # Get DataLoaders
+        resampled_loader = self.get_dataloader(resampled_dataset, shuffle=True)
+        test_loader = self.get_dataloader(test_dataset, shuffle=False)
 
         # Print final sample allocation
-        print("Final Samples Per Class After Resampling:")
+        print("Samples per class after resampling in training set:")
         for class_id, count in samples_per_class.items():
             print(f"  Class {class_id}: {count}")
+
+        model_save_dir = f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_size_" \
+                         f"{self.desired_dataset_size}"
+        trainer = ModelTrainer(resampled_loader, test_loader, self.dataset_name, model_save_dir, False,
+                               hardness='objective')
+        trainer.train_ensemble()
 
 
 if __name__ == "__main__":
@@ -151,7 +167,11 @@ if __name__ == "__main__":
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN)")
     parser.add_argument('--desired_dataset_size', type=int, required=True,
                         help="Desired size of the dataset after resampling")
+    parser.add_argument('--oversampling', type=str, required=True, choices=['random'],
+                        help='Strategy used for oversampling (have to choose between `random`)')
+    parser.add_argument('--undersampling', type=str, required=True, choices=['random'],
+                        help='Strategy used for undersampling (have to choose between `random`)')
     args = parser.parse_args()
 
-    experiment = Experiment3(args.dataset_name, args.desired_dataset_size)
+    experiment = Experiment3(args.dataset_name, args.desired_dataset_size, args.oversampling, args.undersampling)
     experiment.main()
