@@ -114,11 +114,12 @@ class Experiment3:
 
         return samples_per_class
 
-    def resample_dataset(self, dataset, samples_per_class):
+    def resample_dataset(self, dataset, all_el2n_scores, class_el2n_scores, samples_per_class):
         """
         Use DataResampling to modify the dataset to match the samples_per_class.
         """
-        resampler = DataResampling(dataset, self.num_classes, self.oversampling_strategy, self.undersampling_strategy)
+        resampler = DataResampling(dataset, self.num_classes, self.oversampling_strategy, self.undersampling_strategy,
+                                   all_el2n_scores, class_el2n_scores)
         return resampler.resample_data(samples_per_class)
 
     def get_dataloader(self, dataset, shuffle=True):
@@ -136,14 +137,14 @@ class Experiment3:
         # Load training and test datasets
         train_dataset = self.load_dataset(train=True)
         test_dataset = self.load_dataset(train=False)
-        _, _, _, dataset_accuracies, class_accuracies = self.load_results()
+        all_el2n_scores, class_el2n_scores, _, dataset_accuracies, class_accuracies = self.load_results()
 
         # Compute hardness-based ratios and sample allocation
         ratios = self.compute_hardness_based_ratios(class_accuracies)
         samples_per_class = self.compute_sample_allocation(ratios)
 
         # Perform resampling
-        resampled_dataset = self.resample_dataset(train_dataset, samples_per_class)
+        resampled_dataset = self.resample_dataset(train_dataset, samples_per_class, all_el2n_scores, class_el2n_scores)
 
         # Get DataLoaders
         resampled_loader = self.get_dataloader(resampled_dataset, shuffle=True)
@@ -169,7 +170,7 @@ if __name__ == "__main__":
                         help="Desired size of the dataset after resampling")
     parser.add_argument('--oversampling', type=str, required=True, choices=['random'],
                         help='Strategy used for oversampling (have to choose between `random`)')
-    parser.add_argument('--undersampling', type=str, required=True, choices=['random'],
+    parser.add_argument('--undersampling', type=str, required=True, choices=['random', 'prune_easy'],
                         help='Strategy used for undersampling (have to choose between `random`)')
     args = parser.parse_args()
 

@@ -12,7 +12,8 @@ from utils import get_config
 
 
 class DataResampling:
-    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy):
+    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, instance_hardness,
+                 class_hardness):
         """
         Initialize with the dataset, number of classes, and resampling strategies.
         """
@@ -20,6 +21,11 @@ class DataResampling:
         self.num_classes = num_classes
         self.oversampling_strategy = oversampling_strategy
         self.undersampling_strategy = undersampling_strategy
+        self.instance_hardness = np.mean(np.array(instance_hardness), axis=1)
+        self.class_hardness = {
+            class_id: np.mean(np.array(class_scores), axis=1)
+            for class_id, class_scores in class_hardness.items()
+        }
 
     @staticmethod
     def random_undersample(current_indices, desired_count):
@@ -29,10 +35,23 @@ class DataResampling:
         return random.sample(current_indices, desired_count)
 
     @staticmethod
+    def prune_easy(current_indices, desired_count, hardness_scores):
+        """
+        Perform undersampling by pruning the easiest samples based on hardness scores.
+        """
+        if hardness_scores is None:
+            raise ValueError("Instance hardness scores are required for prune_easy undersampling.")
+
+        # Sort indices by ascending hardness - the easiest samples first
+        sorted_indices = np.argsort(hardness_scores[current_indices])
+
+        # Retain the hardest samples
+        return sorted_indices[-desired_count:]
+
+    @staticmethod
     def random_oversample(current_indices, desired_count):
         """
         Perform random oversampling to match the desired count.
-        Elegantly ensures that all available samples are reused.
         """
         additional_indices = random.choices(current_indices, k=desired_count - len(current_indices))
         return current_indices + additional_indices
@@ -43,6 +62,10 @@ class DataResampling:
         """
         if self.undersampling_strategy == "random":
             return self.random_undersample
+        elif self.undersampling_strategy == "prune_easy":
+            if self.instance_hardness is None:
+                raise ValueError("Instance hardness is required for prune_easy undersampling.")
+            return lambda indices, count: self.prune_easy(indices, count, self.instance_hardness)
         else:
             raise ValueError(f"Undersampling strategy {self.undersampling_strategy} is not supported.")
 
@@ -72,7 +95,7 @@ class DataResampling:
         # Perform resampling for each class
         resampled_indices = []
         for class_id, desired_count in samples_per_class.items():
-            current_indices = class_indices[class_id]
+            current_indices = np.array(class_indices[class_id])
 
             if len(current_indices) > desired_count:
                 resampled_indices.extend(undersample(current_indices, desired_count))
@@ -207,7 +230,6 @@ class DataPruning:
         self.plot_class_level_sample_distribution(remaining_indices.tolist(), pruning_key='dlp')
 
         return remaining_indices.tolist()
-
 
     def fixed_class_level_pruning(self):
         """
