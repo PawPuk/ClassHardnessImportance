@@ -129,7 +129,7 @@ class Experiment2:
 
     def run_experiment(self):
         # Collect EL2N scores across all models for the training set
-        all_el2n_scores, class_el2n_scores, labels = self.load_el2n_scores()
+        all_el2n_scores, class_el2n_scores, labels, _ = self.load_el2n_scores()
 
         # Perform dataset-level pruning
         pruned_dataset = self.prune_dataset(all_el2n_scores, class_el2n_scores, labels)

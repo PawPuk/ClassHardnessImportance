@@ -77,15 +77,25 @@ class HardnessCalculator:
     def compute_el2n(self, model, dataloader):
         model.eval()
         el2n_scores = []
+        correct, total = 0, 0
         with torch.no_grad():
             for inputs, labels in dataloader:
                 inputs, labels = inputs.cuda(), labels.cuda()
                 outputs = model(inputs)
+
+                # Compute EL2N scores
                 softmax_outputs = F.softmax(outputs, dim=1)
                 one_hot_labels = F.one_hot(labels, num_classes=self.NUM_CLASSES).float()
                 l2_errors = torch.norm(softmax_outputs - one_hot_labels, dim=1)
                 el2n_scores.extend(l2_errors.cpu().numpy())
-        return el2n_scores
+
+                # Compute accuracies
+                _, predicted = torch.max(outputs, 1)
+                correct += (predicted == labels).sum().item()
+                total += labels.size(0)
+
+        accuracy = correct / total
+        return el2n_scores, accuracy
 
     def load_model_and_compute_el2n(self, model_id):
         model = self.create_model().cuda()
@@ -94,31 +104,34 @@ class HardnessCalculator:
 
         if os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path))
-            el2n_scores = self.compute_el2n(model, self.training_loader)
-            return el2n_scores
+            el2n_scores, accuracy = self.compute_el2n(model, self.training_loader)
+            return el2n_scores, accuracy
         else:
             print(f'Model {model_id} not found at epoch {self.SAVE_EPOCH}.')
-            return None
+            return None, None
 
     def collect_el2n_scores(self):
-        all_el2n_scores = [[] for _ in range(self.training_set_size)]
+        all_el2n_scores, model_accuracies = [[] for _ in range(self.training_set_size)], []
         for model_id in range(self.NUM_MODELS):
-            el2n_scores = self.load_model_and_compute_el2n(model_id)
+            el2n_scores, accuracy = self.load_model_and_compute_el2n(model_id)
             if el2n_scores:
                 for i in range(self.training_set_size):
                     all_el2n_scores[i].append(el2n_scores[i])
-        return all_el2n_scores
+                model_accuracies.append(accuracy)
+        return all_el2n_scores, model_accuracies
 
-    def group_scores_by_class(self, el2n_scores):
-        class_el2n_scores = {i: [] for i in range(self.NUM_CLASSES)}  # Dictionary to store scores by class
+    def group_scores_by_class(self, el2n_scores, accuracies):
+        class_el2n_scores = {i: [] for i in range(self.NUM_CLASSES)}
+        class_accuracies = {i: [] for i in range(self.NUM_CLASSES)}
         labels = []  # Store corresponding labels
 
         # Since we are not shuffling the data loader, we can directly match scores with their labels
         for i, (_, label) in enumerate(self.training_loader.dataset):
             class_el2n_scores[label].append(el2n_scores[i])
+            class_accuracies[label].append(accuracies[i])
             labels.append(label)
 
-        return class_el2n_scores, labels
+        return class_el2n_scores, class_accuracies, labels
 
     @staticmethod
     def compute_class_statistics(class_el2n_scores):
@@ -342,9 +355,9 @@ class HardnessCalculator:
             pickle.dump(el2n_scores, file)
 
     def run(self):
-        all_el2n_scores = self.collect_el2n_scores()
-        class_el2n_scores, labels = self.group_scores_by_class(all_el2n_scores)
-        self.save_el2n_scores((all_el2n_scores, class_el2n_scores, labels))
+        all_el2n_scores, all_accuracies = self.collect_el2n_scores()
+        class_el2n_scores, class_accuracies, labels = self.group_scores_by_class(all_el2n_scores, all_accuracies)
+        self.save_el2n_scores((all_el2n_scores, class_el2n_scores, labels, class_accuracies))
         print("Hardness scores computed and saved. Now producing visualization figures.")
 
         # Normalize EL2N scores after averaging across models
