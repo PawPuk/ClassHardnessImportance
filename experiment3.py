@@ -166,10 +166,10 @@ if __name__ == "__main__":
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN)")
     parser.add_argument('--desired_dataset_size', type=int, required=True,
                         help="Desired size of the dataset after resampling")
-    parser.add_argument('--oversampling', type=str, required=True, choices=['random'],
-                        help='Strategy used for oversampling (have to choose between `random`)')
+    parser.add_argument('--oversampling', type=str, required=True, choices=['random', 'easy', 'hard'],
+                        help='Strategy used for oversampling (have to choose between `random`, `easy`, and `hard`)')
     parser.add_argument('--undersampling', type=str, required=True, choices=['random', 'prune_easy'],
-                        help='Strategy used for undersampling (have to choose between `random`)')
+                        help='Strategy used for undersampling (have to choose between `random`, and `prune_easy`)')
     args = parser.parse_args()
 
     experiment = Experiment3(args.dataset_name, args.desired_dataset_size, args.oversampling, args.undersampling)

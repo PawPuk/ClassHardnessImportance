@@ -29,11 +29,11 @@ class DataResampling:
         self.labels = np.array(labels)
 
     @staticmethod
-    def random_undersample(current_indices, desired_count):
+    def random_undersample(desired_count, hardness_scores):
         """
         Perform random undersampling to match the desired count.
         """
-        return random.sample(current_indices, desired_count)
+        return random.sample(range(len(hardness_scores)), desired_count)
 
     @staticmethod
     def prune_easy(desired_count, hardness_scores):
@@ -47,19 +47,47 @@ class DataResampling:
         return sorted_indices[-desired_count:]
 
     @staticmethod
-    def random_oversample(current_indices, desired_count):
+    def random_oversample(desired_count, hardness_scores):
         """
         Perform random oversampling to match the desired count.
         """
-        additional_indices = random.choices(current_indices, k=desired_count - len(current_indices))
-        return current_indices + additional_indices
+        additional_indices = random.choices(range(len(hardness_scores)), k=desired_count - len(hardness_scores))
+        return list(range(len(hardness_scores))) + additional_indices
+
+    @staticmethod
+    def oversample_easy(desired_count, hardness_scores):
+        """
+        Perform oversampling with a higher chance of duplicating easy samples.
+        """
+        # Calculate weights inversely proportional to hardness
+        probabilities = 1 / (np.array(hardness_scores) + 1e-6)
+        probabilities /= probabilities.sum()
+
+        # Perform weighted sampling
+        additional_indices = random.choices(range(len(hardness_scores)), weights=probabilities,
+                                            k=desired_count - len(hardness_scores))
+        return list(range(len(hardness_scores))) + additional_indices
+
+    @staticmethod
+    def oversample_hard(desired_count, hardness_scores):
+        """
+        Perform oversampling with a higher chance of duplicating hard samples.
+        """
+        # Calculate weights proportional to hardness
+        probabilities = np.array(hardness_scores) + 1e-6
+        probabilities /= probabilities.sum()
+
+        # Perform weighted sampling
+        additional_indices = random.choices(range(len(hardness_scores)), weights=probabilities,
+                                            k=desired_count - len(hardness_scores))
+        return list(range(len(hardness_scores))) + additional_indices
 
     def select_undersampling_method(self):
         """
         Select the appropriate undersampling method based on the strategy.
         """
         if self.undersampling_strategy == "random":
-            return self.random_undersample
+            return lambda count, hardness: self.random_undersample(count, hardness)
         elif self.undersampling_strategy == "prune_easy":
             return lambda count, hardness: self.prune_easy(count, hardness)
         else:
@@ -70,7 +98,11 @@ class DataResampling:
         Select the appropriate oversampling method based on the strategy.
         """
         if self.oversampling_strategy == "random":
-            return self.random_oversample
+            return lambda count, hardness: self.random_oversample(count, hardness)
+        elif self.oversampling_strategy == "easy":
+            return lambda count, hardness: self.oversample_easy(count, hardness)
+        elif self.oversampling_strategy == "hard":
+            return lambda count, hardness: self.oversample_hard(count, hardness)
         else:
             raise ValueError(f"Oversampling strategy {self.oversampling_strategy} is not supported.")
 
@@ -93,15 +125,16 @@ class DataResampling:
         for class_id, class_scores in self.class_hardness.items():
             desired_count = samples_per_class[class_id]
             current_indices = class_indices[class_id]
+            global_indices = np.where(self.labels == class_id)[0]
 
             if len(current_indices) > desired_count:
                 class_retain_indices = undersample(desired_count, class_scores)
-                global_indices = np.where(self.labels == class_id)[0]
                 resampled_indices.extend(global_indices[class_retain_indices])
             elif len(current_indices) < desired_count:
-                resampled_indices.extend(oversample(current_indices, desired_count))
+                class_add_indices = oversample(desired_count, class_scores)
+                resampled_indices.extend(global_indices[class_add_indices])
             else:
-                resampled_indices.extend(current_indices)  # No resampling needed
+                resampled_indices.extend(global_indices)  # No resampling needed
 
         # Create the resampled dataset
         return Subset(self.dataset, resampled_indices)
