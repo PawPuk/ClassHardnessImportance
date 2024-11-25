@@ -109,6 +109,11 @@ def compute_pruned_percentage(pruning_strategy: str, dataset_name: str,
     return pruned_percentages
 
 
+def load_el2n_scores(dataset_name):
+    with open(os.path.join('Results/', dataset_name, 'el2n_scores.pkl'), 'rb') as file:
+        return pickle.load(file)
+
+
 def evaluate_ensemble(ensemble: List[dict], test_loader) -> List[float]:
     """
     Evaluate an ensemble of models using logit averaging.
@@ -481,6 +486,7 @@ def main(pruning_strategy, dataset_name, hardness_type):
     models = load_models(pruning_strategy, dataset_name, hardness_type)
     test_loader = load_cifar10_test_set(1024)
     pruned_percentages = compute_pruned_percentage(pruning_strategy, dataset_name, models)
+    all_el2n_scores, class_el2n_scores, labels, _, _ = load_el2n_scores(dataset_name)
 
     # Evaluate ensemble performance
     if os.path.exists(os.path.join(result_dir, "incremental_ensemble_results.pkl")):

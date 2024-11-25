@@ -83,8 +83,8 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform, se
         train_set = torchvision.datasets.SVHN(root='./data', split='train', download=True, transform=train_transform)
         test_set = torchvision.datasets.SVHN(root='./data', split='test', download=True, transform=test_transform)
     elif dataset_name == 'CINIC10':
-        train_set = CINIC10(root_dir='./data/cinic-10', split='train', transform=train_transform)
-        test_set = CINIC10(root_dir='./data/cinic-10', split='test', transform=test_transform)
+        train_set = CINIC10(root_dir='/mnt/parscratch/users/acq21pp/CINIC-10', split='train', transform=train_transform)
+        test_set = CINIC10(root_dir='/mnt/parscratch/users/acq21pp/CINIC-10', split='test', transform=test_transform)
     else:
         raise ValueError(f"Dataset {dataset_name} is not supported. Choose either CIFAR10 or CIFAR100.")
 

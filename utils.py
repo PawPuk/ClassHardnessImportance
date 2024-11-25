@@ -47,7 +47,7 @@ dataset_configs = {
         'std': (0.1980, 0.2010, 0.1970),
         'num_training_samples': [4948, 13861, 10585, 8497, 7458, 6882, 5727, 5595, 5045, 4659]
     },
-    'CINIC': {
+    'CINIC10': {
         'batch_size': 128,
         'num_epochs': 200,
         'lr': 0.1,

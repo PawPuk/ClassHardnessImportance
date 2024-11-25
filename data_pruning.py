@@ -10,6 +10,8 @@ import numpy as np
 
 from utils import get_config
 
+import os
+
 
 class DataResampling:
     def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, instance_hardness,
@@ -27,6 +29,47 @@ class DataResampling:
             for class_id, class_scores in class_hardness.items()
         }
         self.labels = np.array(labels)
+        self.fig_save_dir = 'Figures/'
+
+    def plot_probability_distribution(self, probabilities, method_name, class_id):
+        """
+        Plot and save both unsorted and sorted probability distributions for oversampling.
+        """
+        os.makedirs(self.fig_save_dir, exist_ok=True)
+
+        # Plot the unsorted probabilities
+        plt.figure()
+        plt.plot(probabilities, marker='o', linestyle='-', alpha=0.75)
+        plt.title(f'Probability Distribution ({method_name.capitalize()} Oversampling, Class {class_id}) - Unsorted')
+        plt.xlabel('Samples')
+        plt.ylabel('Probability')
+        plt.grid(True)
+
+        # Save the unsorted plot
+        plot_filename_unsorted = os.path.join(
+            self.fig_save_dir,
+            f'{method_name}_oversampling_class_{class_id}_probabilities_unsorted.png'
+        )
+        plt.savefig(plot_filename_unsorted)
+        plt.close()
+
+        # Plot the sorted probabilities
+        sorted_probabilities = np.sort(probabilities)[::-1]
+
+        plt.figure()
+        plt.plot(sorted_probabilities, marker='o', linestyle='-', alpha=0.75)
+        plt.title(f'Sorted Probability Distribution ({method_name.capitalize()} Oversampling, Class {class_id})')
+        plt.xlabel('Samples (sorted)')
+        plt.ylabel('Probability')
+        plt.grid(True)
+
+        # Save the sorted plot
+        plot_filename_sorted = os.path.join(
+            self.fig_save_dir,
+            f'{method_name}_oversampling_class_{class_id}_probabilities_sorted.png'
+        )
+        plt.savefig(plot_filename_sorted)
+        plt.close()
 
     @staticmethod
     def random_undersample(desired_count, hardness_scores):
@@ -54,33 +97,57 @@ class DataResampling:
         additional_indices = random.choices(range(len(hardness_scores)), k=desired_count - len(hardness_scores))
         return list(range(len(hardness_scores))) + additional_indices
 
-    @staticmethod
-    def oversample_easy(desired_count, hardness_scores):
+    def oversample_easy(self, desired_count, hardness_scores, class_id):
         """
         Perform oversampling with a higher chance of duplicating easy samples.
         """
-        # Calculate weights inversely proportional to hardness
-        probabilities = 1 / (np.array(hardness_scores) + 1e-6)
-        probabilities /= probabilities.sum()
+        # Sort indices by ascending hardness (the easiest samples first)
+        sorted_indices = np.argsort(hardness_scores)
+        n = len(hardness_scores)
+
+        # Calculate probabilities using the adjusted exponential formula
+        alpha_easy = 5  # Adjust alpha for easy oversampling
+        normalized_hardness = np.linspace(0, 1, n)
+        probabilities_sorted = 0.5 + 0.5 * (1 - np.exp(-alpha_easy * (1 - normalized_hardness))) / (
+                1 - np.exp(-alpha_easy))
+
+        # Map sorted probabilities back to the original order
+        probabilities = np.zeros(n)
+        probabilities[sorted_indices] = probabilities_sorted
 
         # Perform weighted sampling
-        additional_indices = random.choices(range(len(hardness_scores)), weights=probabilities,
-                                            k=desired_count - len(hardness_scores))
-        return list(range(len(hardness_scores))) + additional_indices
+        additional_indices = random.choices(range(n), weights=probabilities, k=desired_count - n)
 
-    @staticmethod
-    def oversample_hard(desired_count, hardness_scores):
+        # Plot and save the probability distribution
+        self.plot_probability_distribution(probabilities, 'easy', class_id)
+
+        return list(range(n)) + additional_indices
+
+    def oversample_hard(self, desired_count, hardness_scores, class_id):
         """
         Perform oversampling with a higher chance of duplicating hard samples.
         """
-        # Calculate weights proportional to hardness
-        probabilities = np.array(hardness_scores) + 1e-6
-        probabilities /= probabilities.sum()
+        # Sort indices by descending hardness (the hardest samples first)
+        sorted_indices = np.argsort(hardness_scores)[::-1]
+        n = len(hardness_scores)
+
+        # Calculate probabilities using the adjusted exponential formula
+        alpha_hard = 5  # Adjust alpha for hard oversampling
+        normalized_hardness = np.linspace(0, 1, n)
+        probabilities_sorted = 0.5 + 0.5 * (1 - np.exp(-alpha_hard * (1 - normalized_hardness))) / (
+                1 - np.exp(-alpha_hard))
+
+        # Map sorted probabilities back to the original order
+        probabilities = np.zeros(n)
+        probabilities[sorted_indices] = probabilities_sorted
 
         # Perform weighted sampling
-        additional_indices = random.choices(range(len(hardness_scores)), weights=probabilities,
-                                            k=desired_count - len(hardness_scores))
-        return list(range(len(hardness_scores))) + additional_indices
+        additional_indices = random.choices(range(n), weights=probabilities, k=desired_count - n)
+
+        # Plot and save the probability distribution
+        self.plot_probability_distribution(probabilities, 'hard', class_id)
+
+        return list(range(n)) + additional_indices
 
     def select_undersampling_method(self):
         """
@@ -98,11 +165,11 @@ class DataResampling:
         Select the appropriate oversampling method based on the strategy.
         """
         if self.oversampling_strategy == "random":
-            return lambda count, hardness: self.random_oversample(count, hardness)
+            return lambda count, hardness, class_id: self.random_oversample(count, hardness)
         elif self.oversampling_strategy == "easy":
-            return lambda count, hardness: self.oversample_easy(count, hardness)
+            return lambda count, hardness, class_id: self.oversample_easy(count, hardness, class_id)
         elif self.oversampling_strategy == "hard":
-            return lambda count, hardness: self.oversample_hard(count, hardness)
+            return lambda count, hardness, class_id: self.oversample_hard(count, hardness, class_id)
         else:
             raise ValueError(f"Oversampling strategy {self.oversampling_strategy} is not supported.")
 
@@ -131,7 +198,7 @@ class DataResampling:
                 class_retain_indices = undersample(desired_count, class_scores)
                 resampled_indices.extend(global_indices[class_retain_indices])
             elif len(current_indices) < desired_count:
-                class_add_indices = oversample(desired_count, class_scores)
+                class_add_indices = oversample(desired_count, class_scores, class_id)
                 resampled_indices.extend(global_indices[class_add_indices])
             else:
                 resampled_indices.extend(global_indices)  # No resampling needed
