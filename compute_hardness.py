@@ -67,7 +67,7 @@ class HardnessCalculator:
             np.random.seed(self.seed + worker_id)
             random.seed(self.seed + worker_id)
 
-        training_loader = DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=True, num_workers=2,
+        training_loader = DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2,
                                      worker_init_fn=worker_init_fn)
         test_loader = DataLoader(test_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2,
                                  worker_init_fn=worker_init_fn)
@@ -108,8 +108,8 @@ class HardnessCalculator:
 
         return el2n_scores, class_accuracies
 
-    def collect_el2n_scores(self, loader):
-        all_el2n_scores, model_class_accuracies = [[] for _ in range(self.training_set_size)], []
+    def collect_el2n_scores(self, loader, n):
+        all_el2n_scores, model_class_accuracies = [[] for _ in range(n)], []
         for model_id in range(self.NUM_MODELS):
             model = self.create_model().cuda()
             # This is the directory in which we store the pretrained models.
@@ -121,17 +121,17 @@ class HardnessCalculator:
             else:
                 # This code can only be run if models were pretrained. If no pretrained models are found, throw error.
                 raise Exception(f'Model {model_id} not found at epoch {self.SAVE_EPOCH}.')
-            for i in range(self.training_set_size):
+            for i in range(n):
                 all_el2n_scores[i].append(el2n_scores[i])
             model_class_accuracies.append(class_accuracies)
         return all_el2n_scores, model_class_accuracies
 
-    def group_scores_by_class(self, el2n_scores):
+    def group_scores_by_class(self, el2n_scores, dataset):
         class_el2n_scores = {i: [] for i in range(self.NUM_CLASSES)}
         labels = []  # Store corresponding labels
 
         # Since we are not shuffling the data loader, we can directly match scores with their labels
-        for i, (_, label) in enumerate(self.training_loader.dataset):
+        for i, (_, label) in enumerate(dataset):
             class_el2n_scores[label].append(el2n_scores[i])
             labels.append(label)
 
@@ -345,17 +345,23 @@ class HardnessCalculator:
         plt.close()
 
     def run(self):
-        training_all_el2n_scores, training_class_accuracies = self.collect_el2n_scores(self.training_loader)
-        training_class_el2n_scores, training_labels = self.group_scores_by_class(training_all_el2n_scores)
-        test_all_el2n_scores, test_class_accuracies = self.collect_el2n_scores(self.test_loader)
-        test_class_el2n_scores, test_labels = self.group_scores_by_class(training_all_el2n_scores)
+        training_all_el2n_scores, training_class_accuracies = self.collect_el2n_scores(self.training_loader,
+                                                                                       self.training_set_size)
+        test_all_el2n_scores, test_class_accuracies = self.collect_el2n_scores(self.test_loader, self.test_set_size)
+
+        training_class_el2n_scores, training_labels = self.group_scores_by_class(training_all_el2n_scores,
+                                                                                 self.training_loader.dataset)
+        test_class_el2n_scores, test_labels = self.group_scores_by_class(test_all_el2n_scores, self.test_loader.dataset)
+
         self.save_el2n_scores((training_all_el2n_scores, training_class_el2n_scores, training_labels,
                                training_class_accuracies, test_all_el2n_scores, test_class_el2n_scores, test_labels,
                                test_class_accuracies))
         print("Hardness scores computed and saved. Now normalizing the scores for visualizations.")
 
         normalized_training_el2n_scores = self.normalize_el2n_scores(training_all_el2n_scores)
+        normalized_test_el2n_scores = self.normalize_el2n_scores(test_all_el2n_scores)
         normalized_training_class_el2n_scores = self.normalize_class_el2n_scores(training_class_el2n_scores)
+        normalized_test_class_el2n_scores = self.normalize_class_el2n_scores(test_class_el2n_scores)
         training_class_stats = self.compute_class_statistics(training_class_el2n_scores)
         test_class_stats = self.compute_class_statistics(test_class_el2n_scores)
         print("Normalized EL2N scores computed. Now producing visualization figures.")
@@ -367,7 +373,7 @@ class HardnessCalculator:
         self.plot_class_level_distribution(training_class_el2n_scores)
         self.plot_class_level_distribution(test_class_el2n_scores, True)
         self.plot_pruning_rates(normalized_training_el2n_scores, normalized_training_class_el2n_scores, training_labels)
-        self.plot_pruning_rates(normalized_training_el2n_scores, normalized_training_class_el2n_scores, test_labels,
+        self.plot_pruning_rates(normalized_test_el2n_scores, normalized_test_class_el2n_scores, test_labels,
                                 True)
 
 
