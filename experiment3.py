@@ -1,7 +1,9 @@
-import pickle
-import os
 import argparse
+import os
+import pickle
 import random
+from typing import Dict
+
 import numpy as np
 import torch
 from torchvision import datasets, transforms
@@ -87,7 +89,7 @@ class Experiment3:
         # Compute ratios as 1 / accuracy
         return {class_id: 1 / acc if acc > 0 else float('inf') for class_id, acc in avg_class_accuracies.items()}
 
-    def compute_sample_allocation(self, ratios):
+    def compute_sample_allocation(self, ratios) -> Dict[int: float]:
         """
         Compute the number of samples required for each class to match the desired_dataset_size.
         """
@@ -111,12 +113,12 @@ class Experiment3:
 
         return samples_per_class
 
-    def resample_dataset(self, dataset, all_el2n_scores, class_el2n_scores, samples_per_class, labels):
+    def resample_dataset(self, dataset, all_el2n_scores, class_el2n_scores, samples_per_class):
         """
         Use DataResampling to modify the dataset to match the samples_per_class.
         """
         resampler = DataResampling(dataset, self.num_classes, self.oversampling_strategy, self.undersampling_strategy,
-                                   all_el2n_scores, class_el2n_scores, labels)
+                                   all_el2n_scores, class_el2n_scores)
         return resampler.resample_data(samples_per_class)
 
     def get_dataloader(self, dataset, shuffle=True):
@@ -134,15 +136,14 @@ class Experiment3:
         # Load training and test datasets
         train_dataset = self.load_dataset(train=True)
         test_dataset = self.load_dataset(train=False)
-        all_el2n_scores, class_el2n_scores, labels, dataset_accuracies, class_accuracies = self.load_results()
+        all_el2n_scores, class_el2n_scores, _, dataset_accuracies, class_accuracies = self.load_results()
 
         # Compute hardness-based ratios and sample allocation
         ratios = self.compute_hardness_based_ratios(class_accuracies)
         samples_per_class = self.compute_sample_allocation(ratios)
 
         # Perform resampling
-        resampled_dataset = self.resample_dataset(train_dataset, all_el2n_scores, class_el2n_scores, samples_per_class,
-                                                  labels)
+        resampled_dataset = self.resample_dataset(train_dataset, all_el2n_scores, class_el2n_scores, samples_per_class)
 
         # Get DataLoaders
         resampled_loader = self.get_dataloader(resampled_dataset, shuffle=True)

@@ -1,4 +1,3 @@
-import os
 import pickle
 import random
 from typing import Dict, List
@@ -15,7 +14,7 @@ import os
 
 class DataResampling:
     def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, instance_hardness,
-                 class_hardness, labels):
+                 class_hardness):
         """
         Initialize with the dataset, number of classes, and resampling strategies.
         """
@@ -28,7 +27,6 @@ class DataResampling:
             class_id: np.mean(np.array(class_scores), axis=1)
             for class_id, class_scores in class_hardness.items()
         }
-        self.labels = np.array(labels)
         self.fig_save_dir = 'Figures/'
 
     def plot_probability_distribution(self, probabilities, method_name, class_id):
@@ -191,18 +189,16 @@ class DataResampling:
         resampled_indices = []
         for class_id, class_scores in self.class_hardness.items():
             desired_count = samples_per_class[class_id]
-            current_indices = class_indices[class_id]
-            global_indices = np.where(self.labels == class_id)[0]
+            current_indices = np.array(class_indices[class_id])
 
             if len(current_indices) > desired_count:
                 class_retain_indices = undersample(desired_count, class_scores)
-                resampled_indices.extend(global_indices[class_retain_indices])
+                resampled_indices.extend(current_indices[class_retain_indices])
             elif len(current_indices) < desired_count:
                 class_add_indices = oversample(desired_count, class_scores, class_id)
-                resampled_indices.extend(global_indices[class_add_indices])
+                resampled_indices.extend(current_indices[class_add_indices])
             else:
-                resampled_indices.extend(global_indices)  # No resampling needed
-
+                resampled_indices.extend(current_indices)  # No resampling needed
         # Create the resampled dataset
         return Subset(self.dataset, resampled_indices)
 

@@ -23,52 +23,56 @@ class HardnessCalculator:
         torch.manual_seed(self.seed)
         torch.cuda.manual_seed(self.seed)
         torch.cuda.manual_seed_all(self.seed)
-        torch.backends.cudnn.benchmark = True  # Set to False for reproducibility
+        torch.backends.cudnn.benchmark = False  # Set to False for reproducibility
         torch.backends.cudnn.deterministic = True
 
         self.dataset_name = dataset_name
-        config = get_config(dataset_name)
-        self.BATCH_SIZE = config['batch_size']
-        self.SAVE_EPOCH = config['save_epoch']
-        self.MODEL_DIR = config['save_dir']
-        self.NUM_CLASSES = config['num_classes']
-        self.NUM_MODELS = config['num_models']
+        self.config = get_config(dataset_name)
+        self.BATCH_SIZE = self.config['batch_size']
+        self.SAVE_EPOCH = self.config['save_epoch']
+        self.MODEL_DIR = self.config['save_dir']
+        self.NUM_CLASSES = self.config['num_classes']
+        self.NUM_MODELS = self.config['num_models']
 
-        self.training_loader, _, self.training_set_size = self.load_dataset(self.dataset_name)
+        self.training_loader, self.training_set_size, self.test_loader, self.test_set_size = self.load_dataset()
         self.figure_save_dir = os.path.join('Figures/', self.dataset_name)
         self.results_save_dir = os.path.join('Results/', self.dataset_name)
         os.makedirs(self.figure_save_dir, exist_ok=True)
         os.makedirs(self.results_save_dir, exist_ok=True)
 
-    def load_dataset(self, dataset_name):
-        if dataset_name == 'CIFAR10':
-            train_transform = transforms.Compose([
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomCrop(32, padding=4),
-                transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            ])
+    def load_dataset(self):
+        train_transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomCrop(32, padding=4),
+            transforms.ToTensor(),
+            transforms.Normalize(self.config['mean'], self.config['std']),
+        ])
+        test_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(self.config['mean'], self.config['std']),
+        ])
+        if self.dataset_name == 'CIFAR10':
             training_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True,
                                                         transform=train_transform)
-        elif dataset_name == 'CIFAR100':
-            train_transform = transforms.Compose([
-                transforms.RandomHorizontalFlip(),
-                transforms.RandomCrop(32, padding=4),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
-            ])
+            test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
+        elif self.dataset_name == 'CIFAR100':
             training_set = torchvision.datasets.CIFAR100(root='./data', train=True, download=True,
                                                          transform=train_transform)
+            test_set = torchvision.datasets.CIFAR100(root='./data', train=False, download=True,
+                                                     transform=test_transform)
         else:
-            raise ValueError(f"Dataset {dataset_name} is not supported.")
+            raise ValueError(f"Dataset {self.dataset_name} is not supported.")
 
         def worker_init_fn(worker_id):
             np.random.seed(self.seed + worker_id)
             random.seed(self.seed + worker_id)
 
-        training_loader = DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2,
+        training_loader = DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=True, num_workers=2,
                                      worker_init_fn=worker_init_fn)
-        return training_loader, None, len(training_set)
+        test_loader = DataLoader(test_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2,
+                                 worker_init_fn=worker_init_fn)
+
+        return training_loader, len(training_set), test_loader, len(test_set)
 
     def create_model(self):
         model = ResNet18LowRes(num_classes=self.NUM_CLASSES)
@@ -77,7 +81,7 @@ class HardnessCalculator:
     def compute_el2n(self, model, dataloader):
         model.eval()
         el2n_scores = []
-        correct, total = 0, 0
+        # Accuracy is another way to estimate class-level hardness, so we also compute it
         class_correct = {i: 0 for i in range(self.NUM_CLASSES)}
         class_total = {i: 0 for i in range(self.NUM_CLASSES)}
 
@@ -86,56 +90,41 @@ class HardnessCalculator:
                 inputs, labels = inputs.cuda(), labels.cuda()
                 outputs = model(inputs)
 
-                # Compute EL2N scores
+                # This computes the EL2N scores
                 softmax_outputs = F.softmax(outputs, dim=1)
                 one_hot_labels = F.one_hot(labels, num_classes=self.NUM_CLASSES).float()
                 l2_errors = torch.norm(softmax_outputs - one_hot_labels, dim=1)
                 el2n_scores.extend(l2_errors.cpu().numpy())
 
-                # Compute accuracies
+                # This computes the class-level accuracies
                 _, predicted = torch.max(outputs, 1)
-                correct += (predicted == labels).sum().item()
-                total += labels.size(0)
-
-                # Class-level accuracies
                 for i in range(labels.size(0)):
                     label = labels[i].item()
                     class_total[label] += 1
                     if predicted[i] == label:
                         class_correct[label] += 1
 
-        dataset_accuracy = correct / total
         class_accuracies = {k: class_correct[k] / class_total[k] if class_total[k] > 0 else 0 for k in class_correct}
 
-        return el2n_scores, dataset_accuracy, class_accuracies
+        return el2n_scores, class_accuracies
 
-    def load_model_and_compute_el2n(self, model_id):
-        model = self.create_model().cuda()
-        model_path = os.path.join(self.MODEL_DIR, 'none', self.dataset_name,
-                                  f'model_{model_id}_epoch_{self.SAVE_EPOCH}.pth')
-
-        if os.path.exists(model_path):
-            model.load_state_dict(torch.load(model_path))
-            el2n_scores, dataset_accuracy, class_accuracies = self.compute_el2n(model, self.training_loader)
-            return el2n_scores, dataset_accuracy, class_accuracies
-        else:
-            print(f'Model {model_id} not found at epoch {self.SAVE_EPOCH}.')
-            return None, None, None
-
-    def collect_el2n_scores(self):
-        all_el2n_scores, model_dataset_accuracies, model_class_accuracies = (
-            [[] for _ in range(self.training_set_size)],
-            [],
-            [],
-        )
+    def collect_el2n_scores(self, loader):
+        all_el2n_scores, model_class_accuracies = [[] for _ in range(self.training_set_size)], []
         for model_id in range(self.NUM_MODELS):
-            el2n_scores, dataset_accuracy, class_accuracies = self.load_model_and_compute_el2n(model_id)
-            if el2n_scores:
-                for i in range(self.training_set_size):
-                    all_el2n_scores[i].append(el2n_scores[i])
-                model_dataset_accuracies.append(dataset_accuracy)
-                model_class_accuracies.append(class_accuracies)
-        return all_el2n_scores, model_dataset_accuracies, model_class_accuracies
+            model = self.create_model().cuda()
+            # This is the directory in which we store the pretrained models.
+            model_path = os.path.join(self.MODEL_DIR, 'none', self.dataset_name,
+                                      f'model_{model_id}_epoch_{self.SAVE_EPOCH}.pth')
+            if os.path.exists(model_path):
+                model.load_state_dict(torch.load(model_path))
+                el2n_scores, class_accuracies = self.compute_el2n(model, loader)
+            else:
+                # This code can only be run if models were pretrained. If no pretrained models are found, throw error.
+                raise Exception(f'Model {model_id} not found at epoch {self.SAVE_EPOCH}.')
+            for i in range(self.training_set_size):
+                all_el2n_scores[i].append(el2n_scores[i])
+            model_class_accuracies.append(class_accuracies)
+        return all_el2n_scores, model_class_accuracies
 
     def group_scores_by_class(self, el2n_scores):
         class_el2n_scores = {i: [] for i in range(self.NUM_CLASSES)}
@@ -148,28 +137,41 @@ class HardnessCalculator:
 
         return class_el2n_scores, labels
 
+    def save_el2n_scores(self, el2n_scores):
+        with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
+            pickle.dump(el2n_scores, file)
+
+    @staticmethod
+    def normalize_el2n_scores(all_el2n_scores):
+        # Since we computed EL2N scores with multiple models we need to compute average score per sample over all models
+        avg_el2n_scores = [np.mean(scores) for scores in all_el2n_scores]
+        min_score, max_score = min(avg_el2n_scores), max(avg_el2n_scores)
+        normalized_avg_el2n_scores = [(score - min_score) / (max_score - min_score) for score in avg_el2n_scores]
+        return normalized_avg_el2n_scores
+
+    @staticmethod
+    def normalize_class_el2n_scores(class_el2n_scores):
+        normalized_class_el2n_scores = {}
+        for class_id, scores in class_el2n_scores.items():
+            # Just like in normalize_el2n_scores, we have to compute the average score per sample over all models.
+            avg_scores = [np.mean(sample_scores) for sample_scores in scores]
+            min_score, max_score = min(avg_scores), max(avg_scores)
+            normalized_scores = [(score - min_score) / (max_score - min_score) for score in avg_scores]
+            normalized_class_el2n_scores[class_id] = normalized_scores
+        return normalized_class_el2n_scores
+
     @staticmethod
     def compute_class_statistics(class_el2n_scores):
         class_stats = {}
-
         for class_id, scores in class_el2n_scores.items():
             scores_array = np.array(scores)
             means = np.mean(scores_array, axis=1)
-            q1 = np.percentile(means, 25)
-            q3 = np.percentile(means, 75)
-            min_val = np.min(means)
-            max_val = np.max(means)
-
-            class_stats[class_id] = {
-                "q1": q1,
-                "q3": q3,
-                "min": min_val,
-                "max": max_val
-            }
-
+            q1, q3 = np.percentile(means, 25), np.percentile(means, 75)
+            min_val, max_val = np.min(means), np.max(means)
+            class_stats[class_id] = {"q1": q1, "q3": q3, "min": min_val, "max": max_val}
         return class_stats
 
-    def plot_class_level_candlestick(self, class_stats):
+    def plot_class_level_candlestick(self, class_stats, test=False):
         # Unsorted Plot
         class_ids = list(class_stats.keys())
         q1_values = [class_stats[class_id]["q1"] for class_id in class_ids]
@@ -186,7 +188,8 @@ class HardnessCalculator:
         ax.set_ylabel("EL2N Score (L2 Norm)")
         ax.set_title("Class-Level EL2N Scores Candlestick Plot")
 
-        unsorted_file_name = os.path.join(self.figure_save_dir, 'hardness_distribution.pdf')
+        unsorted_file_name = os.path.join(self.figure_save_dir, f"{['training', 'test'][test]}"
+                                                                f"_hardness_distribution.pdf")
         plt.savefig(unsorted_file_name)
         plt.close()
 
@@ -206,11 +209,12 @@ class HardnessCalculator:
         ax.set_ylabel("EL2N Score (L2 Norm)")
         ax.set_title("Sorted Class-Level EL2N Scores Candlestick Plot")
 
-        sorted_file_name = os.path.join(self.figure_save_dir, 'hardness_distribution_sorted.pdf')
+        sorted_file_name = os.path.join(self.figure_save_dir, f"{['training', 'test'][test]}"
+                                                              f"_hardness_distribution_sorted.pdf")
         plt.savefig(sorted_file_name)
         plt.close()
 
-    def plot_dataset_level_distribution(self, all_el2n_scores):
+    def plot_dataset_level_distribution(self, all_el2n_scores, test=False):
         # Compute average and standard deviation across models for each data sample
         avg_scores = [np.mean(scores) for scores in all_el2n_scores]
         std_scores = [np.std(scores) for scores in all_el2n_scores]
@@ -227,7 +231,8 @@ class HardnessCalculator:
         plt.ylabel("Average EL2N Score")
         plt.title("Dataset-Level Hardness Distribution (Without Std)")
 
-        file_name = os.path.join(self.figure_save_dir, f'dataset_level_hardness_distribution_no_std.pdf')
+        file_name = os.path.join(self.figure_save_dir, f"{['training', 'test'][test]}_"
+                                                       f"dataset_level_hardness_distribution_no_std.pdf")
         plt.savefig(file_name)
         plt.close()
 
@@ -245,11 +250,12 @@ class HardnessCalculator:
         plt.ylabel("Average EL2N Score")
         plt.title("Dataset-Level Hardness Distribution (With Std)")
 
-        file_name = os.path.join(self.figure_save_dir, f'dataset_level_hardness_distribution_with_std.pdf')
+        file_name = os.path.join(self.figure_save_dir, f"{['training', 'test'][test]}"
+                                                       f"_dataset_level_hardness_distribution_with_std.pdf")
         plt.savefig(file_name)
         plt.close()
 
-    def plot_class_level_distribution(self, class_el2n_scores):
+    def plot_class_level_distribution(self, class_el2n_scores, test=False):
         fig, ax = plt.subplots(figsize=(10, 6))
 
         # Plot without standard deviation
@@ -263,7 +269,8 @@ class HardnessCalculator:
         ax.set_ylabel("Average EL2N Score")
         ax.set_title("Class-Level Hardness Distribution (Without Std)")
 
-        file_name = os.path.join(self.figure_save_dir, f'class_level_hardness_distribution_no_std.pdf')
+        file_name = os.path.join(self.figure_save_dir, f"{['training', 'test'][test]}"
+                                                       f"_class_level_hardness_distribution_no_std.pdf")
         plt.savefig(file_name)
         plt.close()
 
@@ -289,40 +296,12 @@ class HardnessCalculator:
         ax.set_ylabel("Average EL2N Score")
         ax.set_title("Class-Level Hardness Distribution (With Std)")
 
-        file_name = os.path.join(self.figure_save_dir, f'class_level_hardness_distribution_with_std.pdf')
+        file_name = os.path.join(self.figure_save_dir, f"{['training', 'test'][test]}_"
+                                                       f"class_level_hardness_distribution_with_std.pdf")
         plt.savefig(file_name)
         plt.close()
 
-    @staticmethod
-    def normalize_el2n_scores(all_el2n_scores):
-        # Compute average EL2N score per sample across models
-        avg_el2n_scores = [np.mean(scores) for scores in all_el2n_scores]
-
-        # Compute global min and max of averaged scores
-        min_score, max_score = min(avg_el2n_scores), max(avg_el2n_scores)
-
-        # Normalize the averaged EL2N scores
-        normalized_avg_el2n_scores = [(score - min_score) / (max_score - min_score) for score in avg_el2n_scores]
-
-        return normalized_avg_el2n_scores
-
-    @staticmethod
-    def normalize_class_el2n_scores(class_el2n_scores):
-        normalized_class_el2n_scores = {}
-        for class_id, scores in class_el2n_scores.items():
-            # Compute average EL2N score per sample across models within the class
-            avg_scores = [np.mean(sample_scores) for sample_scores in scores]
-
-            # Compute min and max for these averaged scores
-            min_score, max_score = min(avg_scores), max(avg_scores)
-
-            # Normalize the averaged scores
-            normalized_scores = [(score - min_score) / (max_score - min_score) for score in avg_scores]
-
-            normalized_class_el2n_scores[class_id] = normalized_scores
-        return normalized_class_el2n_scores
-
-    def plot_pruning_rates(self, normalized_el2n_scores, normalized_class_el2n_scores, labels):
+    def plot_pruning_rates(self, normalized_el2n_scores, normalized_class_el2n_scores, labels, test=False):
         # Define hardness thresholds
         thresholds = np.linspace(0, 1, 100)
 
@@ -361,33 +340,35 @@ class HardnessCalculator:
             ax.grid(True)
 
         plt.tight_layout()
-        file_name = os.path.join(self.figure_save_dir, 'pruning_rates_vs_hardness.pdf')
+        file_name = os.path.join(self.figure_save_dir, f"{['training', 'test'][test]}_pruning_rates_vs_hardness.pdf")
         plt.savefig(file_name)
         plt.close()
 
-    def save_el2n_scores(self, el2n_scores):
-        with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
-            pickle.dump(el2n_scores, file)
-
     def run(self):
-        all_el2n_scores, dataset_accuracies, class_accuracies = self.collect_el2n_scores()
-        class_el2n_scores, labels = self.group_scores_by_class(all_el2n_scores)
-        self.save_el2n_scores((all_el2n_scores, class_el2n_scores, labels, dataset_accuracies, class_accuracies))
-        print("Hardness scores computed and saved. Now producing visualization figures.")
+        training_all_el2n_scores, training_class_accuracies = self.collect_el2n_scores(self.training_loader)
+        training_class_el2n_scores, training_labels = self.group_scores_by_class(training_all_el2n_scores)
+        test_all_el2n_scores, test_class_accuracies = self.collect_el2n_scores(self.test_loader)
+        test_class_el2n_scores, test_labels = self.group_scores_by_class(training_all_el2n_scores)
+        self.save_el2n_scores((training_all_el2n_scores, training_class_el2n_scores, training_labels,
+                               training_class_accuracies, test_all_el2n_scores, test_class_el2n_scores, test_labels,
+                               test_class_accuracies))
+        print("Hardness scores computed and saved. Now normalizing the scores for visualizations.")
 
-        # Normalize EL2N scores after averaging across models
-        normalized_el2n_scores = self.normalize_el2n_scores(all_el2n_scores)
-        normalized_class_el2n_scores = self.normalize_class_el2n_scores(class_el2n_scores)
+        normalized_training_el2n_scores = self.normalize_el2n_scores(training_all_el2n_scores)
+        normalized_training_class_el2n_scores = self.normalize_class_el2n_scores(training_class_el2n_scores)
+        training_class_stats = self.compute_class_statistics(training_class_el2n_scores)
+        test_class_stats = self.compute_class_statistics(test_class_el2n_scores)
         print("Normalized EL2N scores computed. Now producing visualization figures.")
 
-        # Generate and save additional distribution plots
-        class_stats = self.compute_class_statistics(class_el2n_scores)
-        self.plot_class_level_candlestick(class_stats)
-        self.plot_dataset_level_distribution(all_el2n_scores)
-        self.plot_class_level_distribution(class_el2n_scores)
-
-        # Plot pruning rates using the normalized scores
-        self.plot_pruning_rates(normalized_el2n_scores, normalized_class_el2n_scores, labels)
+        self.plot_class_level_candlestick(training_class_stats)
+        self.plot_class_level_candlestick(test_class_stats, True)
+        self.plot_dataset_level_distribution(training_all_el2n_scores)
+        self.plot_dataset_level_distribution(test_all_el2n_scores, True)
+        self.plot_class_level_distribution(training_class_el2n_scores)
+        self.plot_class_level_distribution(test_class_el2n_scores, True)
+        self.plot_pruning_rates(normalized_training_el2n_scores, normalized_training_class_el2n_scores, training_labels)
+        self.plot_pruning_rates(normalized_training_el2n_scores, normalized_training_class_el2n_scores, test_labels,
+                                True)
 
 
 if __name__ == "__main__":
