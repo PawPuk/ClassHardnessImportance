@@ -133,9 +133,14 @@ def load_cifar10_test_set(hardness, class_grouped_hardness, test_labels, batch_s
     return block_loaders, class_block_loaders
 
 
-def evaluate_block(ensemble: List[dict], test_loader) -> Tuple[float, float, int, int]:
+def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_index: int, pruning_rate: int, results):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    all_logits, accuracies_of_every_model = [], []
+    all_logits, accuracies_of_every_model, models_True_positives = [], [], []
+
+    for images, labels in test_loader:
+        # This is just a sanity check, as all labels should be equal to class_index.
+        if not torch.all(labels == class_index):
+            raise ValueError(f"Not all labels in the test set are equal to the specified class_index {class_index}.")
 
     for model_state in ensemble:
         model = ResNet18LowRes(num_classes)
@@ -143,21 +148,31 @@ def evaluate_block(ensemble: List[dict], test_loader) -> Tuple[float, float, int
         model = model.to(device)
         model.eval()
 
-        model_logits, correct = [], 0
+        model_logits, model_Tp = [], 0
         with torch.no_grad():
             for images, labels in test_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
                 _, predicted = outputs.max(1)
-                correct += (predicted == labels).sum().item()
+
+                for pred, label in zip(predicted, labels):
+                    if pred != label:
+                        results['Fp'][pruning_rate][block_index][pred.item()] += 1
+
+                model_Tp += (predicted == labels).sum().item()
                 model_logits.append(outputs.cpu())
 
-        model_accuracy = 100.0 * correct / len(test_loader.dataset)
-        accuracies_of_every_model.append(model_accuracy)
-        all_logits.append(torch.cat(model_logits, dim=0))
+        models_True_positives.append(model_Tp)
+        # all_logits.append(torch.cat(model_logits, dim=0))
 
-    avg_logits = torch.stack(all_logits).mean(dim=0)
-    correct = 0
+    avg_Tp = sum(models_True_positives) / len(models_True_positives)
+    results['Tp'][pruning_rate][block_index][class_index] = avg_Tp
+    results['Fn'][pruning_rate][block_index][class_index] = len(test_loader.dataset) - avg_Tp
+    for class_id in results['Fp'][pruning_rate][block_index].keys():
+        results['Fp'][pruning_rate][block_index][class_id] /= len(ensemble)
+
+    """avg_logits = torch.stack(all_logits).mean(dim=0)
+    ensemble_Tp = 0
     # Here we use logit averaging to measure the accuracy of an ensemble
     _, predicted = avg_logits.max(1)
     with torch.no_grad():
@@ -165,90 +180,64 @@ def evaluate_block(ensemble: List[dict], test_loader) -> Tuple[float, float, int
             batch_start = i * test_loader.batch_size
             batch_end = batch_start + labels.size(0)
             batch_predictions = predicted[batch_start:batch_end]
-            correct += (batch_predictions == labels).sum().item()
+            ensemble_Tp += (batch_predictions == labels).sum().item()
 
-    average_model_accuracy = sum(accuracies_of_every_model) / len(accuracies_of_every_model)
-    ensemble_accuracy = 100.0 * correct / len(test_loader.dataset)
-    return ensemble_accuracy, average_model_accuracy, correct, len(test_loader.dataset) - correct
+    ensemble_Tn = sum(num_test_samples) - 2 * len(test_loader.dataset) + ensemble_Tp
+    ensemble_accuracy = (ensemble_Tp + ensemble_Tn) / len(test_loader.dataset)"""
 
 
 def evaluate_ensemble(models_by_rate: Dict[int, List[dict]], test_loaders: List[DataLoader],
-                      results: Dict[int, Dict[str, Dict]], class_index: int):
+                      results: Dict[str, Dict], class_index: int):
     for pruning_rate, ensemble in tqdm(models_by_rate.items(), desc='Iterating over pruning rates.'):
         print(f"Evaluating ensemble for pruning rate {pruning_rate}% with incremental model sizes...")
-        ensemble_accuracies, average_model_accuracies = [], []
-        true_positives, false_negatives, false_positives = [], [], []
+        if class_index == 0:
+            for metric in ['Tp', 'Fp', 'Fn']:
+                results[metric][pruning_rate] = [{class_id: 0 for class_id in range(num_classes)}
+                                                 for _ in range(len(test_loaders))]
         for block_index in range(len(test_loaders)):
-            block_ensemble_accuracy, block_average_model_accuracy, Tp, Fn = evaluate_block(
-                ensemble, test_loaders[block_index])
-            ensemble_accuracies.append(block_ensemble_accuracy)
-            average_model_accuracies.append(block_average_model_accuracy)
-            true_positives.append(Tp)
-            false_negatives.append(Fn)
-        results[class_index]['class_ensemble_results'][pruning_rate] = ensemble_accuracies
-        results[class_index]['class_average_model_results'][pruning_rate] = average_model_accuracies
-        results[class_index]['Tp'][pruning_rate] = true_positives
-        results[class_index]['Fn'][pruning_rate] = false_negatives
+            evaluate_block(ensemble, test_loaders[block_index], class_index, block_index, pruning_rate, results)
 
 
-def rearrange_results(results):
-    new_results = {'class_ensemble_results': {}, 'class_average_model_results': {}, 'Tp': {}, 'Fp': {}}
-    for class_id, class_data in results.items():
-        for measure in ['class_ensemble_results', 'class_average_model_results', 'Tp', 'Fp']:
-            new_results[measure][class_id] = class_data[measure]
-    return new_results
+def plot_class_level_results(results, pruned_percentages):
+    pruning_parameters = sorted(results['Tp'].keys())
 
+    for metric in results.keys():
+        # Create a figure with 10 subplots for each class
+        fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
+        fig.suptitle(f"Class-Level  {metric} Across Pruning Rates", fontsize=16)
 
-def plot_class_level_accuracies(pruning_parameters, class_accuracies, pruned_percentages, mode=0):
-    # Create a figure with 10 subplots for each class
-    fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
-    fig.suptitle(f"Class-Level  {['Ensemble Accuracies', 'Average Model Accuracies', 'F1 Scores', 'MCCs']} Across "
-                 f"Pruning Rates", fontsize=16)
+        # Flatten axes for easy iteration
+        axes = axes.flatten()
 
-    # Flatten axes for easy iteration
-    axes = axes.flatten()
+        # Extract pruning rates for each class
+        pruning_rates = [pruned_percentages[pruning_parameter] for pruning_parameter in pruning_parameters]
+        number_of_blocks = len(results['Tp'][pruning_parameters[0]])
 
-    # Extract pruning rates for each class
-    pruning_rates = [pruned_percentages[pruning_parameter] for pruning_parameter in pruning_parameters]
-    n = len(class_accuracies[0][pruning_parameters[0]])
+        # Plot class-level metric values for each class
+        for block_index in range(number_of_blocks):
+            start = round(block_index / number_of_blocks, 2)
+            end = round((block_index + 1) / number_of_blocks, 2)
+            color = (block_index / (number_of_blocks - 1), 1 - block_index / (number_of_blocks - 1), 0)
 
-    # Plot class-level accuracy for each class
-    for class_id in range(10):
-        class_pruning_rates = [pruning_rates[i][class_id] for i in range(len(pruning_parameters))]
-        if set(class_pruning_rates) == {0.0}:
-            class_pruning_rates = pruning_parameters
-        ax = axes[class_id]
-        all_lines = []
-        for block_index in range(n):
-            start = round(block_index / n, 2)
-            end = round((block_index + 1) / n, 2)
-            y = [class_accuracies[class_id][pruning_parameter][block_index] for pruning_parameter in pruning_parameters]
-            all_lines.append(y)
-            color = (block_index / (n - 1), 1 - block_index / (n - 1), 0)
-            ax.plot(class_pruning_rates, y, marker='o', color=color, label=f'{start}-{end} Hardness')
+            for class_id in range(num_classes):
+                class_pruning_rates = [pruning_rates[i][class_id] for i in range(len(pruning_parameters))]
+                if set(class_pruning_rates) == {0.0}:
+                    class_pruning_rates = pruning_parameters
 
-        average_line = [sum(values) / len(values) for values in zip(*all_lines)]
-        ax.plot(class_pruning_rates, average_line, color='blue', marker='o', linestyle='--', linewidth=2,
-                label='Average')
+                y = [results[metric][pruning_parameter][block_index][class_id]
+                     for pruning_parameter in pruning_parameters]
 
-        # Customize each subplot
-        ax.set_title(f'Class {class_id} Accuracy')
-        ax.set_xlabel('Pruning Rate (%)')
-        s = 'Accuracy (%)' if mode in [0, 1] else 'F1 Score' if mode == 2 else 'MCC'
-        ax.set_ylabel(s)
-        ax.grid(True)
+                axes[class_id].plot(class_pruning_rates, y, marker='o', color=color, label=f'{start}-{end} Hardness')
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit title
-    if mode == 0:
-        s = 'Class_Level_Ensemble_Accuracies.pdf'
-    elif mode == 1:
-        s = 'Class_Level_Average_Model_Accuracies.pdf'
-    elif mode == 2:
-        s = 'Class_Level_F1_Scores.pdf'
-    else:
-        s = 'Class_Level_MCC_Scores.pdf'
-    plt.savefig(os.path.join(figure_save_dir, s))
-    plt.close()
+        for class_id in range(num_classes):
+            axes[class_id].set_title(f'Class {class_id} {metric}')
+            axes[class_id].set_xlabel('Pruning Rate (%)')
+            axes[class_id].set_ylabel(metric)
+            axes[class_id].grid(True)
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit title
+        plt.savefig(os.path.join(figure_save_dir, f'Class_Level_{metric}.pdf'))
+        plt.close()
 
 
 def save_file(save_dir, filename, data):
@@ -271,49 +260,56 @@ def main(pruning_strategy, dataset_name, hardness_type):
         with open(os.path.join(result_dir, "ensemble_results.pkl"), 'rb') as f:
             results = pickle.load(f)
     else:
-        results = {class_id: {
-            'class_ensemble_results': {},
-            'class_average_model_results': {},
+        results = {
             'Tp': {},
             'Fn': {},
             'Fp': {}
-        } for class_id in range(num_classes)}
+        }
 
         for class_index in range(num_classes):
             evaluate_ensemble(models, class_test_loaders[class_index], results, class_index)
         save_file(result_dir, "ensemble_results.pkl", results)
 
-    results = rearrange_results(results)
+    results['F1'], results['MCC'], results['Tn'], results['Average Model Accuracy'] = {}, {}, {}, {}
+    results['Precision'], results['Recall'] = {}, {}
+    for pruning_rate in results['Tp'].keys():
+        results['F1'][pruning_rate], results['MCC'][pruning_rate], results['Tn'][pruning_rate] = [], [], []
+        results['Precision'][pruning_rate], results['Recall'][pruning_rate] = [], []
+        results['Average Model Accuracy'][pruning_rate] = []
+        number_of_blocks = len(results['Tp'][pruning_rate])
+        for block_index in range(number_of_blocks):
+            block_F1_results, block_MCC_results, block_Tns, block_accuracies = {}, {}, {}, {}
+            block_precisions, block_recalls = {}, {}
+            for class_id in range(num_classes):
+                Tp = results['Tp'][pruning_rate][block_index][class_id]
+                Fp = results['Fp'][pruning_rate][block_index][class_id]
+                Fn = results['Fn'][pruning_rate][block_index][class_id]
+                Tn = sum(num_test_samples) / number_of_blocks - (Tp + Fp + Fn)
 
-    results['F1'], results['MCC'] = {}, {}
-    for class_id in range(num_classes):
-        results['F1'][class_id], results['MCC'][class_id] = {}, {}
-        for pruning_rate in results['Tp'][class_id]:
-            results['F1'][class_id][pruning_rate], results['MCC'][class_id][pruning_rate] = [], []
-            for block_index in range(len(results['Tp'][class_id][pruning_rate])):
-                Tp = results['Tp'][class_id][pruning_rate][block_index]
-                Fp = results['Fp'][class_id][pruning_rate][block_index]
-                total_positives_c = num_test_samples[class_id] // len(results['Tp'][class_id][pruning_rate])
-
-                Fn = total_positives_c - Tp
-                Tn = sum(num_test_samples) // len(results['Tp'][class_id][pruning_rate]) - (Tp + Fp + Fn)
                 precision = Tp / (Tp + Fp) if (Tp + Fp) > 0 else 0.0
                 recall = Tp / (Tp + Fn) if (Tp + Fn) > 0 else 0.0
-
+                accuracy = number_of_blocks * (Tp + Tn) / sum(num_test_samples)
                 F1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
                 MCC_numerator = Tp * Tn - Fp * Fn
                 MCC_denominator = ((Tp + Fp) * (Tp + Fn) * (Tn + Fp) * (Tn + Fn)) ** 0.5
                 MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
 
-                results['F1'][class_id][pruning_rate].append(F1)
-                results['MCC'][class_id][pruning_rate].append(MCC)
+                block_F1_results[class_id] = 2 * Tp / (2 * Tp + Fp + Fn)
+                block_MCC_results[class_id] = MCC
+                block_Tns[class_id] = Tn
+                block_accuracies[class_id] = accuracy
+                block_precisions[class_id] = precision
+                block_recalls[class_id] = recall
 
-    # We sort the pruning rates for consistent plotting
-    pruning_parameters = sorted(results['class_ensemble_results'][0].keys())
-    plot_class_level_accuracies(pruning_parameters, results['class_ensemble_results'], pruned_percentages)
-    plot_class_level_accuracies(pruning_parameters, results['class_average_model_results'], pruned_percentages, 1)
-    plot_class_level_accuracies(pruning_parameters, results['F1'], pruned_percentages, 2)
-    plot_class_level_accuracies(pruning_parameters, results['MCC'], pruned_percentages, 3)
+            results['F1'][pruning_rate].append(block_F1_results)
+            results['MCC'][pruning_rate].append(block_MCC_results)
+            results['Tn'][pruning_rate].append(block_Tns)
+            results['Average Model Accuracy'][pruning_rate].append(block_accuracies)
+            results['Precision'][pruning_rate].append(block_precisions)
+            results['Recall'][pruning_rate].append(block_recalls)
+
+    plot_class_level_results(results, pruned_percentages)
 
 
 if __name__ == "__main__":
