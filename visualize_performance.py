@@ -133,14 +133,7 @@ def load_cifar10_test_set(hardness, class_grouped_hardness, test_labels, batch_s
     return block_loaders, class_block_loaders
 
 
-def evaluate_block(ensemble: List[dict], test_loader: DataLoader) -> Tuple[float, float]:
-    """
-    Evaluate an ensemble of models using logit averaging.
-
-    :param ensemble: List of model state dictionaries (one per model in the ensemble).
-    :param test_loader: DataLoader for the CIFAR-10 test set.
-    :return: List of 11 accuracies - one for the entire dataset and ten for each class.
-    """
+def evaluate_block(ensemble: List[dict], test_loader) -> Tuple[float, float, int, int]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     all_logits, accuracies_of_every_model = [], []
 
@@ -176,53 +169,41 @@ def evaluate_block(ensemble: List[dict], test_loader: DataLoader) -> Tuple[float
 
     average_model_accuracy = sum(accuracies_of_every_model) / len(accuracies_of_every_model)
     ensemble_accuracy = 100.0 * correct / len(test_loader.dataset)
-    return ensemble_accuracy, average_model_accuracy
+    return ensemble_accuracy, average_model_accuracy, correct, len(test_loader.dataset) - correct
 
 
-def evaluate_ensemble(models_by_rate: Dict[int, List[dict]],
-                      test_loaders: List[DataLoader]) -> Tuple[Dict[int, List[float]], Dict[int, List[float]]]:
-    ensemble_accuracies_by_pruning_rate, average_model_accuracies_by_pruning_rate = {}, {}
+def evaluate_ensemble(models_by_rate: Dict[int, List[dict]], test_loaders: List[DataLoader],
+                      results: Dict[int, Dict[str, Dict]], class_index: int):
     for pruning_rate, ensemble in tqdm(models_by_rate.items(), desc='Iterating over pruning rates.'):
         print(f"Evaluating ensemble for pruning rate {pruning_rate}% with incremental model sizes...")
         ensemble_accuracies, average_model_accuracies = [], []
+        true_positives, false_negatives, false_positives = [], [], []
         for block_index in range(len(test_loaders)):
-            block_ensemble_accuracy, block_average_model_accuracy = evaluate_block(ensemble, test_loaders[block_index])
+            block_ensemble_accuracy, block_average_model_accuracy, Tp, Fn = evaluate_block(
+                ensemble, test_loaders[block_index])
             ensemble_accuracies.append(block_ensemble_accuracy)
             average_model_accuracies.append(block_average_model_accuracy)
-        ensemble_accuracies_by_pruning_rate[pruning_rate] = ensemble_accuracies
-        average_model_accuracies_by_pruning_rate[pruning_rate] = average_model_accuracies
-    return ensemble_accuracies_by_pruning_rate, average_model_accuracies_by_pruning_rate
+            true_positives.append(Tp)
+            false_negatives.append(Fn)
+        results[class_index]['class_ensemble_results'][pruning_rate] = ensemble_accuracies
+        results[class_index]['class_average_model_results'][pruning_rate] = average_model_accuracies
+        results[class_index]['Tp'][pruning_rate] = true_positives
+        results[class_index]['Fn'][pruning_rate] = false_negatives
 
 
-def plot_dataset_level_accuracies(pruning_parameters, block_accuracies, pruned_percentages, mode=0):
-    # Extract pruning rates for plotting
-    pruning_rates = [pruned_percentages[pruning_parameter][0] for pruning_parameter in pruning_parameters]
-    # We use the below to make nice legend
-    n = len(block_accuracies[pruning_parameters[0]])
-
-    plt.figure(figsize=(10, 6))
-    for block_index in range(n):
-        start = round(block_index / n, 2)
-        end = round((block_index + 1) / n, 2)
-        y = [block_accuracies[pruning_parameter][block_index] for pruning_parameter in pruning_parameters]
-        color = (block_index / (n - 1), 1 - block_index / (n - 1), 0)
-        plt.plot(pruning_rates, y, marker='o', color=color, label=f'{start}-{end} Hardness')
-    plt.title('Dataset-Level Ensemble Accuracy Across Pruning Rates', fontsize=16)
-    plt.xlabel('Pruning Rate (%)')
-    plt.ylabel('Accuracy (%)')
-    plt.grid(True)
-    plt.legend()
-
-    plt.tight_layout()
-    s = 'Dataset_Level_Ensemble_Accuracy.pdf' if mode == 0 else 'Dataset_Level_Average_Model_accuracy.pdf'
-    plt.savefig(os.path.join(figure_save_dir, s))
-    plt.close()
+def rearrange_results(results):
+    new_results = {'class_ensemble_results': {}, 'class_average_model_results': {}, 'Tp': {}, 'Fp': {}}
+    for class_id, class_data in results.items():
+        for measure in ['class_ensemble_results', 'class_average_model_results', 'Tp', 'Fp']:
+            new_results[measure][class_id] = class_data[measure]
+    return new_results
 
 
 def plot_class_level_accuracies(pruning_parameters, class_accuracies, pruned_percentages, mode=0):
     # Create a figure with 10 subplots for each class
     fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
-    fig.suptitle('Class-Level Ensemble Accuracies Across Pruning Rates', fontsize=16)
+    fig.suptitle(f"Class-Level  {['Ensemble Accuracies', 'Average Model Accuracies', 'F1 Scores', 'MCCs']} Across "
+                 f"Pruning Rates", fontsize=16)
 
     # Flatten axes for easy iteration
     axes = axes.flatten()
@@ -253,11 +234,19 @@ def plot_class_level_accuracies(pruning_parameters, class_accuracies, pruned_per
         # Customize each subplot
         ax.set_title(f'Class {class_id} Accuracy')
         ax.set_xlabel('Pruning Rate (%)')
-        ax.set_ylabel('Accuracy (%)')
+        s = 'Accuracy (%)' if mode in [0, 1] else 'F1 Score' if mode == 2 else 'MCC'
+        ax.set_ylabel(s)
         ax.grid(True)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])  # Adjust layout to fit title
-    s = 'Class_Level_Ensemble_Accuracies.pdf' if mode == 0 else 'Class_Level_Average_Model_Accuracies.pdf'
+    if mode == 0:
+        s = 'Class_Level_Ensemble_Accuracies.pdf'
+    elif mode == 1:
+        s = 'Class_Level_Average_Model_Accuracies.pdf'
+    elif mode == 2:
+        s = 'Class_Level_F1_Scores.pdf'
+    else:
+        s = 'Class_Level_MCC_Scores.pdf'
     plt.savefig(os.path.join(figure_save_dir, s))
     plt.close()
 
@@ -280,23 +269,51 @@ def main(pruning_strategy, dataset_name, hardness_type):
     # Evaluate ensemble performance
     if os.path.exists(os.path.join(result_dir, "ensemble_results.pkl")):
         with open(os.path.join(result_dir, "ensemble_results.pkl"), 'rb') as f:
-            dataset_ensemble_results, class_ensemble_results, dataset_average_model_results, \
-                class_average_model_results = pickle.load(f)
+            results = pickle.load(f)
     else:
-        dataset_ensemble_results, dataset_average_model_results = evaluate_ensemble(models, test_loader)
-        class_ensemble_results, class_average_model_results = {}, {}
+        results = {class_id: {
+            'class_ensemble_results': {},
+            'class_average_model_results': {},
+            'Tp': {},
+            'Fn': {},
+            'Fp': {}
+        } for class_id in range(num_classes)}
+
         for class_index in range(num_classes):
-            class_ensemble_results[class_index], class_average_model_results[class_index] = \
-                evaluate_ensemble(models, class_test_loaders[class_index])
-        save_file(result_dir, "ensemble_results.pkl", (dataset_ensemble_results, class_ensemble_results,
-                                                       dataset_average_model_results, class_average_model_results))
+            evaluate_ensemble(models, class_test_loaders[class_index], results, class_index)
+        save_file(result_dir, "ensemble_results.pkl", results)
+
+    results = rearrange_results(results)
+
+    results['F1'], results['MCC'] = {}, {}
+    for class_id in range(num_classes):
+        results['F1'][class_id], results['MCC'][class_id] = {}, {}
+        for pruning_rate in results['Tp'][class_id]:
+            results['F1'][class_id][pruning_rate], results['MCC'][class_id][pruning_rate] = [], []
+            for block_index in range(len(results['Tp'][class_id][pruning_rate])):
+                Tp = results['Tp'][class_id][pruning_rate][block_index]
+                Fp = results['Fp'][class_id][pruning_rate][block_index]
+                total_positives_c = num_test_samples[class_id] // len(results['Tp'][class_id][pruning_rate])
+
+                Fn = total_positives_c - Tp
+                Tn = sum(num_test_samples) // len(results['Tp'][class_id][pruning_rate]) - (Tp + Fp + Fn)
+                precision = Tp / (Tp + Fp) if (Tp + Fp) > 0 else 0.0
+                recall = Tp / (Tp + Fn) if (Tp + Fn) > 0 else 0.0
+
+                F1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+                MCC_numerator = Tp * Tn - Fp * Fn
+                MCC_denominator = ((Tp + Fp) * (Tp + Fn) * (Tn + Fp) * (Tn + Fn)) ** 0.5
+                MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
+
+                results['F1'][class_id][pruning_rate].append(F1)
+                results['MCC'][class_id][pruning_rate].append(MCC)
 
     # We sort the pruning rates for consistent plotting
-    pruning_parameters = sorted(dataset_ensemble_results.keys())
-    plot_dataset_level_accuracies(pruning_parameters, dataset_ensemble_results, pruned_percentages)
-    plot_class_level_accuracies(pruning_parameters, class_ensemble_results, pruned_percentages)
-    plot_dataset_level_accuracies(pruning_parameters, dataset_average_model_results, pruned_percentages, 1)
-    plot_class_level_accuracies(pruning_parameters, class_average_model_results, pruned_percentages, 1)
+    pruning_parameters = sorted(results['class_ensemble_results'][0].keys())
+    plot_class_level_accuracies(pruning_parameters, results['class_ensemble_results'], pruned_percentages)
+    plot_class_level_accuracies(pruning_parameters, results['class_average_model_results'], pruned_percentages, 1)
+    plot_class_level_accuracies(pruning_parameters, results['F1'], pruned_percentages, 2)
+    plot_class_level_accuracies(pruning_parameters, results['MCC'], pruned_percentages, 3)
 
 
 if __name__ == "__main__":
@@ -321,5 +338,6 @@ if __name__ == "__main__":
     config = get_config(args.dataset_name)
     num_classes = config['num_classes']
     num_training_samples = config['num_training_samples']
+    num_test_samples = config['num_test_samples']
     os.makedirs(figure_save_dir, exist_ok=True)
     main(args.pruning_strategy, args.dataset_name, args.hardness_type)
