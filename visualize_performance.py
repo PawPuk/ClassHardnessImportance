@@ -194,6 +194,7 @@ def plot_class_level_results(results, pruned_percentages):
         pruning_rates = [pruned_percentages[pruning_parameter] for pruning_parameter in pruning_parameters]
         number_of_blocks = len(results['Tp'][pruning_parameters[0]])
 
+        all_lines = {class_id: [] for class_id in range(num_classes)}
         # Plot class-level metric values for each class
         for block_index in range(number_of_blocks):
             start = round(block_index / number_of_blocks, 2)
@@ -207,10 +208,18 @@ def plot_class_level_results(results, pruned_percentages):
 
                 y = [results[metric][pruning_parameter][block_index][class_id]
                      for pruning_parameter in pruning_parameters]
+                all_lines[class_id].append(y)
 
                 axes[class_id].plot(class_pruning_rates, y, marker='o', color=color, label=f'{start}-{end} Hardness')
 
         for class_id in range(num_classes):
+            class_pruning_rates = [pruning_rates[i][class_id] for i in range(len(pruning_parameters))]
+            avg_y = np.mean(all_lines[class_id], axis=0)
+            axes[class_id].plot(class_pruning_rates, avg_y, color='blue', label=f'Average Hardness')
+            axes[class_id].plot(class_pruning_rates, [avg_y[0] - 0.001 for _ in range(len(avg_y))], color='blue',
+                                alpha=0.4)
+            axes[class_id].plot(class_pruning_rates, [avg_y[0] + 0.001 for _ in range(len(avg_y))], color='blue',
+                                alpha=0.4)
             axes[class_id].set_title(f'Class {class_id} {metric}')
             axes[class_id].set_xlabel('Pruning Rate (%)')
             axes[class_id].set_ylabel(metric)
@@ -254,6 +263,7 @@ def main(pruning_strategy, dataset_name, hardness_type):
 
     results['F1'], results['MCC'], results['Tn'], results['Average Model Accuracy'] = {}, {}, {}, {}
     results['Precision'], results['Recall'] = {}, {}
+    print(pruned_percentages)
     for pruning_rate in results['Tp'].keys():
         results['F1'][pruning_rate], results['MCC'][pruning_rate], results['Tn'][pruning_rate] = [], [], []
         results['Precision'][pruning_rate], results['Recall'][pruning_rate] = [], []

@@ -81,11 +81,29 @@ class DataResampling:
         """
         Perform undersampling by pruning the easiest samples based on hardness scores.
         """
-        # Sort indices by ascending hardness - the easiest samples first
         sorted_indices = np.argsort(hardness_scores)
-
-        # Retain the hardest samples
         return sorted_indices[-desired_count:]
+
+    @staticmethod
+    def prune_hard(desired_count, hardness_scores):
+        """
+        Perform undersampling by pruning the hardest samples based on hardness scores.
+        """
+        sorted_indices = np.argsort(hardness_scores)
+        return sorted_indices[:desired_count]
+
+    @staticmethod
+    def prune_extreme(desired_count, hardness_scores):
+        """
+        Perform undersampling by firstly pruning 1% of the hardest samples and then pruning the easy samples.
+        """
+        sorted_indices = np.argsort(hardness_scores)
+        one_percent_count = max(1, desired_count // 100)
+        ninety_nine_percent_count = desired_count - one_percent_count
+
+        hardest_indices = sorted_indices[-one_percent_count:]
+        easiest_indices = sorted_indices[:ninety_nine_percent_count]
+        return np.concatenate([easiest_indices, hardest_indices])
 
     @staticmethod
     def random_oversample(desired_count, hardness_scores):
@@ -104,7 +122,7 @@ class DataResampling:
         n = len(hardness_scores)
 
         # Calculate probabilities using the adjusted exponential formula
-        alpha_easy = 5  # Adjust alpha for easy oversampling
+        alpha_easy = 5
         normalized_hardness = np.linspace(0, 1, n)
         probabilities_sorted = 0.5 + 0.5 * (1 - np.exp(-alpha_easy * (1 - normalized_hardness))) / (
                 1 - np.exp(-alpha_easy))
@@ -117,7 +135,7 @@ class DataResampling:
         additional_indices = random.choices(range(n), weights=probabilities, k=desired_count - n)
 
         # Plot and save the probability distribution
-        self.plot_probability_distribution(probabilities, 'easy', class_id)
+        # self.plot_probability_distribution(probabilities, 'easy', class_id)
 
         return list(range(n)) + additional_indices
 
@@ -130,7 +148,7 @@ class DataResampling:
         n = len(hardness_scores)
 
         # Calculate probabilities using the adjusted exponential formula
-        alpha_hard = 5  # Adjust alpha for hard oversampling
+        alpha_hard = 5
         normalized_hardness = np.linspace(0, 1, n)
         probabilities_sorted = 0.5 + 0.5 * (1 - np.exp(-alpha_hard * (1 - normalized_hardness))) / (
                 1 - np.exp(-alpha_hard))
@@ -143,7 +161,7 @@ class DataResampling:
         additional_indices = random.choices(range(n), weights=probabilities, k=desired_count - n)
 
         # Plot and save the probability distribution
-        self.plot_probability_distribution(probabilities, 'hard', class_id)
+        # self.plot_probability_distribution(probabilities, 'hard', class_id)
 
         return list(range(n)) + additional_indices
 
@@ -155,6 +173,10 @@ class DataResampling:
             return lambda count, hardness: self.random_undersample(count, hardness)
         elif self.undersampling_strategy == "prune_easy":
             return lambda count, hardness: self.prune_easy(count, hardness)
+        elif self.undersampling_strategy == 'prune_hard':
+            return lambda count, hardness: self.prune_hard(count, hardness)
+        elif self.undersampling_strategy == 'prune_extreme':
+            return lambda count, hardness: self.prune_extreme(count, hardness)
         else:
             raise ValueError(f"Undersampling strategy {self.undersampling_strategy} is not supported.")
 

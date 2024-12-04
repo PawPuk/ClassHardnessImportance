@@ -14,7 +14,8 @@ dataset_configs = {
         'mean': (0.4914, 0.4822, 0.4465),
         'std': (0.2023, 0.1994, 0.2010),
         'num_training_samples': [5000 for _ in range(10)],
-        'num_test_samples': [1000 for _ in range(10)]
+        'num_test_samples': [1000 for _ in range(10)],
+        'safe_pruning_ratios': [48.8, 74.22, 29.08, 10.64, 45.8, 31.44, 54.92, 58.36, 67.28, 63.66]
     },
     'CIFAR100': {
         'batch_size': 128,
