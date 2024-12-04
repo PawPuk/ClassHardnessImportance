@@ -99,48 +99,42 @@ def load_el2n_scores(dataset_name):
     return hardness, hardness_grouped_by_class, test_labels
 
 
-def load_cifar10_test_set(hardness, class_grouped_hardness, test_labels, batch_size: int = 64):
+def load_cifar10_test_set(class_grouped_hardness, test_labels, batch_size: int = 64):
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
     ])
-
     test_set = CIFAR10(root='./data', train=False, download=True, transform=transform)
-
     number_of_blocks = 5
 
-    sorted_indices = np.argsort(hardness)
-    num_samples = len(sorted_indices)
-    block_size = num_samples // number_of_blocks
-    blocks = [sorted_indices[i * block_size: (i + 1) * block_size] for i in range(number_of_blocks)]
-    # This is necessary to handle any remaining samples and put them in the last block. That is because we
-    # // number_of_blocks and not / number_of_blocks.
-    blocks[-1] = np.append(blocks[-1], sorted_indices[number_of_blocks * block_size:])
-    block_loaders = [DataLoader(Subset(test_set, block), batch_size=batch_size, shuffle=False) for block in blocks]
-
-    class_block_loaders = {}
+    blocks = {i: [] for i in range(number_of_blocks)}
     for class_index in range(len(class_grouped_hardness)):
         class_indices_within_dataset = np.where(np.array(test_labels) == class_index)[0]
         sorted_class_indices = np.argsort(class_grouped_hardness[class_index])
         sorted_indices = class_indices_within_dataset[sorted_class_indices]
         num_samples = len(sorted_indices)
         block_size = num_samples // number_of_blocks
-        blocks = [sorted_indices[i * block_size: (i + 1) * block_size] for i in range(number_of_blocks)]
-        blocks[-1] = np.append(blocks[-1], sorted_indices[number_of_blocks * block_size:])
-        class_block_loaders[class_index] = [DataLoader(Subset(test_set, block), batch_size=batch_size, shuffle=False)
-                                            for block in blocks]
+        class_blocks = [sorted_indices[i * block_size: (i + 1) * block_size] for i in range(number_of_blocks)]
+        # This is necessary to handle any remaining samples and put them in the last block. That is because we
+        # // number_of_blocks and not / number_of_blocks.
+        class_blocks[-1] = np.append(class_blocks[-1], sorted_indices[number_of_blocks * block_size:])
+        for block_index, block in enumerate(class_blocks):
+            blocks[block_index].extend(list(block))
+    print(blocks)
+    print()
+    for block_index in range(number_of_blocks):
+        print(blocks[block_index])
 
-    return block_loaders, class_block_loaders
+    block_loaders = [DataLoader(Subset(test_set, blocks[block_index]), batch_size=batch_size, shuffle=False)
+                     for block_index in range(number_of_blocks)]
+
+    return block_loaders
 
 
 def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_index: int, pruning_rate: int, results):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    all_logits, accuracies_of_every_model, models_True_positives = [], [], []
-
-    for images, labels in test_loader:
-        # This is just a sanity check, as all labels should be equal to class_index.
-        if not torch.all(labels == class_index):
-            raise ValueError(f"Not all labels in the test set are equal to the specified class_index {class_index}.")
+    # Initialize confusion matrix components
+    total_Tp, total_Fp, total_Fn, total_Tn = 0, 0, 0, 0
 
     for model_state in ensemble:
         model = ResNet18LowRes(num_classes)
@@ -148,7 +142,6 @@ def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_in
         model = model.to(device)
         model.eval()
 
-        model_logits, model_Tp = [], 0
         with torch.no_grad():
             for images, labels in test_loader:
                 images, labels = images.to(device), labels.to(device)
@@ -156,34 +149,22 @@ def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_in
                 _, predicted = outputs.max(1)
 
                 for pred, label in zip(predicted, labels):
-                    if pred != label:
-                        results['Fp'][pruning_rate][block_index][pred.item()] += 1
+                    if label.item() == class_index:
+                        if pred.item() == class_index:
+                            total_Tp += 1
+                        else:
+                            total_Fn += 1
+                    else:
+                        if pred.item() == class_index:
+                            total_Fp += 1
+                        else:
+                            total_Tn += 1
 
-                model_Tp += (predicted == labels).sum().item()
-                model_logits.append(outputs.cpu())
-
-        models_True_positives.append(model_Tp)
-        # all_logits.append(torch.cat(model_logits, dim=0))
-
-    avg_Tp = sum(models_True_positives) / len(models_True_positives)
-    results['Tp'][pruning_rate][block_index][class_index] = avg_Tp
-    results['Fn'][pruning_rate][block_index][class_index] = len(test_loader.dataset) - avg_Tp
-    for class_id in results['Fp'][pruning_rate][block_index].keys():
-        results['Fp'][pruning_rate][block_index][class_id] /= len(ensemble)
-
-    """avg_logits = torch.stack(all_logits).mean(dim=0)
-    ensemble_Tp = 0
-    # Here we use logit averaging to measure the accuracy of an ensemble
-    _, predicted = avg_logits.max(1)
-    with torch.no_grad():
-        for i, (images, labels) in enumerate(test_loader):
-            batch_start = i * test_loader.batch_size
-            batch_end = batch_start + labels.size(0)
-            batch_predictions = predicted[batch_start:batch_end]
-            ensemble_Tp += (batch_predictions == labels).sum().item()
-
-    ensemble_Tn = sum(num_test_samples) - 2 * len(test_loader.dataset) + ensemble_Tp
-    ensemble_accuracy = (ensemble_Tp + ensemble_Tn) / len(test_loader.dataset)"""
+    # Average over ensemble
+    results['Tp'][pruning_rate][block_index][class_index] = total_Tp / len(ensemble)
+    results['Fp'][pruning_rate][block_index][class_index] = total_Fp / len(ensemble)
+    results['Fn'][pruning_rate][block_index][class_index] = total_Fn / len(ensemble)
+    results['Tn'][pruning_rate][block_index][class_index] = total_Tn / len(ensemble)
 
 
 def evaluate_ensemble(models_by_rate: Dict[int, List[dict]], test_loaders: List[DataLoader],
@@ -191,7 +172,7 @@ def evaluate_ensemble(models_by_rate: Dict[int, List[dict]], test_loaders: List[
     for pruning_rate, ensemble in tqdm(models_by_rate.items(), desc='Iterating over pruning rates.'):
         print(f"Evaluating ensemble for pruning rate {pruning_rate}% with incremental model sizes...")
         if class_index == 0:
-            for metric in ['Tp', 'Fp', 'Fn']:
+            for metric in ['Tp', 'Fp', 'Fn', 'Tn']:
                 results[metric][pruning_rate] = [{class_id: 0 for class_id in range(num_classes)}
                                                  for _ in range(len(test_loaders))]
         for block_index in range(len(test_loaders)):
@@ -253,7 +234,7 @@ def main(pruning_strategy, dataset_name, hardness_type):
     models = load_models(pruning_strategy, dataset_name, hardness_type)
     pruned_percentages = compute_pruned_percentage(pruning_strategy, dataset_name, models)
     all_el2n_scores, class_el2n_scores, test_labels = load_el2n_scores(dataset_name)
-    test_loader, class_test_loaders = load_cifar10_test_set(all_el2n_scores, class_el2n_scores, test_labels, 1024)
+    test_loader = load_cifar10_test_set(class_el2n_scores, test_labels, 1024)
 
     # Evaluate ensemble performance
     if os.path.exists(os.path.join(result_dir, "ensemble_results.pkl")):
@@ -263,11 +244,12 @@ def main(pruning_strategy, dataset_name, hardness_type):
         results = {
             'Tp': {},
             'Fn': {},
-            'Fp': {}
+            'Fp': {},
+            'Tn': {}
         }
 
         for class_index in range(num_classes):
-            evaluate_ensemble(models, class_test_loaders[class_index], results, class_index)
+            evaluate_ensemble(models, test_loader, results, class_index)
         save_file(result_dir, "ensemble_results.pkl", results)
 
     results['F1'], results['MCC'], results['Tn'], results['Average Model Accuracy'] = {}, {}, {}, {}
@@ -295,7 +277,7 @@ def main(pruning_strategy, dataset_name, hardness_type):
                 MCC_denominator = ((Tp + Fp) * (Tp + Fn) * (Tn + Fp) * (Tn + Fn)) ** 0.5
                 MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
 
-                block_F1_results[class_id] = 2 * Tp / (2 * Tp + Fp + Fn)
+                block_F1_results[class_id] = F1
                 block_MCC_results[class_id] = MCC
                 block_Tns[class_id] = Tn
                 block_accuracies[class_id] = accuracy
