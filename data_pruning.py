@@ -1,15 +1,15 @@
+import os
 import pickle
 import random
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
-from torch.utils.data import Subset
-
 import numpy as np
+from sklearn.neighbors import NearestNeighbors
+import torch
+from torch.utils.data import TensorDataset, Subset
 
 from utils import get_config
-
-import os
 
 
 class DataResampling:
@@ -113,6 +113,63 @@ class DataResampling:
         additional_indices = random.choices(range(len(hardness_scores)), k=desired_count - len(hardness_scores))
         return list(range(len(hardness_scores))) + additional_indices
 
+    @staticmethod
+    def plot_and_save_synthetic_samples(synthetic_data, filename):
+        """
+        Create a 4x15 plot of 60 synthetic samples and save it to a file.
+        """
+        fig, axes = plt.subplots(4, 15, figsize=(15, 8))
+        axes = axes.flatten()
+
+        CIFAR10_MEAN = torch.tensor([0.4914, 0.4822, 0.4465])
+        CIFAR10_STD = torch.tensor([0.247, 0.243, 0.261])
+
+        for i in range(60):
+            unnormalized_image = synthetic_data[i] * CIFAR10_STD[:, None, None] + CIFAR10_MEAN[:, None, None]
+            axes[i].imshow(unnormalized_image.permute(1, 2, 0).numpy())  # Convert from CxHxW to HxWxC for image display
+            axes[i].axis('off')
+
+        plt.tight_layout()
+        plt.savefig(filename)
+        plt.close(fig)
+
+    def SMOTE(self, desired_count, hardness_scores, current_indices, class_id, k=5):
+        """
+        Perform oversampling using SMOTE to match the desired count.
+        """
+        current_n_samples = len(current_indices)
+
+        data = torch.stack([self.dataset[idx][0] for idx in current_indices])
+        data_flattened = data.view(current_n_samples, -1)
+
+        neighbors = NearestNeighbors(n_neighbors=k + 1).fit(data_flattened.numpy())
+        _, neighbor_indices = neighbors.kneighbors(data_flattened.numpy())
+
+        synthetic_samples = []
+        hardness_stats = {'avg_pair_hardness': [], 'avg_hardness_diff_within_pair': [],
+                          'avg_synthetic_data_hardness': [], 'avg_respective_synthetic_data_hardness': []}
+        for _ in range(desired_count - current_n_samples):
+            idx = torch.randint(0, current_n_samples, (1,)).item()
+            neighbor_idx = torch.randint(1, k + 1, (1,)).item()  # Skip the first neighbor (itself)
+
+            sample = data[idx]
+            sample_hardness = hardness_scores[idx]
+            neighbor = data[neighbor_indices[idx][neighbor_idx]]
+            neighbor_hardness = hardness_scores[neighbor_indices[idx][neighbor_idx]]
+
+            hardness_stats['avg_pair_hardness'].append(sample_hardness)
+            hardness_stats['avg_pair_hardness'].append(neighbor_hardness)
+            hardness_stats['avg_hardness_diff_within_pair'].append(abs(sample_hardness - neighbor_hardness))
+
+            # Interpolate between the sample and its neighbor
+            alpha = torch.rand(1).item()
+            synthetic_sample = sample + alpha * (neighbor - sample)
+            synthetic_samples.append(sample)
+
+        synthetic_samples = torch.stack(synthetic_samples, dim=0)
+        # self.plot_and_save_synthetic_samples(synthetic_samples, f'Figures/synthetic_samples_class_{class_id}.png')
+        return torch.cat([data, synthetic_samples], dim=0), hardness_stats
+
     def oversample_easy(self, desired_count, hardness_scores, class_id):
         """
         Perform oversampling with a higher chance of duplicating easy samples.
@@ -171,11 +228,11 @@ class DataResampling:
         """
         if self.undersampling_strategy == "random":
             return lambda count, hardness: self.random_undersample(count, hardness)
-        elif self.undersampling_strategy == "prune_easy":
+        elif self.undersampling_strategy == "easy":
             return lambda count, hardness: self.prune_easy(count, hardness)
-        elif self.undersampling_strategy == 'prune_hard':
+        elif self.undersampling_strategy == 'hard':
             return lambda count, hardness: self.prune_hard(count, hardness)
-        elif self.undersampling_strategy == 'prune_extreme':
+        elif self.undersampling_strategy == 'extreme':
             return lambda count, hardness: self.prune_extreme(count, hardness)
         else:
             raise ValueError(f"Undersampling strategy {self.undersampling_strategy} is not supported.")
@@ -190,8 +247,25 @@ class DataResampling:
             return lambda count, hardness, class_id: self.oversample_easy(count, hardness, class_id)
         elif self.oversampling_strategy == "hard":
             return lambda count, hardness, class_id: self.oversample_hard(count, hardness, class_id)
+        elif self.oversampling_strategy == 'SMOTE':
+            return lambda count, hardness, current_indices, class_id: self.SMOTE(count, hardness, current_indices,
+                                                                                 class_id)
         else:
             raise ValueError(f"Oversampling strategy {self.oversampling_strategy} is not supported.")
+
+    def extract_data_labels(self):
+        """
+        Extract data and labels from the dataset in a generic way.
+        """
+        if isinstance(self.dataset, TensorDataset):
+            return self.dataset.tensors[0], self.dataset.tensors[1]
+        elif hasattr(self.dataset, "data") and hasattr(self.dataset, "targets"):  # Common for datasets like CIFAR10
+            data = torch.tensor(self.dataset.data).permute(0, 3, 1, 2)
+            labels = torch.tensor(self.dataset.targets)
+            return data, labels
+        else:
+            raise TypeError(
+                "Unsupported dataset type. Ensure the dataset has `tensors`, `data`, and `targets` attributes.")
 
     def resample_data(self, samples_per_class):
         """
@@ -209,6 +283,9 @@ class DataResampling:
 
         # Perform resampling for each class
         resampled_indices = []
+        synthetic_data = []
+        synthetic_labels = []
+
         for class_id, class_scores in self.class_hardness.items():
             desired_count = samples_per_class[class_id]
             current_indices = np.array(class_indices[class_id])
@@ -217,10 +294,31 @@ class DataResampling:
                 class_retain_indices = undersample(desired_count, class_scores)
                 resampled_indices.extend(current_indices[class_retain_indices])
             elif len(current_indices) < desired_count:
-                class_add_indices = oversample(desired_count, class_scores, class_id)
-                resampled_indices.extend(current_indices[class_add_indices])
+                if self.oversampling_strategy in ['SMOTE', 'BSMOTE']:
+                    # This if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
+                    generated_data, generated_hardness_stats = oversample(desired_count, class_scores, current_indices,
+                                                                          class_id)
+                    synthetic_data.append(generated_data)
+                    synthetic_labels.append(torch.full((generated_data.size(0),), class_id))
+                else:
+                    class_add_indices = oversample(desired_count, class_scores, class_id)
+                    resampled_indices.extend(current_indices[class_add_indices])
             else:
-                resampled_indices.extend(current_indices)  # No resampling needed
+                resampled_indices.extend(current_indices)
+
+        if synthetic_data:
+            existing_data, existing_labels = self.extract_data_labels()
+            synthetic_data = torch.cat(synthetic_data, dim=0)
+            synthetic_labels = torch.cat(synthetic_labels, dim=0)
+
+            new_data = torch.cat([existing_data, synthetic_data], dim=0)
+            new_labels = torch.cat([existing_labels, synthetic_labels], dim=0)
+            self.dataset = TensorDataset(new_data, new_labels)
+
+            synthetic_start_idx = len(self.dataset) - synthetic_data.size(0)
+            synthetic_indices = list(range(synthetic_start_idx, len(self.dataset)))
+            resampled_indices.extend(synthetic_indices)
+
         # Create the resampled dataset
         return Subset(self.dataset, resampled_indices)
 

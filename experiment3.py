@@ -98,7 +98,7 @@ class Experiment3:
         class_accumulator = {i: 0 for i in range(self.num_classes)}
         class_counts = {i: 0 for i in range(self.num_classes)}
 
-        for class_id, current_class_el2n_scores in el2n_scores:
+        for class_id, current_class_el2n_scores in el2n_scores.items():
             for data_sample_scores in current_class_el2n_scores:
                 average_score = sum(data_sample_scores) / len(data_sample_scores)
                 class_accumulator[class_id] += average_score
@@ -126,7 +126,7 @@ class Experiment3:
         else:
             return self.estimate_hardness_based_on_safe_pruning_ratios()
 
-    def compute_sample_allocation(self, ratios) -> Dict[int: float]:
+    def compute_sample_allocation(self, ratios) -> Dict[int, float]:
         """
         Compute the number of samples required for each class to match the desired_dataset_size.
         """
@@ -169,9 +169,28 @@ class Experiment3:
         return DataLoader(dataset, batch_size=self.config['batch_size'], shuffle=shuffle,
                           num_workers=2, worker_init_fn=worker_init_fn)
 
+    @staticmethod
+    def plot_and_save_synthetic_samples(synthetic_data):
+        """
+        Create a 4x15 plot of 60 synthetic samples and save it to a file.
+        """
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(4, 15, figsize=(15, 8))
+        axes = axes.flatten()
+
+        for i in range(60):
+            image = synthetic_data[i].permute(1, 2, 0).numpy()  # Convert CxHxW to HxWxC for Matplotlib
+            axes[i].imshow(image)
+            axes[i].axis('off')
+
+        plt.tight_layout()
+        plt.show()
+
     def main(self):
         # Load training and test datasets
         train_dataset = self.load_dataset(train=True)
+        data, labels = zip(*[train_dataset[idx] for idx in range(len(train_dataset))])
+        self.plot_and_save_synthetic_samples(data)
         test_dataset = self.load_dataset(train=False)
         all_el2n_scores, class_el2n_scores, _, class_accuracies, _, _, _, _ = self.load_results()
 
@@ -204,10 +223,10 @@ if __name__ == "__main__":
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN)")
     parser.add_argument('--desired_dataset_size', type=int, required=True,
                         help="Desired size of the dataset after resampling")
-    parser.add_argument('--oversampling', type=str, required=True, choices=['random', 'easy', 'hard'],
-                        help='Strategy used for oversampling (have to choose between `random`, `easy`, and `hard`)')
-    parser.add_argument('--undersampling', type=str, required=True, choices=['random', 'prune_easy', 'prune_hard',
-                                                                             'prune_extreme'],
+    parser.add_argument('--oversampling', type=str, required=True, choices=['random', 'easy', 'hard', 'SMOTE'],
+                        help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, and '
+                             '`SMOTE`)')
+    parser.add_argument('--undersampling', type=str, required=True, choices=['random', 'easy', 'hard', 'extreme'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, and `prune_extreme`)')
     parser.add_argument('--class_hardness_estimation', type=str, required=True,
