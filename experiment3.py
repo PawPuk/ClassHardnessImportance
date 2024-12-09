@@ -7,11 +7,30 @@ from typing import Dict
 import numpy as np
 import torch
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from utils import get_config
 
 from data_pruning import DataResampling
 from train_ensemble import ModelTrainer
+
+
+class AugmentedSubset(Dataset):
+    def __init__(self, subset, transform=None):
+        self.subset = subset
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, idx):
+        # Get the original data and label from the subset
+        data, label = self.subset[idx]
+
+        # Apply the transformations to the data
+        if self.transform:
+            data = self.transform(data)
+
+        return data, label
 
 
 class Experiment3:
@@ -47,11 +66,6 @@ class Experiment3:
         Load the dataset based on dataset_name. Apply data augmentation only for training.
         """
         transform = transforms.Compose([
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(32, padding=4),
-            transforms.ToTensor(),
-            transforms.Normalize(self.config['mean'], self.config['std']),
-        ]) if train else transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(self.config['mean'], self.config['std']),
         ])
@@ -155,7 +169,7 @@ class Experiment3:
         Use DataResampling to modify the dataset to match the samples_per_class.
         """
         resampler = DataResampling(dataset, self.num_classes, self.oversampling_strategy, self.undersampling_strategy,
-                                   all_el2n_scores, class_el2n_scores)
+                                   all_el2n_scores, class_el2n_scores, self.dataset_name)
         return resampler.resample_data(samples_per_class)
 
     def get_dataloader(self, dataset, shuffle=True):
@@ -186,11 +200,17 @@ class Experiment3:
         plt.tight_layout()
         plt.show()
 
+    @staticmethod
+    def perform_data_augmentation(dataset):
+        data_augmentation = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomCrop(32, padding=4)
+        ])
+        return AugmentedSubset(dataset, transform=data_augmentation)
+
     def main(self):
         # Load training and test datasets
         train_dataset = self.load_dataset(train=True)
-        data, labels = zip(*[train_dataset[idx] for idx in range(len(train_dataset))])
-        self.plot_and_save_synthetic_samples(data)
         test_dataset = self.load_dataset(train=False)
         all_el2n_scores, class_el2n_scores, _, class_accuracies, _, _, _, _ = self.load_results()
 
@@ -200,9 +220,10 @@ class Experiment3:
 
         # Perform resampling
         resampled_dataset = self.resample_dataset(train_dataset, all_el2n_scores, class_el2n_scores, samples_per_class)
+        augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
 
         # Get DataLoaders
-        resampled_loader = self.get_dataloader(resampled_dataset, shuffle=True)
+        resampled_loader = self.get_dataloader(augmented_resampled_dataset, shuffle=True)
         test_loader = self.get_dataloader(test_dataset, shuffle=False)
 
         # Print final sample allocation
