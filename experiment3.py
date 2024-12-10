@@ -232,7 +232,7 @@ class Experiment3:
             print(f"  Class {class_id}: {count}")
 
         model_save_dir = f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_size_" \
-                         f"{self.desired_dataset_size}"
+                         f"{self.desired_dataset_size}_hardness_{self.hardness_estimation}"
         trainer = ModelTrainer(resampled_loader, test_loader, self.dataset_name, model_save_dir, False,
                                hardness='objective')
         trainer.train_ensemble()
