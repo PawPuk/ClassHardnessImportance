@@ -30,7 +30,7 @@ class AugmentedSubset(Dataset):
         if self.transform:
             data = self.transform(data)
 
-        return data, label
+        return data, label, idx
 
 
 class Experiment3:

@@ -372,9 +372,10 @@ class HardnessCalculator:
         self.plot_dataset_level_distribution(test_all_el2n_scores, True)
         self.plot_class_level_distribution(training_class_el2n_scores)
         self.plot_class_level_distribution(test_class_el2n_scores, True)
-        self.plot_pruning_rates(normalized_training_el2n_scores, normalized_training_class_el2n_scores, training_labels)
-        self.plot_pruning_rates(normalized_test_el2n_scores, normalized_test_class_el2n_scores, test_labels,
-                                True)
+        if self.NUM_CLASSES == 10:
+            self.plot_pruning_rates(normalized_training_el2n_scores, normalized_training_class_el2n_scores, training_labels)
+            self.plot_pruning_rates(normalized_test_el2n_scores, normalized_test_class_el2n_scores, test_labels,
+                                    True)
 
 
 if __name__ == "__main__":

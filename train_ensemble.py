@@ -1,7 +1,8 @@
 import csv
 import os
-import time
+import pickle
 import re
+import time
 
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ from utils import get_config
 
 class ModelTrainer:
     def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True,
-                 hardness='subjective'):
+                 hardness='subjective', compute_aum=False):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
@@ -44,6 +45,7 @@ class ModelTrainer:
         self.lr_decay_milestones = config['lr_decay_milestones']
         self.save_epoch = config['save_epoch']
         self.num_classes = config['num_classes']
+        self.total_samples = sum(config['num_training_samples'])
         if hardness == 'subjective':
             self.base_seed = config['probe_base_seed']
             self.seed_step = config['probe_seed_step']
@@ -111,12 +113,13 @@ class ModelTrainer:
         optimizer = optim.SGD(model.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay,
                               nesterov=True)
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.lr_decay_milestones, gamma=0.2)
+        all_AUMs = [[] for _ in range(self.total_samples)]
 
         for epoch in range(self.num_epochs):
             model.train()
             running_loss, correct_train, total_train = 0.0, 0, 0
 
-            for inputs, labels in self.training_loader:
+            for inputs, labels, indices in self.training_loader:
                 inputs, labels = inputs.cuda(), labels.cuda()
 
                 optimizer.zero_grad()
@@ -129,6 +132,15 @@ class ModelTrainer:
                 _, predicted = torch.max(outputs.data, 1)
                 total_train += labels.size(0)
                 correct_train += (predicted == labels).sum().item()
+
+                for i, logit, label in zip(indices, outputs, labels):
+                    i = i.item()
+                    correct_logit = logit[label].item()
+                    max_other_logit = torch.max(torch.cat((logit[:label], logit[label + 1:]))).item()
+                    aum = correct_logit - max_other_logit
+
+                    # Append the AUM for this sample
+                    all_AUMs[i].append(aum)
 
             avg_train_loss = running_loss / total_train
             train_accuracy = 100 * correct_train / total_train
@@ -157,6 +169,7 @@ class ModelTrainer:
         torch.save(model.state_dict(), final_save_path)
         print(f'Model {model_id + current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved after '
               f'full training at epoch {self.num_epochs}')
+        return all_AUMs
 
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
@@ -171,16 +184,31 @@ class ModelTrainer:
 
         latest_model_index = self.get_latest_model_index()
 
+        all_AUMs = []
+
         for model_id in tqdm(range(num_models)):
             start_time = time.time()  # Start time for training the model
 
             # Train the model
-            self.train_model(model_id, latest_model_index + 1)
+            all_AUMs.append(self.train_model(model_id, latest_model_index + 1))
 
             # Calculate the time taken for training this model
             training_time = time.time() - start_time
             timings.append((model_id + latest_model_index + 1, training_time))
             print(f'Time taken for Model {model_id + latest_model_index + 1}: {training_time:.2f} seconds')
+
+        averaged_AUMs = [
+            [
+                sum(model_list[sample_idx][epoch_idx] for model_list in all_AUMs) / len(all_AUMs)
+                for epoch_idx in range(self.num_epochs)
+            ]
+            for sample_idx in range(self.total_samples)
+        ]
+
+        AUM_save_dir = f'Results/{self.dataset_name}/AUM.pkl'
+        os.makedirs(AUM_save_dir, exist_ok=True)
+        with open(AUM_save_dir, "wb") as file:
+            pickle.dump(averaged_AUMs, file)
 
         # Calculate mean and standard deviation of the timings
         timing_values = [timing[1] for timing in timings]

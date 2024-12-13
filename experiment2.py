@@ -14,6 +14,18 @@ from utils import get_config
 from train_ensemble import ModelTrainer
 
 
+class IndexedDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        data, label = self.dataset[idx]
+        return data, label, idx
+
+
 class Experiment2:
     def __init__(self, dataset_name, pruning_strategy, pruning_rate, scaling_type, protect_prototypes, hardness_type):
         self.seed = 42
@@ -90,7 +102,9 @@ class Experiment2:
         else:
             raise ValueError(f"Dataset {dataset_name} is not supported.")
 
-        # Load training and test data
+        training_set = IndexedDataset(training_set)
+        test_set = IndexedDataset(test_set)
+
         def worker_init_fn(worker_id):
             np.random.seed(self.seed + worker_id)
             random.seed(self.seed + worker_id)

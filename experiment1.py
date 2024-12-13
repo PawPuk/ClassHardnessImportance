@@ -12,6 +12,18 @@ from utils import get_config
 from train_ensemble import ModelTrainer
 
 
+class IndexedDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        data, label = self.dataset[idx]
+        return data, label, idx
+
+
 # Function to get data transforms
 def get_data_transforms(dataset_name):
     if dataset_name == 'CIFAR10':
@@ -88,6 +100,9 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform, se
     else:
         raise ValueError(f"Dataset {dataset_name} is not supported. Choose either CIFAR10 or CIFAR100.")
 
+    train_set = IndexedDataset(train_set)
+    test_set = IndexedDataset(test_set)
+
     def worker_init_fn(worker_id):
         np.random.seed(seed + worker_id)
         random.seed(seed + worker_id)
@@ -120,7 +135,7 @@ def main(dataset_name):
     training_loader, test_loader = get_dataloader(dataset_name, batch_size, train_transform, test_transform, seed)
 
     # Create an instance of ModelTrainer
-    trainer = ModelTrainer(training_loader, test_loader, dataset_name)
+    trainer = ModelTrainer(training_loader, test_loader, dataset_name, compute_aum=True)
 
     # Train the ensemble of models
     trainer.train_ensemble()
