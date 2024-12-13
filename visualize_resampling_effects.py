@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torchvision.transforms as transforms
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, CIFAR100
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
@@ -68,12 +68,17 @@ def load_el2n_scores(dataset_name):
     return hardness, hardness_grouped_by_class, test_labels
 
 
-def load_cifar10_test_set(class_grouped_hardness, test_labels, batch_size: int = 64):
+def load_test_set(class_grouped_hardness, test_labels, dataset_name, batch_size: int = 64):
     transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        transforms.Normalize(config['mean'], config['std'])
     ])
-    test_set = CIFAR10(root='./data', train=False, download=True, transform=transform)
+    if dataset_name == 'CIFAR10':
+        test_set = CIFAR10(root='./data', train=False, download=True, transform=transform)
+    elif dataset_name == 'CIFAR100':
+        test_set = CIFAR100(root='./data', train=False, download=True, transform=transform)
+    else:
+        raise Exception
     number_of_blocks = 5
 
     blocks = {i: [] for i in range(number_of_blocks)}
@@ -135,7 +140,7 @@ def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_in
 
 def evaluate_ensemble(models: Dict[Tuple[str, str], List[dict]], test_loaders: List[DataLoader],
                       results: Dict[str, Dict], class_index: int):
-    for (over, under), ensemble in tqdm(models.items(), desc='Iterating over resampling strategies.'):
+    for (over, under), ensemble in models.items():
         print(f"Evaluating ensemble for oversampling strategy {over} and undersampling strategy {under}.")
         if class_index == 0:
             for metric in ['Tp', 'Fp', 'Fn', 'Tn']:
@@ -175,33 +180,30 @@ def plot_all_accuracies_sorted(results, class_order, save_path=None):
     :param class_order: List specifying the order of classes for plotting.
     :param save_path: Path to save the plot. If None, the plot will be shown.
     """
+
+    # Plot for all strategies using line segments
     plt.figure(figsize=(12, 8))
 
-    # Define color palette
     color_palette = plt.cm.tab10(np.linspace(0, 1, len(results['Recall'])))
 
     for idx, (strategy, accuracies) in enumerate(results['Recall'].items()):
-        # Compute average accuracy across all blocks for each class
         avg_accuracies = {class_id: np.mean([block[class_id] for block in accuracies]) for class_id in
                           range(num_classes)}
 
-        # Reorder accuracies based on the given class order
         reordered_accuracies = [avg_accuracies[class_id] for class_id in class_order]
 
-        # Plot reordered accuracies for this strategy
         for reordered_idx, avg_accuracy in enumerate(reordered_accuracies):
             x_start = reordered_idx - 0.4 + (idx / len(results['Recall'])) * 0.8
             x_end = reordered_idx + 0.4 - (idx / len(results['Recall'])) * 0.8
             plt.plot([x_start, x_end], [avg_accuracy * 100, avg_accuracy * 100],
                      color=color_palette[idx], lw=2)
 
-        # Add legend entry
         plt.plot([], [], color=color_palette[idx], lw=2, label=f"{strategy[0]}-{strategy[1]}")
 
     plt.xlabel("Class (Sorted by Base Strategy)", fontsize=12)
+    plt.xticks([])
     plt.ylabel("Accuracy (%)", fontsize=12)
     plt.title("Average Accuracy by Class for All Strategies (Sorted by Base Strategy)", fontsize=14)
-    plt.xticks(range(num_classes), labels=class_order, fontsize=10)
     plt.legend(fontsize=10, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
     plt.grid(True, linestyle='--', alpha=0.6)
 
@@ -210,13 +212,77 @@ def plot_all_accuracies_sorted(results, class_order, save_path=None):
         print(f"Plot saved to {save_path}")
     else:
         plt.show()
+    plt.close()
+
+    # Create a new plot for specific strategies using classical function-like visual style
+    filtered_keys = [('random', 'easy'), ('hard', 'easy'), ('easy', 'easy'), ('SMOTE', 'easy'), ('none', 'none')]
+    filtered_results = {key: results['Recall'][key] for key in filtered_keys if key in results['Recall']}
+
+    plt.figure(figsize=(12, 8))
+    for idx, (strategy, accuracies) in enumerate(filtered_results.items()):
+        avg_accuracies = {class_id: np.mean([block[class_id] for block in accuracies]) for class_id in
+                          range(len(class_order))}
+        if strategy == ('none', 'none'):
+            avg_base_accuracies = avg_accuracies
+        reordered_accuracies = [avg_accuracies[class_id] for class_id in class_order]
+        plt.plot(range(len(class_order)), [acc * 100 for acc in reordered_accuracies],
+                 label=f"{strategy[0]}-{strategy[1]}", lw=1)
+
+    plt.xlabel("Class (Sorted by the Accuracy of Base Strategy)", fontsize=12)
+    plt.xticks([])
+    plt.ylabel("Accuracy (%)", fontsize=12)
+    plt.title("Average Accuracy by Class for Filtered Strategies", fontsize=14)
+    plt.legend(fontsize=10, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+    if save_path:
+        filtered_save_path = save_path.replace('.pdf', '_filtered.pdf')
+        plt.savefig(filtered_save_path, bbox_inches='tight')
+        print(f"Filtered plot saved to {filtered_save_path}")
+    else:
+        plt.show()
+
+    # Create a new plot for respective performance of each resampling strategy (in respect to no resampling)
+    filtered_keys = [('random', 'easy'), ('hard', 'easy'), ('easy', 'easy'), ('SMOTE', 'easy')]
+    filtered_results = {key: results['Recall'][key] for key in filtered_keys if key in results['Recall']}
+
+    plt.figure(figsize=(12, 8))
+
+    for idx, (strategy, accuracies) in enumerate(filtered_results.items()):
+        avg_accuracies = {class_id: np.mean([block[class_id] for block in accuracies]) - avg_base_accuracies[class_id]
+                          for class_id in range(len(class_order))}
+
+        sorted_items = sorted(avg_accuracies.items(), key=lambda x: x[1])
+        sorted_class_order, sorted_accuracies = zip(*sorted_items)
+
+        reordered_accuracies = [avg_accuracies[class_id] for class_id in sorted_class_order]
+        mean_avg_accuracy = np.mean(reordered_accuracies)
+
+        plt.plot(range(len(class_order)), [acc * 100 for acc in reordered_accuracies],
+                 label=f"{strategy[0]}-{strategy[1]}", lw=1)
+        plt.axhline(mean_avg_accuracy * 100, color=plt.gca().lines[-1].get_color(), linestyle='--',
+                    label=f"Dataset-level accuracy ({strategy[0]}-{strategy[1]})")
+
+    plt.xlabel("Class (Sorted by Respective Accuracy Boost)", fontsize=12)
+    plt.xticks([])
+    plt.ylabel("Accuracy (%)", fontsize=12)
+    plt.title("Average Accuracy by Class for Filtered Strategies", fontsize=14)
+    plt.legend(fontsize=10, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
+    plt.grid(True, linestyle='--', alpha=0.6)
+
+    if save_path:
+        filtered_save_path = save_path.replace('.pdf', '_filtered_respective.pdf')
+        plt.savefig(filtered_save_path, bbox_inches='tight')
+        print(f"Filtered plot saved to {filtered_save_path}")
+    else:
+        plt.show()
 
 
 def main(dataset_name):
     result_dir = os.path.join("Results", dataset_name)
     models = load_models(dataset_name)
     all_el2n_scores, class_el2n_scores, test_labels = load_el2n_scores(dataset_name)
-    test_loader = load_cifar10_test_set(class_el2n_scores, test_labels, 1024)
+    test_loader = load_test_set(class_el2n_scores, test_labels, dataset_name, 1024)
 
     # Evaluate ensemble performance
     if os.path.exists(os.path.join(result_dir, "resampling_results.pkl")):
@@ -225,7 +291,7 @@ def main(dataset_name):
     else:
         results = {'Tp': {}, 'Fn': {}, 'Fp': {}, 'Tn': {}}
 
-        for class_index in range(num_classes):
+        for class_index in tqdm(range(num_classes), desc='Iterating through classes'):
             evaluate_ensemble(models, test_loader, results, class_index)
         save_file(result_dir, "resampling_results.pkl", results)
 
@@ -270,7 +336,7 @@ def main(dataset_name):
 
     base_strategy = ('none', 'none')
     class_order = get_class_order(results, base_strategy)
-    plot_all_accuracies_sorted(results, class_order, figure_save_dir)
+    plot_all_accuracies_sorted(results, class_order, os.path.join(figure_save_dir, 'resampling_effects.pdf'))
 
 
 if __name__ == "__main__":
