@@ -90,7 +90,7 @@ class ModelTrainer:
         correct, total, running_loss = 0, 0, 0.0
 
         with torch.no_grad():
-            for inputs, labels in self.test_loader:
+            for inputs, labels, _ in self.test_loader:
                 inputs, labels = inputs.cuda(), labels.cuda()
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
