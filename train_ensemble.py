@@ -197,18 +197,10 @@ class ModelTrainer:
             timings.append((model_id + latest_model_index + 1, training_time))
             print(f'Time taken for Model {model_id + latest_model_index + 1}: {training_time:.2f} seconds')
 
-        averaged_AUMs = [
-            [
-                sum(model_list[sample_idx][epoch_idx] for model_list in all_AUMs) / len(all_AUMs)
-                for epoch_idx in range(self.num_epochs)
-            ]
-            for sample_idx in range(self.total_samples)
-        ]
-
         AUM_save_dir = f'Results/{self.dataset_name}/AUM.pkl'
         os.makedirs(AUM_save_dir, exist_ok=True)
         with open(AUM_save_dir, "wb") as file:
-            pickle.dump(averaged_AUMs, file)
+            pickle.dump(all_AUMs, file)
 
         # Calculate mean and standard deviation of the timings
         timing_values = [timing[1] for timing in timings]

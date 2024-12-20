@@ -91,8 +91,8 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform, se
 
     train_set = IndexedDataset(train_set)
     test_set = IndexedDataset(test_set)
-    NoiseRemover(dataset_name, train_set).clean()
-    print(len(123))
+    if remove_noise:
+        NoiseRemover(dataset_name, train_set).clean()
 
     def worker_init_fn(worker_id):
         np.random.seed(seed + worker_id)
