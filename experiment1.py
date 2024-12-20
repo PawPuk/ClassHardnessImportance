@@ -8,20 +8,9 @@ import torchvision
 import torchvision.transforms as transforms
 
 from datasets import CINIC10
-from utils import get_config
+from removing_noise import NoiseRemover
 from train_ensemble import ModelTrainer
-
-
-class IndexedDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset):
-        self.dataset = dataset
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        data, label = self.dataset[idx]
-        return data, label, idx
+from utils import get_config, IndexedDataset
 
 
 # Function to get data transforms
@@ -84,7 +73,7 @@ def get_data_transforms(dataset_name):
 
 
 # Function to load dataset
-def get_dataloader(dataset_name, batch_size, train_transform, test_transform, seed):
+def get_dataloader(dataset_name, batch_size, train_transform, test_transform, seed, remove_noise):
     if dataset_name == 'CIFAR10':
         train_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=train_transform)
         test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
@@ -102,6 +91,8 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform, se
 
     train_set = IndexedDataset(train_set)
     test_set = IndexedDataset(test_set)
+    NoiseRemover(dataset_name, train_set).clean()
+    print(len(123))
 
     def worker_init_fn(worker_id):
         np.random.seed(seed + worker_id)
@@ -116,7 +107,7 @@ def get_dataloader(dataset_name, batch_size, train_transform, test_transform, se
 
 
 # Main function
-def main(dataset_name):
+def main(dataset_name: str, remove_noise: bool):
     # Set seeds for reproducibility
     seed = 42
     np.random.seed(seed)
@@ -124,7 +115,7 @@ def main(dataset_name):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
     # Get the dataset transforms based on the dataset_name
@@ -132,7 +123,8 @@ def main(dataset_name):
 
     # Load the dataset
     batch_size = get_config(dataset_name)['batch_size']
-    training_loader, test_loader = get_dataloader(dataset_name, batch_size, train_transform, test_transform, seed)
+    training_loader, test_loader = get_dataloader(dataset_name, batch_size, train_transform, test_transform, seed,
+                                                  remove_noise)
 
     # Create an instance of ModelTrainer
     trainer = ModelTrainer(training_loader, test_loader, dataset_name, compute_aum=True)
@@ -146,9 +138,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train an ensemble of models on CIFAR-10 or CIFAR-100.')
     parser.add_argument('--dataset_name', type=str, required=True, choices=['CIFAR10', 'CIFAR100', 'SVHN', 'CINIC10'],
                         help='Dataset name: CIFAR10 or CIFAR100')
+    parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
 
     # Parse arguments
     args = parser.parse_args()
 
     # Run main function
-    main(args.dataset_name)
+    main(args.dataset_name, args.remove_noise)

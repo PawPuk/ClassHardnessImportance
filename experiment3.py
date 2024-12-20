@@ -12,25 +12,7 @@ from utils import get_config
 
 from data_pruning import DataResampling
 from train_ensemble import ModelTrainer
-
-
-class AugmentedSubset(Dataset):
-    def __init__(self, subset, transform=None):
-        self.subset = subset
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.subset)
-
-    def __getitem__(self, idx):
-        # Get the original data and label from the subset
-        data, label = self.subset[idx]
-
-        # Apply the transformations to the data
-        if self.transform:
-            data = self.transform(data)
-
-        return data, label, idx
+from utils import AugmentedSubset
 
 
 class Experiment3:

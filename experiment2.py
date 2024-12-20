@@ -10,20 +10,8 @@ import torchvision
 import torchvision.transforms as transforms
 
 from data_pruning import DataPruning
-from utils import get_config
 from train_ensemble import ModelTrainer
-
-
-class IndexedDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset):
-        self.dataset = dataset
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        data, label = self.dataset[idx]
-        return data, label, idx
+from utils import get_config, IndexedDataset
 
 
 class Experiment2:

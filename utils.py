@@ -1,3 +1,6 @@
+import torch
+
+
 dataset_configs = {
     'CIFAR10': {
         'batch_size': 128,
@@ -97,3 +100,34 @@ def get_config(dataset_name):
         return config
     else:
         raise ValueError(f"Configuration for dataset {dataset_name} not found!")
+
+
+class IndexedDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        data, label = self.dataset[idx]
+        return data, label, idx
+
+
+class AugmentedSubset(torch.utils.data.Dataset):
+    def __init__(self, subset, transform=None):
+        self.subset = subset
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, idx):
+        # Get the original data and label from the subset
+        data, label = self.subset[idx]
+
+        # Apply the transformations to the data
+        if self.transform:
+            data = self.transform(data)
+
+        return data, label, idx
