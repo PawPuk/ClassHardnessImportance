@@ -12,11 +12,12 @@ import torchvision
 import torchvision.transforms as transforms
 
 from neural_networks import ResNet18LowRes
+from removing_noise import NoiseRemover
 from utils import get_config
 
 
 class HardnessCalculator:
-    def __init__(self, dataset_name):
+    def __init__(self, dataset_name, remove_noise):
         self.seed = 42
         np.random.seed(self.seed)
         random.seed(self.seed)
@@ -27,6 +28,7 @@ class HardnessCalculator:
         torch.backends.cudnn.deterministic = True
 
         self.dataset_name = dataset_name
+        self.remove_noise = remove_noise
         self.config = get_config(dataset_name)
         self.BATCH_SIZE = self.config['batch_size']
         self.SAVE_EPOCH = self.config['save_epoch']
@@ -35,8 +37,8 @@ class HardnessCalculator:
         self.NUM_MODELS = self.config['num_models']
 
         self.training_loader, self.training_set_size, self.test_loader, self.test_set_size = self.load_dataset()
-        self.figure_save_dir = os.path.join('Figures/', self.dataset_name)
-        self.results_save_dir = os.path.join('Results/', self.dataset_name)
+        self.figure_save_dir = os.path.join('Figures/', f"{['', 'clean'][self.remove_noise]}{self.dataset_name}")
+        self.results_save_dir = os.path.join('Results/', f"{['', 'clean'][self.remove_noise]}{self.dataset_name}")
         os.makedirs(self.figure_save_dir, exist_ok=True)
         os.makedirs(self.results_save_dir, exist_ok=True)
 
@@ -62,6 +64,9 @@ class HardnessCalculator:
                                                      transform=test_transform)
         else:
             raise ValueError(f"Dataset {self.dataset_name} is not supported.")
+
+        if self.remove_noise:
+            NoiseRemover(self.dataset_name, training_set).clean()
 
         def worker_init_fn(worker_id):
             np.random.seed(self.seed + worker_id)
@@ -113,7 +118,7 @@ class HardnessCalculator:
         for model_id in range(self.NUM_MODELS):
             model = self.create_model().cuda()
             # This is the directory in which we store the pretrained models.
-            model_path = os.path.join(self.MODEL_DIR, 'none', self.dataset_name,
+            model_path = os.path.join(self.MODEL_DIR, 'none', f"{['', 'clean'][self.remove_noise]}{self.dataset_name}",
                                       f'model_{model_id}_epoch_{self.SAVE_EPOCH}.pth')
             if os.path.exists(model_path):
                 model.load_state_dict(torch.load(model_path))
@@ -382,9 +387,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Compute Hardness of Dataset Samples')
     parser.add_argument('--dataset_name', type=str, default='CIFAR10',
                         help='Specify the dataset name (default: CIFAR10)')
+    parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
     args = parser.parse_args()
 
-    calculator = HardnessCalculator(args.dataset_name)
+    calculator = HardnessCalculator(args.dataset_name, args.remove_noise)
     calculator.run()
 
 # TODO: Currently the code works for objective hardness but not for subjective hardness.

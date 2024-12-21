@@ -7,23 +7,27 @@ from typing import Dict
 import numpy as np
 import torch
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from utils import get_config
 
 from data_pruning import DataResampling
+from removing_noise import NoiseRemover
 from train_ensemble import ModelTrainer
 from utils import AugmentedSubset
 
 
 class Experiment3:
     def __init__(self, dataset_name, desired_dataset_size, oversampling_strategy, undersampling_strategy,
-                 class_hardness_estimation):
+                 class_hardness_estimation, remove_noise):
         self.dataset_name = dataset_name
         self.desired_dataset_size = desired_dataset_size
         self.oversampling_strategy = oversampling_strategy
         self.undersampling_strategy = undersampling_strategy
         self.hardness_estimation = class_hardness_estimation
-        self.results_file = os.path.join('Results', dataset_name, 'el2n_scores.pkl')
+        self.remove_noise = remove_noise
+
+        self.results_file = os.path.join('Results', f"{['', 'clean'][self.remove_noise]}{self.dataset_name}",
+                                         'el2n_scores.pkl')
         self.config = get_config(dataset_name)
         self.num_classes = self.config['num_classes']
 
@@ -53,14 +57,18 @@ class Experiment3:
         ])
 
         if self.dataset_name == 'CIFAR10':
-            return datasets.CIFAR10(root='./data', train=train, download=True, transform=transform)
+            dataset = datasets.CIFAR10(root='./data', train=train, download=True, transform=transform)
         elif self.dataset_name == 'CIFAR100':
-            return datasets.CIFAR100(root='./data', train=train, download=True, transform=transform)
+            dataset = datasets.CIFAR100(root='./data', train=train, download=True, transform=transform)
         elif self.dataset_name == 'SVHN':
             split = 'train' if train else 'test'
-            return datasets.SVHN(root='./data', split=split, download=True, transform=transform)
+            dataset = datasets.SVHN(root='./data', split=split, download=True, transform=transform)
         else:
             raise ValueError(f"Dataset {self.dataset_name} is not supported.")
+
+        if self.remove_noise:
+            NoiseRemover(self.dataset_name, dataset).clean()
+        return dataset
 
     def load_results(self):
         """
@@ -237,8 +245,9 @@ if __name__ == "__main__":
                         help='Strategy used to estimate hardness of each class. The obtained ratio is used when '
                              'introducing imbalance to the training set. Choose between `accuracy`, `EL2N`, and'
                              '`safe_pruning`.')
+    parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
     args = parser.parse_args()
 
     experiment = Experiment3(args.dataset_name, args.desired_dataset_size, args.oversampling, args.undersampling,
-                             args.class_hardness_estimation)
+                             args.class_hardness_estimation, args.remove_noise)
     experiment.main()

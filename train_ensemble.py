@@ -16,7 +16,7 @@ from utils import get_config
 
 class ModelTrainer:
     def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True,
-                 hardness='subjective', compute_aum=False):
+                 hardness='subjective', compute_aum=False, clean_data=False):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
@@ -33,6 +33,8 @@ class ModelTrainer:
         self.pruning_type = pruning_type
         self.dataset_name = dataset_name
         self.save_probe_models = save_probe_models
+        self.compute_aum = compute_aum
+        self.clean_data = clean_data
 
         # Fetch the dataset-specific configuration
         config = get_config(self.dataset_name)
@@ -54,8 +56,10 @@ class ModelTrainer:
             self.seed_step = config['new_seed_step']
 
         # Incorporate dataset_name and pruning_type into directories to prevent overwriting
-        self.save_dir = str(os.path.join(config['save_dir'], pruning_type, dataset_name))
-        self.timings_dir = str(os.path.join(config['timings_dir'], pruning_type, dataset_name))
+        self.save_dir = str(os.path.join(config['save_dir'], pruning_type,
+                                         f"{['', 'clean'][self.clean_data]}{dataset_name}"))
+        self.timings_dir = str(os.path.join(config['timings_dir'], pruning_type,
+                                            f"{['', 'clean'][self.clean_data]}{dataset_name}"))
 
         # Ensure directories exist
         os.makedirs(self.save_dir, exist_ok=True)
@@ -133,14 +137,15 @@ class ModelTrainer:
                 total_train += labels.size(0)
                 correct_train += (predicted == labels).sum().item()
 
-                for i, logit, label in zip(indices, outputs, labels):
-                    i = i.item()
-                    correct_logit = logit[label].item()
-                    max_other_logit = torch.max(torch.cat((logit[:label], logit[label + 1:]))).item()
-                    aum = correct_logit - max_other_logit
+                if self.compute_aum:
+                    for i, logit, label in zip(indices, outputs, labels):
+                        i = i.item()
+                        correct_logit = logit[label].item()
+                        max_other_logit = torch.max(torch.cat((logit[:label], logit[label + 1:]))).item()
+                        aum = correct_logit - max_other_logit
 
-                    # Append the AUM for this sample
-                    all_AUMs[i].append(aum)
+                        # Append the AUM for this sample
+                        all_AUMs[i].append(aum)
 
             avg_train_loss = running_loss / total_train
             train_accuracy = 100 * correct_train / total_train
@@ -197,10 +202,11 @@ class ModelTrainer:
             timings.append((model_id + latest_model_index + 1, training_time))
             print(f'Time taken for Model {model_id + latest_model_index + 1}: {training_time:.2f} seconds')
 
-        AUM_save_dir = f'Results/{self.dataset_name}/AUM.pkl'
-        os.makedirs(AUM_save_dir, exist_ok=True)
-        with open(AUM_save_dir, "wb") as file:
-            pickle.dump(all_AUMs, file)
+        if self.compute_aum:
+            AUM_save_dir = f"Results/{['', 'clean'][self.clean_data]}{self.dataset_name}/"
+            os.makedirs(AUM_save_dir, exist_ok=True)
+            with open(os.path.join(AUM_save_dir, 'AUM.pkl'), "wb") as file:
+                pickle.dump(all_AUMs, file)
 
         # Calculate mean and standard deviation of the timings
         timing_values = [timing[1] for timing in timings]

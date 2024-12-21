@@ -18,7 +18,7 @@ class NoiseRemover:
         self.TOTAL_SAMPLES = sum(self.config['num_training_samples'])
         self.NUM_EPOCHS = self.config['num_epochs']
 
-        self.figure_save_dir = os.path.join('Figures/', self.dataset_name)
+        self.figure_save_dir = os.path.join('Figures/', f"clean{self.dataset_name}")
 
     @staticmethod
     def load_pickle(file_path):
@@ -47,8 +47,8 @@ class NoiseRemover:
         plt.legend()
         plt.savefig('AUM_distribution.pdf')
 
-        # Compute the value at x = 2.5
-        x_value = 2.5
+        # We want to only remove noise so to keep recall high we only remove samples with negative AUM.
+        x_value = 0
         y_value = np.interp(x_value, sorted_data, cumulative_percentage)
         elbow_index = np.searchsorted(sorted_data, x_value, side='left')
         plt.axhline(y=y_value, color='red', linestyle='--', label=f'Value at x = {x_value}')

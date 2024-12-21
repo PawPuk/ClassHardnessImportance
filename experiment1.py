@@ -127,7 +127,7 @@ def main(dataset_name: str, remove_noise: bool):
                                                   remove_noise)
 
     # Create an instance of ModelTrainer
-    trainer = ModelTrainer(training_loader, test_loader, dataset_name, compute_aum=True)
+    trainer = ModelTrainer(training_loader, test_loader, dataset_name, compute_aum=True, clean_data=remove_noise)
 
     # Train the ensemble of models
     trainer.train_ensemble()
