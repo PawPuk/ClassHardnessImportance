@@ -143,6 +143,7 @@ class DataResampling:
         current_n_samples = len(current_indices)
 
         data = torch.stack([self.dataset[idx][0] for idx in current_indices])
+        labels = torch.tensor([self.dataset[idx][1] for idx in current_indices])
         data_flattened = data.view(current_n_samples, -1)
 
         neighbors = NearestNeighbors(n_neighbors=k + 1).fit(data_flattened.numpy())
@@ -169,7 +170,7 @@ class DataResampling:
 
         synthetic_samples = torch.stack(synthetic_samples, dim=0)
         # self.plot_and_save_synthetic_samples(synthetic_samples, f'Figures/synthetic_samples_class_{class_id}.png')
-        return data, synthetic_samples
+        return data, labels, synthetic_samples
 
     def oversample_easy(self, desired_count, hardness_scores, class_id):
         """
@@ -334,11 +335,12 @@ class DataResampling:
             elif len(current_indices) < desired_count:
                 if self.oversampling_strategy in ['SMOTE', 'BSMOTE']:
                     # This if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
-                    original_data, generated_data = oversample(desired_count, class_scores, current_indices,
-                                                               hardness_stats)
+                    original_data, original_labels, generated_data = oversample(desired_count, class_scores,
+                                                                                current_indices, hardness_stats)
+                    generated_labels = torch.full((generated_data.size(0),), class_id)
                     print(f'Generated {len(generated_data)} data samples via SMOTE.')
                     synthetic_data.append(torch.cat([original_data, generated_data], dim=0))
-                    synthetic_labels.append(torch.full((generated_data.size(0),), class_id))
+                    synthetic_labels.append(torch.cat([original_labels, generated_labels], dim=0))
                 else:
                     class_add_indices = oversample(desired_count, class_scores, class_id)
                     resampled_indices.extend(current_indices[class_add_indices])

@@ -13,7 +13,7 @@ from utils import get_config
 from data_pruning import DataResampling
 from removing_noise import NoiseRemover
 from train_ensemble import ModelTrainer
-from utils import AugmentedSubset
+from utils import AugmentedSubset, IndexedDataset
 
 
 class Experiment3:
@@ -214,7 +214,7 @@ class Experiment3:
 
         # Get DataLoaders
         resampled_loader = self.get_dataloader(augmented_resampled_dataset, shuffle=True)
-        test_loader = self.get_dataloader(test_dataset, shuffle=False)
+        test_loader = self.get_dataloader(IndexedDataset(test_dataset), shuffle=False)
 
         # Print final sample allocation
         print("Samples per class after resampling in training set:")

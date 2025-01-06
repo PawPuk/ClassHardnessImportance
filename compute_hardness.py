@@ -13,7 +13,7 @@ import torchvision.transforms as transforms
 
 from neural_networks import ResNet18LowRes
 from removing_noise import NoiseRemover
-from utils import get_config
+from utils import get_config, IndexedDataset
 
 
 class HardnessCalculator:
@@ -65,6 +65,8 @@ class HardnessCalculator:
         else:
             raise ValueError(f"Dataset {self.dataset_name} is not supported.")
 
+        training_set = IndexedDataset(training_set)
+        test_set = IndexedDataset(test_set)
         if self.remove_noise:
             NoiseRemover(self.dataset_name, training_set).clean()
 
@@ -91,7 +93,7 @@ class HardnessCalculator:
         class_total = {i: 0 for i in range(self.NUM_CLASSES)}
 
         with torch.no_grad():
-            for inputs, labels in dataloader:
+            for inputs, labels, _ in dataloader:
                 inputs, labels = inputs.cuda(), labels.cuda()
                 outputs = model(inputs)
 
@@ -136,7 +138,7 @@ class HardnessCalculator:
         labels = []  # Store corresponding labels
 
         # Since we are not shuffling the data loader, we can directly match scores with their labels
-        for i, (_, label) in enumerate(dataset):
+        for i, (_, label, _) in enumerate(dataset):
             class_el2n_scores[label].append(el2n_scores[i])
             labels.append(label)
 
