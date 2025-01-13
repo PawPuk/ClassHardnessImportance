@@ -2,12 +2,12 @@ import argparse
 import os
 import pickle
 import random
-from typing import Dict
+from typing import Dict, Union
 
 import numpy as np
 import torch
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from utils import get_config
 
 from data_pruning import DataResampling
@@ -24,10 +24,9 @@ class Experiment3:
         self.oversampling_strategy = oversampling_strategy
         self.undersampling_strategy = undersampling_strategy
         self.hardness_estimation = class_hardness_estimation
-        self.remove_noise = remove_noise
+        self.remove_noise = 'clean' if remove_noise else 'unclean'
 
-        self.results_file = os.path.join('Results', f"{['', 'clean'][self.remove_noise]}{self.dataset_name}",
-                                         'el2n_scores.pkl')
+        self.results_file = os.path.join('Results', f"{self.remove_noise}{self.dataset_name}", 'el2n_scores.pkl')
         self.config = get_config(dataset_name)
         self.num_classes = self.config['num_classes']
 
@@ -47,7 +46,7 @@ class Experiment3:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    def load_dataset(self, train=True):
+    def load_dataset(self, train=True) -> Union[AugmentedSubset, IndexedDataset]:
         """
         Load the dataset based on dataset_name. Apply data augmentation only for training.
         """
@@ -66,7 +65,8 @@ class Experiment3:
         else:
             raise ValueError(f"Dataset {self.dataset_name} is not supported.")
 
-        if self.remove_noise:
+        dataset = IndexedDataset(dataset)
+        if self.remove_noise == 'clean' and train:
             NoiseRemover(self.dataset_name, dataset).clean()
         return dataset
 
@@ -154,13 +154,13 @@ class Experiment3:
 
         return samples_per_class
 
-    def resample_dataset(self, dataset, all_el2n_scores, class_el2n_scores, samples_per_class):
+    def resample_dataset(self, dataset, all_el2n_scores, class_el2n_scores, samples_per_class) -> AugmentedSubset:
         """
         Use DataResampling to modify the dataset to match the samples_per_class.
         """
         resampler = DataResampling(dataset, self.num_classes, self.oversampling_strategy, self.undersampling_strategy,
                                    all_el2n_scores, class_el2n_scores, self.dataset_name)
-        return resampler.resample_data(samples_per_class)
+        return AugmentedSubset(resampler.resample_data(samples_per_class))
 
     def get_dataloader(self, dataset, shuffle=True):
         """
@@ -214,7 +214,7 @@ class Experiment3:
 
         # Get DataLoaders
         resampled_loader = self.get_dataloader(augmented_resampled_dataset, shuffle=True)
-        test_loader = self.get_dataloader(IndexedDataset(test_dataset), shuffle=False)
+        test_loader = self.get_dataloader(test_dataset, shuffle=False)
 
         # Print final sample allocation
         print("Samples per class after resampling in training set:")
@@ -224,7 +224,7 @@ class Experiment3:
         model_save_dir = f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_size_" \
                          f"{self.desired_dataset_size}_hardness_{self.hardness_estimation}"
         trainer = ModelTrainer(resampled_loader, test_loader, self.dataset_name, model_save_dir, False,
-                               hardness='objective')
+                               hardness='objective', clean_data=self.remove_noise)
         trainer.train_ensemble()
 
 

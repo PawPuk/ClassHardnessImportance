@@ -35,6 +35,7 @@ dataset_configs = {
         'mean': (0.5071, 0.4867, 0.4408),
         'std': (0.2675, 0.2565, 0.2761),
         'num_training_samples': [500 for _ in range(100)],
+        'num_test_samples': [100 for _ in range(100)],
         'class_names': [
             'apple', 'aquarium_fish', 'baby', 'bear', 'beaver', 'bed', 'bee', 'beetle', 'bicycle', 'bottle',
             'bowl', 'boy', 'bridge', 'bus', 'butterfly', 'camel', 'can', 'castle', 'caterpillar', 'cattle',
@@ -135,7 +136,7 @@ class AugmentedSubset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         # Get the original data and label from the subset
-        data, label = self.subset[idx]
+        data, label, _ = self.subset[idx]
 
         # Apply the transformations to the data
         if self.transform:

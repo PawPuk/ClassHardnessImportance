@@ -34,7 +34,7 @@ class ModelTrainer:
         self.dataset_name = dataset_name
         self.save_probe_models = save_probe_models
         self.compute_aum = compute_aum
-        self.clean_data = clean_data
+        self.clean_data = 'clean' if clean_data else 'unclean'
 
         # Fetch the dataset-specific configuration
         config = get_config(self.dataset_name)
@@ -56,10 +56,8 @@ class ModelTrainer:
             self.seed_step = config['new_seed_step']
 
         # Incorporate dataset_name and pruning_type into directories to prevent overwriting
-        self.save_dir = str(os.path.join(config['save_dir'], pruning_type,
-                                         f"{['', 'clean'][self.clean_data]}{dataset_name}"))
-        self.timings_dir = str(os.path.join(config['timings_dir'], pruning_type,
-                                            f"{['', 'clean'][self.clean_data]}{dataset_name}"))
+        self.save_dir = str(os.path.join(config['save_dir'], pruning_type, f"{self.clean_data}{dataset_name}"))
+        self.timings_dir = str(os.path.join(config['timings_dir'], pruning_type, f"{self.clean_data}{dataset_name}"))
 
         # Ensure directories exist
         os.makedirs(self.save_dir, exist_ok=True)
@@ -203,7 +201,7 @@ class ModelTrainer:
             print(f'Time taken for Model {model_id + latest_model_index + 1}: {training_time:.2f} seconds')
 
         if self.compute_aum:
-            AUM_save_dir = f"Results/{['', 'clean'][self.clean_data]}{self.dataset_name}/"
+            AUM_save_dir = f"Results/{self.clean_data}{self.dataset_name}/"
             os.makedirs(AUM_save_dir, exist_ok=True)
             with open(os.path.join(AUM_save_dir, 'AUM.pkl'), "wb") as file:
                 pickle.dump(all_AUMs, file)

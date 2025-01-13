@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, Subset
 
 from neural_networks import ResNet18LowRes
-from utils import get_config
+from utils import get_config, AugmentedSubset, IndexedDataset
 
 
 class DataResampling:
@@ -260,13 +260,22 @@ class DataResampling:
         """
         if isinstance(self.dataset, TensorDataset):
             return self.dataset.tensors[0], self.dataset.tensors[1]
+
         elif hasattr(self.dataset, "data") and hasattr(self.dataset, "targets"):  # Common for datasets like CIFAR10
             data = torch.stack([img for img, _ in self.dataset])
             labels = torch.tensor([label for _, label in self.dataset])
             return data.float(), labels
+
+        elif isinstance(self.dataset, (IndexedDataset, AugmentedSubset)):
+            # Extract data and labels, ignoring the index
+            data = torch.stack([data for data, _, _ in self.dataset])
+            labels = torch.tensor([label for _, label, _ in self.dataset])
+            return data.float(), labels
+
         else:
             raise TypeError(
-                "Unsupported dataset type. Ensure the dataset has `tensors`, `data`, and `targets` attributes.")
+                "Unsupported dataset type. Ensure the dataset has `tensors`, `data`, and `targets` attributes or "
+                "is an instance of `IndexedDataset` or `AugmentedSubset`.")
 
     def load_model_states(self):
         if os.path.exists(self.model_save_dir):
@@ -317,7 +326,7 @@ class DataResampling:
 
         # Organize dataset by class
         class_indices = {i: [] for i in range(self.num_classes)}
-        for idx, (_, label) in enumerate(self.dataset):
+        for idx, (_, label, _) in enumerate(self.dataset):
             class_indices[label].append(idx)
 
         # Perform resampling for each class
@@ -360,7 +369,7 @@ class DataResampling:
 
             new_data = torch.cat([existing_data, synthetic_data], dim=0)
             new_labels = torch.cat([existing_labels, synthetic_labels], dim=0)
-            self.dataset = TensorDataset(new_data, new_labels)
+            self.dataset = IndexedDataset(TensorDataset(new_data, new_labels))
 
             synthetic_start_idx = len(self.dataset) - synthetic_data.size(0)
             synthetic_indices = list(range(synthetic_start_idx, len(self.dataset)))

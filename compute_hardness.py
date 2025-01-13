@@ -28,7 +28,7 @@ class HardnessCalculator:
         torch.backends.cudnn.deterministic = True
 
         self.dataset_name = dataset_name
-        self.remove_noise = remove_noise
+        self.remove_noise = 'clean' if remove_noise else 'unclean'
         self.config = get_config(dataset_name)
         self.BATCH_SIZE = self.config['batch_size']
         self.SAVE_EPOCH = self.config['save_epoch']
@@ -37,8 +37,8 @@ class HardnessCalculator:
         self.NUM_MODELS = self.config['num_models']
 
         self.training_loader, self.training_set_size, self.test_loader, self.test_set_size = self.load_dataset()
-        self.figure_save_dir = os.path.join('Figures/', f"{['', 'clean'][self.remove_noise]}{self.dataset_name}")
-        self.results_save_dir = os.path.join('Results/', f"{['', 'clean'][self.remove_noise]}{self.dataset_name}")
+        self.figure_save_dir = os.path.join('Figures/', f"{self.remove_noise}{self.dataset_name}")
+        self.results_save_dir = os.path.join('Results/', f"{self.remove_noise}{self.dataset_name}")
         os.makedirs(self.figure_save_dir, exist_ok=True)
         os.makedirs(self.results_save_dir, exist_ok=True)
 
@@ -67,7 +67,7 @@ class HardnessCalculator:
 
         training_set = IndexedDataset(training_set)
         test_set = IndexedDataset(test_set)
-        if self.remove_noise:
+        if self.remove_noise == 'clean':
             NoiseRemover(self.dataset_name, training_set).clean()
 
         def worker_init_fn(worker_id):
@@ -120,7 +120,7 @@ class HardnessCalculator:
         for model_id in range(self.NUM_MODELS):
             model = self.create_model().cuda()
             # This is the directory in which we store the pretrained models.
-            model_path = os.path.join(self.MODEL_DIR, 'none', f"{['', 'clean'][self.remove_noise]}{self.dataset_name}",
+            model_path = os.path.join(self.MODEL_DIR, 'none', f"{self.remove_noise}{self.dataset_name}",
                                       f'model_{model_id}_epoch_{self.SAVE_EPOCH}.pth')
             if os.path.exists(model_path):
                 model.load_state_dict(torch.load(model_path))

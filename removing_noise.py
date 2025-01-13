@@ -157,8 +157,8 @@ class NoiseRemover:
         self.visualize_lowest_aum_samples(removed_indices, AUM)
 
         if isinstance(self.dataset, AugmentedSubset):
-            self.dataset.subset = torch.utils.data.Subset(self.dataset.subset, retained_indices)
+            self.dataset.subset = AugmentedSubset(torch.utils.data.Subset(self.dataset.subset, retained_indices))
         elif isinstance(self.dataset, IndexedDataset):
-            self.dataset.dataset = torch.utils.data.Subset(self.dataset.dataset, retained_indices)
+            self.dataset.dataset = AugmentedSubset(torch.utils.data.Subset(self.dataset.dataset, retained_indices))
         else:
             raise ValueError("Dataset type not supported!")

@@ -15,46 +15,58 @@ from neural_networks import ResNet18LowRes
 from utils import get_config
 
 
-def load_models(dataset_name: str) -> Dict[Tuple[str, str], List[dict]]:
+def load_models(dataset_name: str) -> Dict[Tuple[str, str, str], List[dict]]:
     """
-    Load all models for the specified dataset, organizing by oversampling and undersampling strategies.
+    Load all models for the specified dataset, organizing by oversampling and undersampling strategies,
+    and differentiating between cleaned and uncleaned datasets.
 
     :param dataset_name: Name of the dataset (e.g., 'CIFAR10').
-    :return: Dictionary where keys are tuples (oversampling_strategy, undersampling_strategy)
+    :return: Dictionary where keys are tuples (oversampling_strategy, undersampling_strategy, dataset_type)
              and values are lists of model state dictionaries.
     """
     models_dir, models_by_strategy = "Models", {}
 
     for root, dirs, files in os.walk(models_dir):
-        if root.endswith(dataset_name) and 'over_' in root and '_under_' in root:
-            try:
-                oversampling_strategy = root.split("over_")[1].split("_under_")[0]
-                undersampling_strategy = root.split("_under_")[1].split("_size_")[0]
-                key = (oversampling_strategy, undersampling_strategy)
-                models_by_strategy.setdefault(key, [])
+        # Check for cleaned dataset models
+        if f"unclean{dataset_name}" in root and 'over_' in root and '_under_' in root:
+            dataset_type = 'unclean'
+        # Check for uncleaned dataset models
+        elif f"clean{dataset_name}" in root and 'over_' in root and '_under_' in root:
+            dataset_type = 'clean'
+        else:
+            continue  # Skip directories that don't match either case
 
-                for file in files:
-                    if file.endswith(".pth") and "_epoch_200" in file:
-                        model_path = os.path.join(root, file)
-                        model_state = torch.load(model_path)
-                        models_by_strategy[key].append(model_state)
-                if len(models_by_strategy[key]) > 0:
-                    print(f"Loaded {len(models_by_strategy[key])} models for strategies {key}.")
-            except (IndexError, ValueError):
-                # Skip directories or files that don't match the expected pattern
-                continue
+        try:
+            oversampling_strategy = root.split("over_")[1].split("_under_")[0]
+            undersampling_strategy = root.split("_under_")[1].split("_size_")[0]
+            key = (oversampling_strategy, undersampling_strategy, dataset_type)
+            models_by_strategy.setdefault(key, [])
+
+            for file in files:
+                if file.endswith(".pth") and "_epoch_200" in file:
+                    model_path = os.path.join(root, file)
+                    model_state = torch.load(model_path)
+                    models_by_strategy[key].append(model_state)
+            if len(models_by_strategy[key]) > 0:
+                print(f"Loaded {len(models_by_strategy[key])} models for strategies {key}.")
+        except (IndexError, ValueError):
+            # Skip directories or files that don't match the expected pattern
+            continue
 
     # Also load models trained on the full dataset (no resampling)
-    full_dataset_dir = os.path.join(models_dir, "none", dataset_name)
-    if os.path.exists(full_dataset_dir):
-        models_by_strategy['none', 'none'] = []
-        for file in os.listdir(full_dataset_dir):
-            if file.endswith(".pth") and "_epoch_200" in file:
-                model_path = os.path.join(full_dataset_dir, file)
-                model_state = torch.load(model_path)
-                models_by_strategy['none', 'none'].append(model_state)
-                print(f"Loaded model for full dataset (no resampling): {model_path}")
+    for dataset_type in ['unclean', 'clean']:
+        full_dataset_dir = os.path.join(models_dir, "none", f"{dataset_type}{dataset_name}")
+        if os.path.exists(full_dataset_dir):
+            key = ('none', 'none', dataset_type)
+            models_by_strategy[key] = []
+            for file in os.listdir(full_dataset_dir):
+                if file.endswith(".pth") and "_epoch_200" in file:
+                    model_path = os.path.join(full_dataset_dir, file)
+                    model_state = torch.load(model_path)
+                    models_by_strategy[key].append(model_state)
+                    print(f"Loaded model for full dataset ({dataset_type}): {model_path}")
 
+    print([key for key in models_by_strategy.keys()])
     print(f"Loaded {len(models_by_strategy.keys())} models for {dataset_name}.")
     return models_by_strategy
 
@@ -101,10 +113,9 @@ def load_test_set(class_grouped_hardness, test_labels, dataset_name, batch_size:
     return block_loaders
 
 
-def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_index: int, strategies: Tuple[str, str],
-                   results):
+def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_index: int,
+                   strategies: Tuple[str, str, str], results):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Initialize confusion matrix components
     total_Tp, total_Fp, total_Fn, total_Tn = 0, 0, 0, 0
 
     for model_state in ensemble:
@@ -138,16 +149,18 @@ def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_in
     results['Tn'][strategies][block_index][class_index] = total_Tn / len(ensemble)
 
 
-def evaluate_ensemble(models: Dict[Tuple[str, str], List[dict]], test_loaders: List[DataLoader],
+def evaluate_ensemble(models: Dict[Tuple[str, str, str], List[dict]], test_loaders: List[DataLoader],
                       results: Dict[str, Dict], class_index: int):
-    for (over, under), ensemble in models.items():
-        print(f"Evaluating ensemble for oversampling strategy {over} and undersampling strategy {under}.")
+    for (over, under, cleanliness), ensemble in models.items():
+        print(f"Evaluating ensemble for oversampling strategy {over} and undersampling strategy {under} trained on "
+              f"{cleanliness} data.")
         if class_index == 0:
             for metric in ['Tp', 'Fp', 'Fn', 'Tn']:
-                results[metric][(over, under)] = [{class_id: 0 for class_id in range(num_classes)}
+                results[metric][(over, under, cleanliness)] = [{class_id: 0 for class_id in range(num_classes)}
                                                   for _ in range(len(test_loaders))]
         for block_index in range(len(test_loaders)):
-            evaluate_block(ensemble, test_loaders[block_index], class_index, block_index, (over, under), results)
+            evaluate_block(ensemble, test_loaders[block_index], class_index, block_index,
+                           (over, under, cleanliness), results)
 
 
 def save_file(save_dir, filename, data):
@@ -198,7 +211,7 @@ def plot_all_accuracies_sorted(results, class_order, save_path=None):
             plt.plot([x_start, x_end], [avg_accuracy * 100, avg_accuracy * 100],
                      color=color_palette[idx], lw=2)
 
-        plt.plot([], [], color=color_palette[idx], lw=2, label=f"{strategy[0]}-{strategy[1]}")
+        plt.plot([], [], color=color_palette[idx], lw=2, label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}")
 
     plt.xlabel("Class (Sorted by Base Strategy)", fontsize=12)
     plt.xticks([])
@@ -215,18 +228,19 @@ def plot_all_accuracies_sorted(results, class_order, save_path=None):
     plt.close()
 
     # Create a new plot for specific strategies using classical function-like visual style
-    filtered_keys = [('random', 'easy'), ('hard', 'easy'), ('easy', 'easy'), ('SMOTE', 'easy'), ('none', 'none')]
+    filtered_keys = [('random', 'easy', 'clean'), ('hard', 'easy', 'clean'), ('easy', 'easy', 'clean'),
+                     ('SMOTE', 'easy', 'clean'), ('none', 'none', 'clean'), ('none', 'none', 'unclean')]
     filtered_results = {key: results['Recall'][key] for key in filtered_keys if key in results['Recall']}
 
     plt.figure(figsize=(12, 8))
     for idx, (strategy, accuracies) in enumerate(filtered_results.items()):
         avg_accuracies = {class_id: np.mean([block[class_id] for block in accuracies]) for class_id in
                           range(len(class_order))}
-        if strategy == ('none', 'none'):
+        if strategy == ('none', 'none', 'unclean'):
             avg_base_accuracies = avg_accuracies
         reordered_accuracies = [avg_accuracies[class_id] for class_id in class_order]
         plt.plot(range(len(class_order)), [acc * 100 for acc in reordered_accuracies],
-                 label=f"{strategy[0]}-{strategy[1]}", lw=1)
+                 label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}", lw=1)
 
     plt.xlabel("Class (Sorted by the Accuracy of Base Strategy)", fontsize=12)
     plt.xticks([])
@@ -243,7 +257,8 @@ def plot_all_accuracies_sorted(results, class_order, save_path=None):
         plt.show()
 
     # Create a new plot for respective performance of each resampling strategy (in respect to no resampling)
-    filtered_keys = [('random', 'easy'), ('hard', 'easy'), ('easy', 'easy'), ('SMOTE', 'easy')]
+    filtered_keys = [('random', 'easy', 'clean'), ('hard', 'easy', 'clean'), ('easy', 'easy', 'clean'),
+                     ('SMOTE', 'easy', 'clean'), ('none', 'none', 'clean')]
     filtered_results = {key: results['Recall'][key] for key in filtered_keys if key in results['Recall']}
 
     plt.figure(figsize=(12, 8))
@@ -259,9 +274,9 @@ def plot_all_accuracies_sorted(results, class_order, save_path=None):
         mean_avg_accuracy = np.mean(reordered_accuracies)
 
         plt.plot(range(len(class_order)), [acc * 100 for acc in reordered_accuracies],
-                 label=f"{strategy[0]}-{strategy[1]}", lw=1)
+                 label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}", lw=1)
         plt.axhline(mean_avg_accuracy * 100, color=plt.gca().lines[-1].get_color(), linestyle='--',
-                    label=f"Dataset-level accuracy ({strategy[0]}-{strategy[1]})")
+                    label=f"Dataset-level accuracy ({strategy[0]}-{strategy[1]}-{strategy[2]})")
 
     plt.xlabel("Class (Sorted by Respective Accuracy Boost)", fontsize=12)
     plt.xticks([])
@@ -334,7 +349,7 @@ def main(dataset_name):
             results['Precision'][strategies].append(block_precisions)
             results['Recall'][strategies].append(block_recalls)
 
-    base_strategy = ('none', 'none')
+    base_strategy = ('none', 'none', 'unclean')
     class_order = get_class_order(results, base_strategy)
     plot_all_accuracies_sorted(results, class_order, os.path.join(figure_save_dir, 'resampling_effects.pdf'))
 

@@ -127,7 +127,8 @@ def main(dataset_name: str, remove_noise: bool):
                                                   remove_noise)
 
     # Create an instance of ModelTrainer
-    trainer = ModelTrainer(training_loader, test_loader, dataset_name, compute_aum=True, clean_data=remove_noise)
+    clean_data = 'clean' if remove_noise else 'unclean'
+    trainer = ModelTrainer(training_loader, test_loader, dataset_name, compute_aum=True, clean_data=clean_data)
 
     # Train the ensemble of models
     trainer.train_ensemble()
@@ -136,9 +137,10 @@ def main(dataset_name: str, remove_noise: bool):
 if __name__ == '__main__':
     # Setup argument parser
     parser = argparse.ArgumentParser(description='Train an ensemble of models on CIFAR-10 or CIFAR-100.')
-    parser.add_argument('--dataset_name', type=str, required=True, choices=['CIFAR10', 'CIFAR100', 'SVHN', 'CINIC10'],
-                        help='Dataset name: CIFAR10 or CIFAR100')
-    parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
+    parser.add_argument('--dataset_name', type=str, required=True,
+                        choices=['CIFAR10', 'CIFAR100', 'SVHN', 'CINIC10'], help='Dataset name: CIFAR10 or CIFAR100')
+    parser.add_argument('--remove_noise', action='store_true',
+                        help='Raise this flag to remove noise from the data.')
 
     # Parse arguments
     args = parser.parse_args()
