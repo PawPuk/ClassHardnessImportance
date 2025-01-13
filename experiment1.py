@@ -128,7 +128,7 @@ def main(dataset_name: str, remove_noise: bool):
 
     # Create an instance of ModelTrainer
     clean_data = 'clean' if remove_noise else 'unclean'
-    trainer = ModelTrainer(training_loader, test_loader, dataset_name, compute_aum=True, clean_data=clean_data)
+    trainer = ModelTrainer(training_loader, test_loader, dataset_name, estimate_hardness=True, clean_data=clean_data)
 
     # Train the ensemble of models
     trainer.train_ensemble()

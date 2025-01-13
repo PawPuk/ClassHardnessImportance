@@ -16,7 +16,7 @@ from utils import get_config
 
 class ModelTrainer:
     def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True,
-                 hardness='subjective', compute_aum=False, clean_data=False):
+                 hardness='subjective', estimate_hardness=False, clean_data=False):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
@@ -33,7 +33,7 @@ class ModelTrainer:
         self.pruning_type = pruning_type
         self.dataset_name = dataset_name
         self.save_probe_models = save_probe_models
-        self.compute_aum = compute_aum
+        self.estimate_hardness = estimate_hardness
         self.clean_data = 'clean' if clean_data else 'unclean'
 
         # Fetch the dataset-specific configuration
@@ -116,6 +116,8 @@ class ModelTrainer:
                               nesterov=True)
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.lr_decay_milestones, gamma=0.2)
         all_AUMs = [[] for _ in range(self.total_samples)]
+        all_remembrance = [False for _ in range(self.total_samples)]
+        all_forgetting = [0 for _ in range(self.total_samples)]
 
         for epoch in range(self.num_epochs):
             model.train()
@@ -135,15 +137,22 @@ class ModelTrainer:
                 total_train += labels.size(0)
                 correct_train += (predicted == labels).sum().item()
 
-                if self.compute_aum:
+                if self.estimate_hardness:
+                    index_within_batch = 0
                     for i, logit, label in zip(indices, outputs, labels):
                         i = i.item()
                         correct_logit = logit[label].item()
+                        if label == predicted[index_within_batch]:
+                            all_remembrance[i] = True
+                        elif label != predicted[index_within_batch] and all_remembrance[i] == True:
+                            all_remembrance[i] = False
+                            all_forgetting[i] += 1
                         max_other_logit = torch.max(torch.cat((logit[:label], logit[label + 1:]))).item()
                         aum = correct_logit - max_other_logit
 
                         # Append the AUM for this sample
                         all_AUMs[i].append(aum)
+                        index_within_batch += 1
 
             avg_train_loss = running_loss / total_train
             train_accuracy = 100 * correct_train / total_train
@@ -172,39 +181,36 @@ class ModelTrainer:
         torch.save(model.state_dict(), final_save_path)
         print(f'Model {model_id + current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved after '
               f'full training at epoch {self.num_epochs}')
-        return all_AUMs
+        return all_AUMs, all_forgetting
 
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
-        timings = []  # To store the training times for each model
+        timings, all_AUMs, all_forgetting_statistics = [], [], []
         config = get_config(self.dataset_name)
         num_models = config['num_models']
+        latest_model_index = self.get_latest_model_index()
 
         print(f"Starting training ensemble of {num_models} models on {self.dataset_name} ({self.pruning_type}) "
               f"dataset...")
         print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")
         print(f"Number of samples in the test loader: {len(self.test_loader.dataset)}")
 
-        latest_model_index = self.get_latest_model_index()
-
-        all_AUMs = []
-
         for model_id in tqdm(range(num_models)):
-            start_time = time.time()  # Start time for training the model
-
-            # Train the model
-            all_AUMs.append(self.train_model(model_id, latest_model_index + 1))
-
-            # Calculate the time taken for training this model
+            start_time = time.time()
+            AUMs, forgetting_statistics = self.train_model(model_id, latest_model_index + 1)
+            all_AUMs.append(AUMs)
+            all_forgetting_statistics.append(forgetting_statistics)
             training_time = time.time() - start_time
             timings.append((model_id + latest_model_index + 1, training_time))
             print(f'Time taken for Model {model_id + latest_model_index + 1}: {training_time:.2f} seconds')
 
-        if self.compute_aum:
-            AUM_save_dir = f"Results/{self.clean_data}{self.dataset_name}/"
-            os.makedirs(AUM_save_dir, exist_ok=True)
-            with open(os.path.join(AUM_save_dir, 'AUM.pkl'), "wb") as file:
+        if self.estimate_hardness:
+            hardness_save_dir = f"Results/{self.clean_data}{self.dataset_name}/"
+            os.makedirs(hardness_save_dir, exist_ok=True)
+            with open(os.path.join(hardness_save_dir, 'AUM.pkl'), "wb") as file:
                 pickle.dump(all_AUMs, file)
+            with open(os.path.join(hardness_save_dir, 'Forgetting.pkl'), "wb") as file:
+                pickle.dump(all_forgetting_statistics, file)
 
         # Calculate mean and standard deviation of the timings
         timing_values = [timing[1] for timing in timings]
