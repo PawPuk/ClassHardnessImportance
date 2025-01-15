@@ -46,7 +46,7 @@ class Experiment3:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    def load_dataset(self, train=True) -> Union[AugmentedSubset, IndexedDataset]:
+    def load_untransferred_dataset(self, train=True) -> Union[AugmentedSubset, IndexedDataset]:
         """
         Load the dataset based on dataset_name. Apply data augmentation only for training.
         """

@@ -1,4 +1,13 @@
+import random
+
+import numpy as np
 import torch
+from torch.utils.data import DataLoader
+import torchvision
+import torchvision.transforms as transforms
+
+from removing_noise import NoiseRemover
+
 
 
 dataset_configs = {
@@ -143,3 +152,45 @@ class AugmentedSubset(torch.utils.data.Dataset):
             data = self.transform(data)
 
         return data, label, idx
+
+
+def load_dataset(dataset_name, remove_noise, seed):
+    config = get_config(dataset_name)
+
+    train_transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomCrop(32, padding=4),
+        transforms.ToTensor(),
+        transforms.Normalize(config['mean'], config['std']),
+    ])
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(config['mean'], config['std']),
+    ])
+    if dataset_name == 'CIFAR10':
+        training_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True,
+                                                    transform=train_transform)
+        test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
+    elif dataset_name == 'CIFAR100':
+        training_set = torchvision.datasets.CIFAR100(root='./data', train=True, download=True,
+                                                     transform=train_transform)
+        test_set = torchvision.datasets.CIFAR100(root='./data', train=False, download=True,
+                                                 transform=test_transform)
+    else:
+        raise ValueError(f"Dataset {dataset_name} is not supported.")
+
+    training_set = IndexedDataset(training_set)
+    test_set = IndexedDataset(test_set)
+    if remove_noise == 'clean':
+        NoiseRemover(dataset_name, training_set).clean()
+
+    def worker_init_fn(worker_id):
+        np.random.seed(seed + worker_id)
+        random.seed(seed + worker_id)
+
+    training_loader = DataLoader(training_set, batch_size=config['batch_size'], shuffle=False, num_workers=2,
+                                 worker_init_fn=worker_init_fn)
+    test_loader = DataLoader(test_set, batch_size=config['batch_size'], shuffle=False, num_workers=2,
+                             worker_init_fn=worker_init_fn)
+
+    return training_loader, len(training_set), test_loader, len(test_set)

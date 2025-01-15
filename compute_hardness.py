@@ -13,7 +13,7 @@ import torchvision.transforms as transforms
 
 from neural_networks import ResNet18LowRes
 from removing_noise import NoiseRemover
-from utils import get_config, IndexedDataset
+from utils import get_config, IndexedDataset, load_dataset
 
 
 class HardnessCalculator:
@@ -36,50 +36,12 @@ class HardnessCalculator:
         self.NUM_CLASSES = self.config['num_classes']
         self.NUM_MODELS = self.config['num_models']
 
-        self.training_loader, self.training_set_size, self.test_loader, self.test_set_size = self.load_dataset()
+        self.training_loader, self.training_set_size, self.test_loader, self.test_set_size = load_dataset(
+            dataset_name, remove_noise, self.seed)
         self.figure_save_dir = os.path.join('Figures/', f"{self.remove_noise}{self.dataset_name}")
         self.results_save_dir = os.path.join('Results/', f"{self.remove_noise}{self.dataset_name}")
         os.makedirs(self.figure_save_dir, exist_ok=True)
         os.makedirs(self.results_save_dir, exist_ok=True)
-
-    def load_dataset(self):
-        train_transform = transforms.Compose([
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(32, padding=4),
-            transforms.ToTensor(),
-            transforms.Normalize(self.config['mean'], self.config['std']),
-        ])
-        test_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(self.config['mean'], self.config['std']),
-        ])
-        if self.dataset_name == 'CIFAR10':
-            training_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True,
-                                                        transform=train_transform)
-            test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
-        elif self.dataset_name == 'CIFAR100':
-            training_set = torchvision.datasets.CIFAR100(root='./data', train=True, download=True,
-                                                         transform=train_transform)
-            test_set = torchvision.datasets.CIFAR100(root='./data', train=False, download=True,
-                                                     transform=test_transform)
-        else:
-            raise ValueError(f"Dataset {self.dataset_name} is not supported.")
-
-        training_set = IndexedDataset(training_set)
-        test_set = IndexedDataset(test_set)
-        if self.remove_noise == 'clean':
-            NoiseRemover(self.dataset_name, training_set).clean()
-
-        def worker_init_fn(worker_id):
-            np.random.seed(self.seed + worker_id)
-            random.seed(self.seed + worker_id)
-
-        training_loader = DataLoader(training_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2,
-                                     worker_init_fn=worker_init_fn)
-        test_loader = DataLoader(test_set, batch_size=self.BATCH_SIZE, shuffle=False, num_workers=2,
-                                 worker_init_fn=worker_init_fn)
-
-        return training_loader, len(training_set), test_loader, len(test_set)
 
     def create_model(self):
         model = ResNet18LowRes(num_classes=self.NUM_CLASSES)
@@ -352,6 +314,7 @@ class HardnessCalculator:
         plt.close()
 
     def run(self):
+        # TODO: remove LOC below & load the results from file (moved computing to verify_statistical_significance.py)
         training_all_el2n_scores, training_class_accuracies = self.collect_el2n_scores(self.training_loader,
                                                                                        self.training_set_size)
         test_all_el2n_scores, test_class_accuracies = self.collect_el2n_scores(self.test_loader, self.test_set_size)

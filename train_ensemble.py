@@ -183,6 +183,32 @@ class ModelTrainer:
               f'full training at epoch {self.num_epochs}')
         return all_AUMs, all_forgetting
 
+    def save_results(self, all_AUMs, all_forgetting_statistics):
+        """The purpose of this function is to enable easier generation of results. If we already spent a lot of
+        resources on training an ensemble we don't want it to go to waste just because the ensemble is not large enough.
+        We want to add more models to the ensemble rather than have to retrain it from scratch."""
+        if self.estimate_hardness:
+            hardness_save_dir = f"Results/{self.clean_data}{self.dataset_name}/"
+            os.makedirs(hardness_save_dir, exist_ok=True)
+            aum_path = os.path.join(hardness_save_dir, 'AUM.pkl')
+            forgetting_path = os.path.join(hardness_save_dir, 'Forgetting.pkl')
+            if os.path.exists(aum_path):
+                with open(aum_path, "rb") as file:
+                    existing_AUMs = pickle.load(file)
+                for i in range(self.total_samples):
+                    existing_AUMs[i].extend(all_AUMs[i])
+                all_AUMs = existing_AUMs
+            if os.path.exists(forgetting_path):
+                with open(forgetting_path, "rb") as file:
+                    existing_forgetting = pickle.load(file)
+                for i in range(self.total_samples):
+                    existing_forgetting[i] += all_forgetting_statistics[i]
+                all_forgetting_statistics = existing_forgetting
+            with open(aum_path, "wb") as file:
+                pickle.dump(all_AUMs, file)
+            with open(forgetting_path, "wb") as file:
+                pickle.dump(all_forgetting_statistics, file)
+
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
         timings, all_AUMs, all_forgetting_statistics = [], [], []
@@ -205,12 +231,7 @@ class ModelTrainer:
             print(f'Time taken for Model {model_id + latest_model_index + 1}: {training_time:.2f} seconds')
 
         if self.estimate_hardness:
-            hardness_save_dir = f"Results/{self.clean_data}{self.dataset_name}/"
-            os.makedirs(hardness_save_dir, exist_ok=True)
-            with open(os.path.join(hardness_save_dir, 'AUM.pkl'), "wb") as file:
-                pickle.dump(all_AUMs, file)
-            with open(os.path.join(hardness_save_dir, 'Forgetting.pkl'), "wb") as file:
-                pickle.dump(all_forgetting_statistics, file)
+            self.save_results(all_AUMs, all_forgetting_statistics)
 
         # Calculate mean and standard deviation of the timings
         timing_values = [timing[1] for timing in timings]
