@@ -182,7 +182,7 @@ def load_dataset(dataset_name, remove_noise, seed):
     training_set = IndexedDataset(training_set)
     test_set = IndexedDataset(test_set)
     if remove_noise == 'clean':
-        NoiseRemover(dataset_name, training_set).clean()
+        NoiseRemover(config, dataset_name, training_set).clean()
 
     def worker_init_fn(worker_id):
         np.random.seed(seed + worker_id)

@@ -2,6 +2,10 @@ import argparse
 import os
 import pickle
 
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
+from scipy.stats import ttest_rel
 import torch
 import torch.nn.functional as F
 
@@ -53,8 +57,7 @@ def collect_el2n_scores(loader, n):
     all_el2n_scores, model_class_accuracies = [[] for _ in range(n)], []
     for model_id in range(NUM_MODELS):
         model = create_model().cuda()
-        # This is the directory in which we store the pretrained models.
-        model_path = os.path.join(MODEL_DIR, 'none', f"{args.remove_noise}{args.dataset_name}",
+        model_path = os.path.join(MODEL_DIR, 'none', f"{DATA_CLEANLINESS}{args.dataset_name}",
                                   f'model_{model_id}_epoch_{SAVE_EPOCH}.pth')
         if os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path))
@@ -78,6 +81,100 @@ def load_results(path):
         return pickle.load(file)
 
 
+def compute_pruned_indices_and_measure_statistical_significance(el2n_scores, aum_scores, forgetting_scores):
+    num_models = len(el2n_scores)  # number of models in the ensemble
+    num_samples = len(el2n_scores[0])  # number of data samples in the dataset
+    thresholds = np.arange(10, 100, 10)
+    pruned_indices, statistical_significance_of_hardness_estimators = {}, {}
+
+    for metric_name, metric_scores in [("el2n", el2n_scores), ("aum", aum_scores), ("forgetting", forgetting_scores)]:
+        pruned_indices[metric_name] = []
+        statistical_significance_of_hardness_estimators[metric_name] = []
+        for thresh in thresholds:
+            prune_count = int((thresh / 100) * num_samples)
+            metric_results = []
+            for num_ensemble_models in range(1, num_models + 1):
+                avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
+                # For AUM hard samples have lower values. For EL2N and forgetting the opposite is the case.
+                if metric_name == 'aum':
+                    sorted_indices = np.argsort(-avg_hardness_scores)
+                else:
+                    sorted_indices = np.argsort(avg_hardness_scores)
+                pruned_indices = sorted_indices[:prune_count]
+                metric_results.append(pruned_indices.tolist())
+
+                if num_ensemble_models == num_models:
+                    prev_avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models-1], axis=0)
+                    t_stat, p_value = ttest_rel(prev_avg_hardness_scores, avg_hardness_scores)
+                    statistical_significance_of_hardness_estimators[metric_name].append((t_stat, p_value))
+            pruned_indices[metric_name].append(metric_results)
+    return pruned_indices, statistical_significance_of_hardness_estimators
+
+
+def visualize_statistical_significance(statistical_significance_of_hardness_estimators):
+    thresholds = np.arange(10, 100, 10)
+
+    metrics = list(statistical_significance_of_hardness_estimators.keys())
+    t_stats = {metric: [t_stat for t_stat, _ in statistical_significance_of_hardness_estimators[metric]] for metric in
+               metrics}
+    p_values = {metric: [p_value for _, p_value in statistical_significance_of_hardness_estimators[metric]] for metric
+                in metrics}
+
+    # Plotting T-Statistics
+    plt.figure(figsize=(10, 6))
+    for metric, t_stat_values in t_stats.items():
+        plt.plot(thresholds, t_stat_values, label=f'{metric.upper()}', marker='o')
+    plt.axhline(0, color='gray', linestyle='--', linewidth=1, label='No Effect (t=0)')
+    plt.title('T-Statistics Across Thresholds for Hardness Estimators')
+    plt.xlabel('Threshold (%)')
+    plt.ylabel('T-Statistic')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.show()
+
+    # Plotting P-Values
+    plt.figure(figsize=(10, 6))
+    for metric, p_value_values in p_values.items():
+        plt.plot(thresholds, p_value_values, label=f'{metric.upper()}', marker='o')
+    plt.axhline(0.05, color='red', linestyle='--', linewidth=1, label='Significance Level (p=0.05)')
+    plt.title('P-Values Across Thresholds for Hardness Estimators')
+    plt.xlabel('Threshold (%)')
+    plt.ylabel('P-Value')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.show()
+
+
+def compute_and_visualize_stability_of_pruning(results):
+    metrics = ['el2n', 'aum', 'forgetting']
+
+    for metric in metrics:
+        metric_results = results[metric]
+        num_thresholds = len(metric_results)
+        num_models = len(metric_results[0]) - 1
+        stability_results = np.zeros((num_thresholds, num_models))
+
+        for i in range(num_thresholds):  # Loop over thresholds (rows)
+            for j in range(num_models):  # Loop over model pairs (columns)
+                set1 = set(metric_results[i][j])  # Pruned indices for ensemble with j models
+                set2 = set(metric_results[i][j + 1])  # Pruned indices for ensemble with j+1 models
+
+                # Compute stability
+                intersection = len(set1 & set2)
+                union = len(set1 | set2)
+                overlap = intersection / union if union > 0 else 0.0
+                stability_results[i, j] = overlap
+
+        plt.figure(figsize=(10, 6))
+        sns.heatmap(stability_results, annot=True, cmap='coolwarm', cbar_kws={'label': 'Jaccard Overlap'})
+        plt.title(f'Overlap Heatmap for {metric.upper()}')
+        plt.xlabel('Number of Models in Ensemble (j)')
+        plt.ylabel('Pruning Threshold (%)')
+        plt.xticks(np.arange(num_models) + 0.5, np.arange(1, num_models + 1))
+        plt.yticks(np.arange(num_thresholds) + 0.5, np.arange(10, 100, 10))
+        plt.show()
+
+
 def main():
     training_loader, training_set_size, _, _ = load_dataset(args.dataset_name, args.remove_noise, SEED)
     training_all_el2n_scores, training_class_accuracies = collect_el2n_scores(training_loader, training_set_size)
@@ -87,6 +184,13 @@ def main():
     forgetting_path = os.path.join(HARDNESS_SAVE_DIR, 'Forgetting.pkl')
     aum_scores = load_results(aum_path)
     forgetting_scores = load_results(forgetting_path)
+
+
+    pruned_indices, hardness_ss = compute_pruned_indices_and_measure_statistical_significance(
+        training_all_el2n_scores, aum_scores, forgetting_scores)
+    visualize_statistical_significance(hardness_ss)
+    compute_and_visualize_stability_of_pruning(pruned_indices)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Compute Hardness of Dataset Samples')
@@ -99,7 +203,9 @@ if __name__ == '__main__':
     NUM_MODELS = get_config(args.dataset_name)['num_models']
     MODEL_DIR = get_config(args.dataset_name)['save_dir']
     SAVE_EPOCH = get_config(args.dataset_name)['save_epoch']
-    RESULTS_SAVE_DIR = os.path.join('Results/', f"{args.remove_noise}{args.dataset_name}")
+    DATA_CLEANLINESS = 'clean' if args.remove_noise else 'unclean'
+
+    RESULTS_SAVE_DIR = os.path.join('Results/', f"{DATA_CLEANLINESS}{args.dataset_name}")
     SEED = 42
     HARDNESS_SAVE_DIR = f"Results/{args.remove_noise}{args.dataset_name}/"
 

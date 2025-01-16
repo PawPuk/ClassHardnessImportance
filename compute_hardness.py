@@ -6,14 +6,10 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
 import torch.nn.functional as F
-import torchvision
-import torchvision.transforms as transforms
 
 from neural_networks import ResNet18LowRes
-from removing_noise import NoiseRemover
-from utils import get_config, IndexedDataset, load_dataset
+from utils import get_config, load_dataset
 
 
 class HardnessCalculator:

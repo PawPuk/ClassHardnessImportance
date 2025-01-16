@@ -1,19 +1,21 @@
 import os
 import pickle
+import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from utils import get_config, AugmentedSubset, IndexedDataset
+if sys.argv[0].endswith("experiment3.py"):
+    from utils import AugmentedSubset, IndexedDataset
 
 
 class NoiseRemover:
-    def __init__(self, dataset_name, dataset):
+    def __init__(self, config, dataset_name, dataset):
+        self.config = config
         self.dataset_name = dataset_name
         self.dataset = dataset
 
-        self.config = get_config(dataset_name)
         self.BATCH_SIZE = self.config['batch_size']
         self.TOTAL_SAMPLES = sum(self.config['num_training_samples'])
         self.NUM_EPOCHS = self.config['num_epochs']

@@ -7,7 +7,7 @@ from typing import Dict, Union
 import numpy as np
 import torch
 from torchvision import datasets, transforms
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from utils import get_config
 
 from data_pruning import DataResampling
@@ -67,7 +67,7 @@ class Experiment3:
 
         dataset = IndexedDataset(dataset)
         if self.remove_noise == 'clean' and train:
-            NoiseRemover(self.dataset_name, dataset).clean()
+            NoiseRemover(self.config, self.dataset_name, dataset).clean()
         return dataset
 
     def load_results(self):
