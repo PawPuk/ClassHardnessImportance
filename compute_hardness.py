@@ -33,7 +33,7 @@ class HardnessCalculator:
         self.NUM_MODELS = self.config['num_models']
 
         self.training_loader, self.training_set_size, self.test_loader, self.test_set_size = load_dataset(
-            dataset_name, remove_noise, self.seed)
+            dataset_name, remove_noise, self.seed, False)
         self.figure_save_dir = os.path.join('Figures/', f"{self.remove_noise}{self.dataset_name}")
         self.results_save_dir = os.path.join('Results/', f"{self.remove_noise}{self.dataset_name}")
         os.makedirs(self.figure_save_dir, exist_ok=True)

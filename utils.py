@@ -9,7 +9,6 @@ import torchvision.transforms as transforms
 from removing_noise import NoiseRemover
 
 
-
 dataset_configs = {
     'CIFAR10': {
         'batch_size': 128,
@@ -154,7 +153,7 @@ class AugmentedSubset(torch.utils.data.Dataset):
         return data, label, idx
 
 
-def load_dataset(dataset_name, remove_noise, seed):
+def load_dataset(dataset_name, remove_noise, seed, shuffle):
     config = get_config(dataset_name)
 
     train_transform = transforms.Compose([
@@ -188,7 +187,7 @@ def load_dataset(dataset_name, remove_noise, seed):
         np.random.seed(seed + worker_id)
         random.seed(seed + worker_id)
 
-    training_loader = DataLoader(training_set, batch_size=config['batch_size'], shuffle=False, num_workers=2,
+    training_loader = DataLoader(training_set, batch_size=config['batch_size'], shuffle=shuffle, num_workers=2,
                                  worker_init_fn=worker_init_fn)
     test_loader = DataLoader(test_set, batch_size=config['batch_size'], shuffle=False, num_workers=2,
                              worker_init_fn=worker_init_fn)

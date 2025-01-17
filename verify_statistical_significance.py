@@ -8,6 +8,7 @@ import seaborn as sns
 from scipy.stats import ttest_rel
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from neural_networks import ResNet18LowRes
 from utils import get_config, load_dataset
@@ -15,6 +16,7 @@ from utils import get_config, load_dataset
 # Measure the overlap between the pruned subsets as a function of hardness estimator and threshold (percentage of data
 # pruned). Present results in a 2D heatmap with y being the threshold and x being the ensemble size (overlap between
 # the subset pruned by ensemble with x_i models and x_{i+1} models). This should give 3 heatmaps.
+
 
 def create_model():
     model = ResNet18LowRes(num_classes=NUM_CLASSES)
@@ -54,7 +56,7 @@ def compute_el2n(model, dataloader):
 
 
 def collect_el2n_scores(loader, n):
-    all_el2n_scores, model_class_accuracies = [[] for _ in range(n)], []
+    all_el2n_scores, model_class_accuracies = [], []
     for model_id in range(NUM_MODELS):
         model = create_model().cuda()
         model_path = os.path.join(MODEL_DIR, 'none', f"{DATA_CLEANLINESS}{args.dataset_name}",
@@ -66,7 +68,7 @@ def collect_el2n_scores(loader, n):
             # This code can only be run if models were pretrained. If no pretrained models are found, throw error.
             raise Exception(f'Model {model_id} not found at epoch {SAVE_EPOCH}.')
         for i in range(n):
-            all_el2n_scores[i].append(el2n_scores[i])
+            all_el2n_scores.append(el2n_scores)
         model_class_accuracies.append(class_accuracies)
     return all_el2n_scores, model_class_accuracies
 
@@ -82,16 +84,17 @@ def load_results(path):
 
 
 def compute_pruned_indices_and_measure_statistical_significance(el2n_scores, aum_scores, forgetting_scores):
-    num_models = len(el2n_scores)  # number of models in the ensemble
-    num_samples = len(el2n_scores[0])  # number of data samples in the dataset
+    num_models = len(el2n_scores[0])  # number of models in the ensemble
     thresholds = np.arange(10, 100, 10)
-    pruned_indices, statistical_significance_of_hardness_estimators = {}, {}
+    results, statistical_significance_of_hardness_estimators = {}, {}
 
-    for metric_name, metric_scores in [("el2n", el2n_scores), ("aum", aum_scores), ("forgetting", forgetting_scores)]:
-        pruned_indices[metric_name] = []
+    for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
+                                            ("forgetting", forgetting_scores)], desc='Iterating through metrics.'):
+        metric_scores = np.array(metric_scores)
+        results[metric_name] = []
         statistical_significance_of_hardness_estimators[metric_name] = []
         for thresh in thresholds:
-            prune_count = int((thresh / 100) * num_samples)
+            prune_count = int((thresh / 100) * NUM_SAMPLES)
             metric_results = []
             for num_ensemble_models in range(1, num_models + 1):
                 avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
@@ -107,8 +110,10 @@ def compute_pruned_indices_and_measure_statistical_significance(el2n_scores, aum
                     prev_avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models-1], axis=0)
                     t_stat, p_value = ttest_rel(prev_avg_hardness_scores, avg_hardness_scores)
                     statistical_significance_of_hardness_estimators[metric_name].append((t_stat, p_value))
-            pruned_indices[metric_name].append(metric_results)
-    return pruned_indices, statistical_significance_of_hardness_estimators
+            results[metric_name].append(metric_results)
+            print(f'For metric {metric_name} and threshold {thresh} we are pruning {len(metric_results[0])} samples,'
+                  f' and loop through of ensemble of various sizes up to {len(metric_results)}.')
+    return results, statistical_significance_of_hardness_estimators
 
 
 def visualize_statistical_significance(statistical_significance_of_hardness_estimators):
@@ -130,7 +135,7 @@ def visualize_statistical_significance(statistical_significance_of_hardness_esti
     plt.ylabel('T-Statistic')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
-    plt.show()
+    plt.savefig(os.path.join(FIGURES_SAVE_DIR, f'statistical_significance_of_hardness_estimator.pdf'))
 
     # Plotting P-Values
     plt.figure(figsize=(10, 6))
@@ -142,7 +147,7 @@ def visualize_statistical_significance(statistical_significance_of_hardness_esti
     plt.ylabel('P-Value')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
-    plt.show()
+    plt.savefig(os.path.join(FIGURES_SAVE_DIR, f'p_values_of_hardness_estimator.pdf'))
 
 
 def compute_and_visualize_stability_of_pruning(results):
@@ -156,6 +161,7 @@ def compute_and_visualize_stability_of_pruning(results):
 
         for i in range(num_thresholds):  # Loop over thresholds (rows)
             for j in range(num_models):  # Loop over model pairs (columns)
+                print(len(metric_results[i]), len(metric_results[i][j]))
                 set1 = set(metric_results[i][j])  # Pruned indices for ensemble with j models
                 set2 = set(metric_results[i][j + 1])  # Pruned indices for ensemble with j+1 models
 
@@ -172,22 +178,33 @@ def compute_and_visualize_stability_of_pruning(results):
         plt.ylabel('Pruning Threshold (%)')
         plt.xticks(np.arange(num_models) + 0.5, np.arange(1, num_models + 1))
         plt.yticks(np.arange(num_thresholds) + 0.5, np.arange(10, 100, 10))
-        plt.show()
+        plt.savefig(os.path.join(FIGURES_SAVE_DIR, f'pruning_stability_based_on_{metric}.pdf'))
 
 
 def main():
-    training_loader, training_set_size, _, _ = load_dataset(args.dataset_name, args.remove_noise, SEED)
+    training_loader, training_set_size, _, _ = load_dataset(args.dataset_name, args.remove_noise, SEED, False)
     training_all_el2n_scores, training_class_accuracies = collect_el2n_scores(training_loader, training_set_size)
     save_el2n_scores((training_all_el2n_scores, training_class_accuracies))
 
     aum_path = os.path.join(HARDNESS_SAVE_DIR, 'AUM.pkl')
     forgetting_path = os.path.join(HARDNESS_SAVE_DIR, 'Forgetting.pkl')
-    aum_scores = load_results(aum_path)
-    forgetting_scores = load_results(forgetting_path)
+    AUM_over_epochs_and_models = load_results(aum_path)
+    AUM_over_epochs = [
+        [
+            sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(NUM_EPOCHS)) / len(NUM_EPOCHS)
+            for sample_idx in range(NUM_SAMPLES)
+        ]
+        for model_list in AUM_over_epochs_and_models
+    ]
+    AUM_scores = np.mean(AUM_over_epochs, axis=1)
 
+    forgetting_scores = load_results(forgetting_path)
+    print(len(AUM_scores), len(AUM_scores[0]))
+    print(len(forgetting_scores), len(forgetting_scores[0]))
+    print(len(training_all_el2n_scores), len(training_all_el2n_scores[0]))
 
     pruned_indices, hardness_ss = compute_pruned_indices_and_measure_statistical_significance(
-        training_all_el2n_scores, aum_scores, forgetting_scores)
+        training_all_el2n_scores, AUM_scores, forgetting_scores)
     visualize_statistical_significance(hardness_ss)
     compute_and_visualize_stability_of_pruning(pruned_indices)
 
@@ -200,13 +217,17 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     NUM_CLASSES = get_config(args.dataset_name)['num_classes']
+    # Modify the below to extract this from the folder (check how many models were trained)
     NUM_MODELS = get_config(args.dataset_name)['num_models']
+    NUM_EPOCHS = get_config(args.dataset_name)['num_epochs']
+    NUM_SAMPLES = sum(get_config(args.dataset_name)['num_training_samples'])
     MODEL_DIR = get_config(args.dataset_name)['save_dir']
     SAVE_EPOCH = get_config(args.dataset_name)['save_epoch']
     DATA_CLEANLINESS = 'clean' if args.remove_noise else 'unclean'
 
     RESULTS_SAVE_DIR = os.path.join('Results/', f"{DATA_CLEANLINESS}{args.dataset_name}")
+    FIGURES_SAVE_DIR = os.path.join('Figures/', f'{DATA_CLEANLINESS}{args.dataset_name}')
     SEED = 42
-    HARDNESS_SAVE_DIR = f"Results/{args.remove_noise}{args.dataset_name}/"
+    HARDNESS_SAVE_DIR = f"Results/{DATA_CLEANLINESS}{args.dataset_name}/"
 
     main()

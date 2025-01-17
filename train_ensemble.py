@@ -153,6 +153,7 @@ class ModelTrainer:
                         # Append the AUM for this sample
                         all_AUMs[i].append(aum)
                         index_within_batch += 1
+            print(len(all_AUMs), len(all_AUMs[0]))
 
             avg_train_loss = running_loss / total_train
             train_accuracy = 100 * correct_train / total_train
@@ -184,29 +185,49 @@ class ModelTrainer:
         return all_AUMs, all_forgetting
 
     def save_results(self, all_AUMs, all_forgetting_statistics):
-        """The purpose of this function is to enable easier generation of results. If we already spent a lot of
+        """
+        The purpose of this function is to enable easier generation of results. If we already spent a lot of
         resources on training an ensemble we don't want it to go to waste just because the ensemble is not large enough.
-        We want to add more models to the ensemble rather than have to retrain it from scratch."""
+        We want to add more models to the ensemble rather than have to retrain it from scratch.
+        """
         if self.estimate_hardness:
             hardness_save_dir = f"Results/{self.clean_data}{self.dataset_name}/"
             os.makedirs(hardness_save_dir, exist_ok=True)
             aum_path = os.path.join(hardness_save_dir, 'AUM.pkl')
             forgetting_path = os.path.join(hardness_save_dir, 'Forgetting.pkl')
-            if os.path.exists(aum_path):
+
+            # Handle AUM.pkl
+            if os.path.exists(aum_path) and os.path.getsize(aum_path) > 0:
                 with open(aum_path, "rb") as file:
                     existing_AUMs = pickle.load(file)
+                print(f'Loading AUMs with the following shape: {len(existing_AUMs)}, {len(existing_AUMs[0])}.')
+                print(f'{len(all_AUMs)}, {len(all_AUMs[0])}')
                 for i in range(self.total_samples):
-                    existing_AUMs[i].extend(all_AUMs[i])
+                    existing_AUMs.append(all_AUMs)
+                print(f'Extending AUMs to the following shape: {len(existing_AUMs)}, {len(existing_AUMs[0])}.')
                 all_AUMs = existing_AUMs
-            if os.path.exists(forgetting_path):
+            else:
+                print("AUM.pkl does not exist or is empty. Initializing new data.")
+
+            # Handle Forgetting.pkl
+            if os.path.exists(forgetting_path) and os.path.getsize(forgetting_path) > 0:
                 with open(forgetting_path, "rb") as file:
                     existing_forgetting = pickle.load(file)
                 for i in range(self.total_samples):
-                    existing_forgetting[i] += all_forgetting_statistics[i]
+                    existing_forgetting.append(all_forgetting_statistics)
                 all_forgetting_statistics = existing_forgetting
+            else:
+                print("Forgetting.pkl does not exist or is empty. Initializing new data.")
+
+            # Save updated AUM.pkl
             with open(aum_path, "wb") as file:
+                print(f'Saving AUMs of the following shape: {len(all_AUMs)}, {len(all_AUMs[0])}, {len(all_AUMs[0][0])}.')
                 pickle.dump(all_AUMs, file)
+
+            # Save updated Forgetting.pkl
             with open(forgetting_path, "wb") as file:
+                print(f'Saving forgettings of the following shape: '
+                      f'{len(all_forgetting_statistics)}, {len(all_forgetting_statistics[0])}.')
                 pickle.dump(all_forgetting_statistics, file)
 
     def train_ensemble(self):

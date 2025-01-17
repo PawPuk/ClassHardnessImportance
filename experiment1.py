@@ -19,7 +19,7 @@ def main(dataset_name: str, remove_noise: bool):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-    training_loader, _, test_loader, _ = load_dataset(dataset_name, remove_noise, seed)
+    training_loader, _, test_loader, _ = load_dataset(dataset_name, remove_noise, seed, True)
 
     # Create an instance of ModelTrainer
     clean_data = 'clean' if remove_noise else 'unclean'
