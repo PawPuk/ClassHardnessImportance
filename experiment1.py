@@ -22,8 +22,7 @@ def main(dataset_name: str, remove_noise: bool):
     training_loader, _, test_loader, _ = load_dataset(dataset_name, remove_noise, seed, True)
 
     # Create an instance of ModelTrainer
-    clean_data = 'clean' if remove_noise else 'unclean'
-    trainer = ModelTrainer(training_loader, test_loader, dataset_name, estimate_hardness=True, clean_data=clean_data)
+    trainer = ModelTrainer(training_loader, test_loader, dataset_name, estimate_hardness=True, clean_data=remove_noise)
 
     # Train the ensemble of models
     trainer.train_ensemble()

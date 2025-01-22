@@ -153,7 +153,6 @@ class ModelTrainer:
                         # Append the AUM for this sample
                         all_AUMs[i].append(aum)
                         index_within_batch += 1
-            print(len(all_AUMs), len(all_AUMs[0]))
 
             avg_train_loss = running_loss / total_train
             train_accuracy = 100 * correct_train / total_train
@@ -202,10 +201,8 @@ class ModelTrainer:
                     existing_AUMs = pickle.load(file)
                 print(f'Loading AUMs with the following shape: {len(existing_AUMs)}, {len(existing_AUMs[0])}.')
                 print(f'{len(all_AUMs)}, {len(all_AUMs[0])}')
-                for i in range(self.total_samples):
-                    existing_AUMs.append(all_AUMs)
-                print(f'Extending AUMs to the following shape: {len(existing_AUMs)}, {len(existing_AUMs[0])}.')
-                all_AUMs = existing_AUMs
+                all_AUMs = all_AUMs + existing_AUMs
+                print(f'Extending AUMs to the following shape: {len(all_AUMs)}, {len(all_AUMs[0])}.')
             else:
                 print("AUM.pkl does not exist or is empty. Initializing new data.")
 
@@ -213,9 +210,11 @@ class ModelTrainer:
             if os.path.exists(forgetting_path) and os.path.getsize(forgetting_path) > 0:
                 with open(forgetting_path, "rb") as file:
                     existing_forgetting = pickle.load(file)
-                for i in range(self.total_samples):
-                    existing_forgetting.append(all_forgetting_statistics)
-                all_forgetting_statistics = existing_forgetting
+                print(f'Loading forgetting with the following shape: {len(existing_forgetting)}, '
+                      f'{len(existing_forgetting[0])}.')
+                all_forgetting_statistics = all_forgetting_statistics + existing_forgetting
+                print(f'Extending forgetting to the following shape: {len(all_forgetting_statistics)}, '
+                      f'{len(all_forgetting_statistics[0])}.')
             else:
                 print("Forgetting.pkl does not exist or is empty. Initializing new data.")
 
