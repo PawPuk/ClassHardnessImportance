@@ -15,8 +15,7 @@ from utils import get_config, AugmentedSubset, IndexedDataset
 
 
 class DataResampling:
-    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, instance_hardness,
-                 class_hardness, dataset_name):
+    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, hardness, dataset_name):
         """
         Initialize with the dataset, number of classes, and resampling strategies.
         """
@@ -24,11 +23,7 @@ class DataResampling:
         self.num_classes = num_classes
         self.oversampling_strategy = oversampling_strategy
         self.undersampling_strategy = undersampling_strategy
-        self.instance_hardness = np.mean(np.array(instance_hardness), axis=1)
-        self.class_hardness = {
-            class_id: np.mean(np.array(class_scores), axis=1)
-            for class_id, class_scores in class_hardness.items()
-        }
+        self.hardness = hardness
         self.fig_save_dir = 'Figures/'
         self.model_save_dir = f'Models/none/{dataset_name}/'
 
@@ -334,24 +329,24 @@ class DataResampling:
         hardness_stats = {'avg_pair_hardness': [], 'avg_hardness_diff_within_pair': [],
                           'avg_synthetic_data_hardness': [], 'avg_respective_synthetic_data_hardness': []}
 
-        for class_id, class_scores in self.class_hardness.items():
+        for class_id, hardnesses_within_class in self.hardness.items():
             desired_count = samples_per_class[class_id]
             current_indices = np.array(class_indices[class_id])
 
             if len(current_indices) > desired_count:
-                class_retain_indices = undersample(desired_count, class_scores)
+                class_retain_indices = undersample(desired_count, hardnesses_within_class)
                 resampled_indices.extend(current_indices[class_retain_indices])
             elif len(current_indices) < desired_count:
                 if self.oversampling_strategy in ['SMOTE', 'BSMOTE']:
                     # This if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
-                    original_data, original_labels, generated_data = oversample(desired_count, class_scores,
+                    original_data, original_labels, generated_data = oversample(desired_count, hardnesses_within_class,
                                                                                 current_indices, hardness_stats)
                     generated_labels = torch.full((generated_data.size(0),), class_id)
                     print(f'Generated {len(generated_data)} data samples via SMOTE.')
                     synthetic_data.append(torch.cat([original_data, generated_data], dim=0))
                     synthetic_labels.append(torch.cat([original_labels, generated_labels], dim=0))
                 else:
-                    class_add_indices = oversample(desired_count, class_scores, class_id)
+                    class_add_indices = oversample(desired_count, hardnesses_within_class, class_id)
                     resampled_indices.extend(current_indices[class_add_indices])
             else:
                 resampled_indices.extend(current_indices)
@@ -361,7 +356,7 @@ class DataResampling:
             synthetic_data = torch.cat(synthetic_data, dim=0)
             synthetic_labels = torch.cat(synthetic_labels, dim=0)
 
-            self.estimate_hardness(synthetic_data, synthetic_labels, hardness_stats)
+            # self.estimate_hardness(synthetic_data, synthetic_labels, hardness_stats)
             print(f'Generated {len(synthetic_data)} synthetic data samples.')
             print(hardness_stats)
             for key, item in hardness_stats.items():

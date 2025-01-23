@@ -192,4 +192,4 @@ def load_dataset(dataset_name, remove_noise, seed, shuffle):
     test_loader = DataLoader(test_set, batch_size=config['batch_size'], shuffle=False, num_workers=2,
                              worker_init_fn=worker_init_fn)
 
-    return training_loader, len(training_set), test_loader, len(test_set)
+    return training_loader, training_set, test_loader, test_set

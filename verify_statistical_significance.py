@@ -274,14 +274,14 @@ def visualize_stability_of_resampling(results):
 
 
 def main():
-    training_loader, training_set_size, _, _ = load_dataset(args.dataset_name, args.remove_noise, SEED, False)
+    training_loader, _, _, _ = load_dataset(args.dataset_name, args.remove_noise, SEED, False)
     training_all_el2n_scores, training_class_accuracies = collect_el2n_scores(training_loader)
     save_el2n_scores((training_all_el2n_scores, training_class_accuracies))
 
     aum_path = os.path.join(HARDNESS_SAVE_DIR, 'AUM.pkl')
     forgetting_path = os.path.join(HARDNESS_SAVE_DIR, 'Forgetting.pkl')
     AUM_over_epochs_and_models = load_results(aum_path)
-    AUM_over_epochs = [
+    AUM_scores = [
         [
             sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(NUM_EPOCHS)) / NUM_EPOCHS
             for sample_idx in range(NUM_SAMPLES)
@@ -290,17 +290,17 @@ def main():
     ]
 
     forgetting_scores = load_results(forgetting_path)
-    print(len(AUM_over_epochs), len(AUM_over_epochs[0]))
+    print(len(AUM_scores), len(AUM_scores[0]))
     print(len(forgetting_scores), len(forgetting_scores[0]))
     print(len(training_all_el2n_scores), len(training_all_el2n_scores[0]))
     print()
 
-    pruned_indices = get_pruned_indices(training_all_el2n_scores, AUM_over_epochs, forgetting_scores)
+    pruned_indices = get_pruned_indices(training_all_el2n_scores, AUM_scores, forgetting_scores)
     compute_and_visualize_stability_of_pruning(pruned_indices)
     compute_overlap_heatmap(pruned_indices)
 
     differences = compute_effect_of_ensemble_size_on_resampling(
-        training_all_el2n_scores, AUM_over_epochs, forgetting_scores, training_loader.dataset)
+        training_all_el2n_scores, AUM_scores, forgetting_scores, training_loader.dataset)
     visualize_stability_of_resampling(differences)
 
 
