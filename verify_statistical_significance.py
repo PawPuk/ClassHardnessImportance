@@ -274,22 +274,27 @@ def visualize_stability_of_resampling(results):
 
 
 def main():
-    training_loader, _, _, _ = load_dataset(args.dataset_name, args.remove_noise, SEED, False)
+    training_loader, training_dataset, _, _ = load_dataset(args.dataset_name, args.remove_noise, SEED, False)
+    print(len(training_dataset))
     training_all_el2n_scores, training_class_accuracies = collect_el2n_scores(training_loader)
     save_el2n_scores((training_all_el2n_scores, training_class_accuracies))
 
     aum_path = os.path.join(HARDNESS_SAVE_DIR, 'AUM.pkl')
-    forgetting_path = os.path.join(HARDNESS_SAVE_DIR, 'Forgetting.pkl')
     AUM_over_epochs_and_models = load_results(aum_path)
+    for model_idx, model_list in enumerate(AUM_over_epochs_and_models):
+        AUM_over_epochs_and_models[model_idx] = [sample for sample in model_list if len(sample) > 0]
     AUM_scores = [
         [
             sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(NUM_EPOCHS)) / NUM_EPOCHS
-            for sample_idx in range(NUM_SAMPLES)
+            for sample_idx in range(len(AUM_over_epochs_and_models[0]))
         ]
         for model_list in AUM_over_epochs_and_models
     ]
 
+    forgetting_path = os.path.join(HARDNESS_SAVE_DIR, 'Forgetting.pkl')
     forgetting_scores = load_results(forgetting_path)
+    forgetting_scores = [model_list[:len(AUM_scores[0])] for model_list in forgetting_scores]
+
     print(len(AUM_scores), len(AUM_scores[0]))
     print(len(forgetting_scores), len(forgetting_scores[0]))
     print(len(training_all_el2n_scores), len(training_all_el2n_scores[0]))

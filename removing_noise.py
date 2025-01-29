@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-if sys.argv[0].endswith("experiment3.py"):
+if sys.argv[0].endswith("compute_hardness.py"):
     from utils import AugmentedSubset, IndexedDataset
 
 
@@ -17,6 +17,7 @@ class NoiseRemover:
         self.dataset = dataset
 
         self.BATCH_SIZE = self.config['batch_size']
+        self.NUM_MODELS = self.config['num_models']
         self.TOTAL_SAMPLES = sum(self.config['num_training_samples'])
         self.NUM_EPOCHS = self.config['num_epochs']
 
@@ -29,9 +30,38 @@ class NoiseRemover:
         with open(file_path, 'rb') as file:
             return pickle.load(file)
 
+    def compute_and_visualize_stability_of_noise_removal(self, results):
+        num_models = len(results)
+        overlaps = []
+        for num_ensemble_models in range(1, num_models):
+            cur_average_results = np.mean(results[:num_ensemble_models], axis=0)
+            next_average_results = np.mean(results[:num_ensemble_models + 1], axis=0)
+            cur_sorted_data = np.sort(cur_average_results)
+            next_sorted_data = np.sort(next_average_results)
+            x_value = 1.5
+            cur_elbow_index = np.searchsorted(cur_sorted_data, x_value, side='left')
+            next_elbow_index = np.searchsorted(next_sorted_data, x_value, side='left')
+            cur_sorted_indices = np.argsort(cur_average_results)
+            next_sorted_indices = np.argsort(next_average_results)
+            cur_removed_indices = set(cur_sorted_indices[:cur_elbow_index])
+            next_removed_indices = set(next_sorted_indices[:next_elbow_index])
+
+            intersection = len(cur_removed_indices & next_removed_indices)
+            union = len(cur_removed_indices | next_removed_indices)
+            overlap = intersection / union if union > 0 else 0.0
+            overlaps.append(overlap)
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(range(1, num_models), overlaps)
+        plt.xlabel('Current number of models in ensemble')
+        plt.ylabel('Overlap between removed indices')
+        plt.grid(alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.figure_save_dir, 'stability_of_noise_removal.pdf'))
+
     def plot_cumulative_distribution(self, data, title="Cumulative Distribution with Elbow"):
         """
-        Plots the cumulative distribution, first derivative, second derivative and highlights the elbow point.
+        Plots the cumulative distribution and highlights the elbow point.
 
         Args:
             data (list or np.ndarray): The data samples to be plotted.
@@ -137,30 +167,31 @@ class NoiseRemover:
         plt.savefig(os.path.join(self.figure_save_dir, "lowest_AUM_samples.pdf"))
 
     def clean(self):
-        file = f"Results/{self.dataset_name}/AUM.pkl"
+        file = f"Results/unclean{self.dataset_name}/AUM.pkl"
         AUM_over_epochs_and_models = np.array(self.load_pickle(file))
 
-        AUM_over_epochs = [
+        AUM_scores_over_models = [
             [
-                sum(model_list[sample_idx][epoch_idx] for model_list in AUM_over_epochs_and_models) / len(
-                    AUM_over_epochs_and_models) for epoch_idx in range(self.NUM_EPOCHS)
+                sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(self.NUM_EPOCHS)) / self.NUM_EPOCHS
+                for sample_idx in range(self.TOTAL_SAMPLES)
             ]
-            for sample_idx in range(self.TOTAL_SAMPLES)
+            for model_list in AUM_over_epochs_and_models
         ]
-        AUM = np.mean(AUM_over_epochs, axis=1)
 
-        elbow_index = self.plot_cumulative_distribution(AUM)
-        sorted_indices = np.argsort(AUM)
+        self.compute_and_visualize_stability_of_noise_removal(AUM_scores_over_models)
+
+        print(len(AUM_scores_over_models[:self.NUM_MODELS]))
+        AUM_scores = np.mean(AUM_scores_over_models[:self.NUM_MODELS], axis=0)
+
+        elbow_index = self.plot_cumulative_distribution(AUM_scores)
+        sorted_indices = np.argsort(AUM_scores)
 
         print(f'Removing {elbow_index} data samples that were identified to be misclassified.')
         removed_indices = sorted_indices[:elbow_index]
         retained_indices = np.setdiff1d(np.arange(len(self.dataset)), removed_indices)
         self.plot_removed_samples_distribution(removed_indices)
-        self.visualize_lowest_aum_samples(removed_indices, AUM)
+        self.visualize_lowest_aum_samples(removed_indices, AUM_scores)
 
-        if isinstance(self.dataset, AugmentedSubset):
-            self.dataset.subset = AugmentedSubset(torch.utils.data.Subset(self.dataset.subset, retained_indices))
-        elif isinstance(self.dataset, IndexedDataset):
-            self.dataset.dataset = AugmentedSubset(torch.utils.data.Subset(self.dataset.dataset, retained_indices))
-        else:
-            raise ValueError("Dataset type not supported!")
+        return retained_indices
+
+

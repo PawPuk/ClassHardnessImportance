@@ -66,7 +66,8 @@ class Experiment3:
 
         dataset = IndexedDataset(dataset)
         if self.remove_noise == 'clean' and train:
-            NoiseRemover(self.config, self.dataset_name, dataset).clean()
+            retained_indices = NoiseRemover(self.config, self.dataset_name, dataset).clean()
+            dataset = AugmentedSubset(torch.utils.data.Subset(dataset.dataset.dataset, retained_indices))
         return dataset
 
     def load_results(self):
@@ -81,12 +82,15 @@ class Experiment3:
         Compute hardness-based ratios based on class-level accuracies.
         """
 
-        hardnesses_by_class, ratios = {class_id: [] for class_id in range(self.num_classes)}, {}
+        hardnesses_by_class, hardness_of_classes = {class_id: [] for class_id in range(self.num_classes)}, {}
+        print(type(dataset))
         for i, (_, label, _) in enumerate(dataset):
             hardnesses_by_class[label].append(aum_scores[i])
         for label in range(self.num_classes):
-            ratios[label] = np.mean(hardnesses_by_class[label])
-        normalized_ratios = {class_id: ratio / sum(ratios.values()) for class_id, ratio in ratios.items()}
+            hardness_of_classes[label] = np.mean(hardnesses_by_class[label])
+        inverted_ratios = {class_id: 1 / class_hardness for class_id, class_hardness in hardness_of_classes.items()}
+        normalized_ratios = {class_id: inverted_ratio / sum(inverted_ratios.values())
+                             for class_id, inverted_ratio in inverted_ratios.items()}
         samples_per_class = {class_id: int(round(normalized_ratio * self.num_samples))
                              for class_id, normalized_ratio in normalized_ratios.items()}
         return hardnesses_by_class, samples_per_class
@@ -132,11 +136,13 @@ class Experiment3:
         _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.remove_noise == 'clean',
                                                             self.seed, True)
         AUM_over_epochs_and_models = self.load_results()
+        for model_idx, model_list in enumerate(AUM_over_epochs_and_models):
+            AUM_over_epochs_and_models[model_idx] = [sample for sample in model_list if len(sample) > 0]
 
         AUM_scores_over_models = [
             [
                 sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(self.num_epochs)) / self.num_epochs
-                for sample_idx in range(self.num_samples)
+                for sample_idx in range(len(AUM_over_epochs_and_models[0]))
             ]
             for model_list in AUM_over_epochs_and_models
         ]

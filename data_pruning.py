@@ -145,6 +145,9 @@ class DataResampling:
         _, neighbor_indices = neighbors.kneighbors(data_flattened.numpy())
 
         synthetic_samples = []
+        print('-'*20)
+        print(desired_count, current_n_samples, desired_count - current_n_samples)
+        print()
         for _ in range(desired_count - current_n_samples):
             idx = torch.randint(0, current_n_samples, (1,)).item()
             neighbor_idx = torch.randint(1, k + 1, (1,)).item()  # Skip the first neighbor (itself)
@@ -343,6 +346,9 @@ class DataResampling:
                                                                                 current_indices, hardness_stats)
                     generated_labels = torch.full((generated_data.size(0),), class_id)
                     print(f'Generated {len(generated_data)} data samples via SMOTE.')
+                    if len(generated_data) + len(current_indices) != desired_count:
+                        print(len(generated_data), len(current_indices), desired_count)
+                        raise Exception
                     synthetic_data.append(torch.cat([original_data, generated_data], dim=0))
                     synthetic_labels.append(torch.cat([original_labels, generated_labels], dim=0))
                 else:

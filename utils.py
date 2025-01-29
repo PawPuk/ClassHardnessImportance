@@ -173,15 +173,18 @@ def load_dataset(dataset_name, remove_noise, seed, shuffle):
     elif dataset_name == 'CIFAR100':
         training_set = torchvision.datasets.CIFAR100(root='./data', train=True, download=True,
                                                      transform=train_transform)
-        test_set = torchvision.datasets.CIFAR100(root='./data', train=False, download=True,
-                                                 transform=test_transform)
+        test_set = torchvision.datasets.CIFAR100(root='./data', train=False, download=True, transform=test_transform)
     else:
         raise ValueError(f"Dataset {dataset_name} is not supported.")
 
     training_set = IndexedDataset(training_set)
     test_set = IndexedDataset(test_set)
     if remove_noise:
-        NoiseRemover(config, dataset_name, training_set).clean()
+        retained_indices = NoiseRemover(config, dataset_name, training_set).clean()
+        training_set = AugmentedSubset(IndexedDataset(torch.utils.data.Subset(training_set.dataset, retained_indices)))
+
+    print(type(training_set))
+    print(type(test_set))
 
     def worker_init_fn(worker_id):
         np.random.seed(seed + worker_id)

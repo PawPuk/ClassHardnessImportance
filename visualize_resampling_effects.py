@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from neural_networks import ResNet18LowRes
-from utils import get_config
+from utils import get_config, load_dataset
 
 
 def load_models(dataset_name: str) -> Dict[Tuple[str, str, str], List[dict]]:
@@ -72,15 +72,31 @@ def load_models(dataset_name: str) -> Dict[Tuple[str, str, str], List[dict]]:
 
 
 def load_el2n_scores(dataset_name):
-    with open(os.path.join('Results/', dataset_name, 'el2n_scores.pkl'), 'rb') as file:
-        _, _, _, _, all_el2n_scores, class_el2n_scores, test_labels, _ = pickle.load(file)
-    hardness = np.mean(np.array(all_el2n_scores), axis=1)
-    hardness_grouped_by_class = {class_id: np.mean(np.array(class_scores), axis=1)
-                                 for class_id, class_scores in class_el2n_scores.items()}
-    return hardness, hardness_grouped_by_class, test_labels
+    with open(os.path.join('Results/', f'unclean{dataset_name}', 'AUM.pkl'), 'rb') as file:
+        AUM_over_epochs_and_models = pickle.load(file)
+    for model_idx, model_list in enumerate(AUM_over_epochs_and_models):
+        AUM_over_epochs_and_models[model_idx] = [sample for sample in model_list if len(sample) > 0]
+
+    AUM_scores_over_models = [
+        [
+            sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(num_epochs)) / num_epochs
+            for sample_idx in range(len(AUM_over_epochs_and_models[0]))
+        ]
+        for model_list in AUM_over_epochs_and_models
+    ]
+    AUM_scores = np.mean(AUM_scores_over_models, axis=0)
+
+    _, training_dataset, _, _ = load_dataset(dataset_name, False, 42, True)
+
+    hardnesses_by_class, hardness_of_classes, labels = {class_id: [] for class_id in range(num_classes)}, {}, []
+    for i, (_, label, _) in enumerate(training_dataset):
+        hardnesses_by_class[label].append(AUM_scores[i])
+    for label in range(num_classes):
+        hardness_of_classes[label] = np.mean(hardnesses_by_class[label])
+    return hardnesses_by_class
 
 
-def load_test_set(class_grouped_hardness, test_labels, dataset_name, batch_size: int = 64):
+def load_test_set(class_grouped_hardness, dataset_name, batch_size: int = 64):
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(config['mean'], config['std'])
@@ -91,24 +107,8 @@ def load_test_set(class_grouped_hardness, test_labels, dataset_name, batch_size:
         test_set = CIFAR100(root='./data', train=False, download=True, transform=transform)
     else:
         raise Exception
-    number_of_blocks = 5
 
-    blocks = {i: [] for i in range(number_of_blocks)}
-    for class_index in range(len(class_grouped_hardness)):
-        class_indices_within_dataset = np.where(np.array(test_labels) == class_index)[0]
-        sorted_class_indices = np.argsort(class_grouped_hardness[class_index])
-        sorted_indices = class_indices_within_dataset[sorted_class_indices]
-        num_samples = len(sorted_indices)
-        block_size = num_samples // number_of_blocks
-        class_blocks = [sorted_indices[i * block_size: (i + 1) * block_size] for i in range(number_of_blocks)]
-        # This is necessary to handle any remaining samples and put them in the last block. That is because we
-        # // number_of_blocks and not / number_of_blocks.
-        class_blocks[-1] = np.append(class_blocks[-1], sorted_indices[number_of_blocks * block_size:])
-        for block_index, block in enumerate(class_blocks):
-            blocks[block_index].extend(list(block))
-
-    block_loaders = [DataLoader(Subset(test_set, blocks[block_index]), batch_size=batch_size, shuffle=False)
-                     for block_index in range(number_of_blocks)]
+    block_loaders = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
     return block_loaders
 
@@ -149,18 +149,15 @@ def evaluate_block(ensemble: List[dict], test_loader, class_index: int, block_in
     results['Tn'][strategies][block_index][class_index] = total_Tn / len(ensemble)
 
 
-def evaluate_ensemble(models: Dict[Tuple[str, str, str], List[dict]], test_loaders: List[DataLoader],
+def evaluate_ensemble(models: Dict[Tuple[str, str, str], List[dict]], test_loader: DataLoader,
                       results: Dict[str, Dict], class_index: int):
     for (over, under, cleanliness), ensemble in models.items():
         print(f"Evaluating ensemble for oversampling strategy {over} and undersampling strategy {under} trained on "
               f"{cleanliness} data.")
         if class_index == 0:
             for metric in ['Tp', 'Fp', 'Fn', 'Tn']:
-                results[metric][(over, under, cleanliness)] = [{class_id: 0 for class_id in range(num_classes)}
-                                                  for _ in range(len(test_loaders))]
-        for block_index in range(len(test_loaders)):
-            evaluate_block(ensemble, test_loaders[block_index], class_index, block_index,
-                           (over, under, cleanliness), results)
+                results[metric][(over, under, cleanliness)] = [{class_id: 0 for class_id in range(num_classes)}]
+        evaluate_block(ensemble, test_loader, class_index, 0, (over, under, cleanliness), results)
 
 
 def save_file(save_dir, filename, data):
@@ -296,8 +293,8 @@ def plot_all_accuracies_sorted(results, class_order, save_path=None):
 def main(dataset_name):
     result_dir = os.path.join("Results", dataset_name)
     models = load_models(dataset_name)
-    all_el2n_scores, class_el2n_scores, test_labels = load_el2n_scores(dataset_name)
-    test_loader = load_test_set(class_el2n_scores, test_labels, dataset_name, 1024)
+    class_el2n_scores = load_el2n_scores(dataset_name)
+    test_loader = load_test_set(class_el2n_scores, dataset_name, 1024)
 
     # Evaluate ensemble performance
     if os.path.exists(os.path.join(result_dir, "resampling_results.pkl")):
@@ -366,5 +363,6 @@ if __name__ == "__main__":
     num_classes = config['num_classes']
     num_training_samples = config['num_training_samples']
     num_test_samples = config['num_test_samples']
+    num_epochs = config['num_epochs']
     os.makedirs(figure_save_dir, exist_ok=True)
     main(args.dataset_name)
