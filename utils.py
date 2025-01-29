@@ -2,11 +2,14 @@ import random
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 import torchvision
 import torchvision.transforms as transforms
 
 from removing_noise import NoiseRemover
+
+
+SEED = 42
 
 
 dataset_configs = {
@@ -113,7 +116,7 @@ def get_config(dataset_name):
     """
     if dataset_name in dataset_configs:
         config = dataset_configs[dataset_name]
-        config['probe_base_seed'] = 42
+        config['probe_base_seed'] = SEED
         config['probe_seed_step'] = 42
         config['new_base_seed'] = 4242
         config['new_seed_step'] = 42
@@ -124,6 +127,16 @@ def get_config(dataset_name):
 
 class IndexedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
+        # To make the training faster we transform the dataset into a TensorDataset
+        if not isinstance(dataset, TensorDataset):
+            data_list, label_list = [], []
+            for i in range(len(dataset)):
+                data, label = dataset[i]
+                data_list.append(data.unsqueeze(0))  # Add a dimension for torch.cat (this is for number of samples)
+                label_list.append(torch.tensor(label)) # Necessary because some datasets return labels as integers
+            data_tensor = torch.cat(data_list, dim=0)
+            label_tensor = torch.tensor(label_list)
+            dataset = TensorDataset(data_tensor, label_tensor)
         self.dataset = dataset
 
     def __len__(self):
@@ -153,9 +166,10 @@ class AugmentedSubset(torch.utils.data.Dataset):
         return data, label, idx
 
 
-def load_dataset(dataset_name, remove_noise, seed, shuffle):
+def load_dataset(dataset_name, remove_noise, shuffle):
     config = get_config(dataset_name)
 
+    # TODO: we might want to make the below dataset-specific and enable more datasets
     train_transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
@@ -183,12 +197,9 @@ def load_dataset(dataset_name, remove_noise, seed, shuffle):
         retained_indices = NoiseRemover(config, dataset_name, training_set).clean()
         training_set = AugmentedSubset(IndexedDataset(torch.utils.data.Subset(training_set.dataset, retained_indices)))
 
-    print(type(training_set))
-    print(type(test_set))
-
     def worker_init_fn(worker_id):
-        np.random.seed(seed + worker_id)
-        random.seed(seed + worker_id)
+        np.random.seed(SEED + worker_id)
+        random.seed(SEED + worker_id)
 
     training_loader = DataLoader(training_set, batch_size=config['batch_size'], shuffle=shuffle, num_workers=2,
                                  worker_init_fn=worker_init_fn)
@@ -196,3 +207,13 @@ def load_dataset(dataset_name, remove_noise, seed, shuffle):
                              worker_init_fn=worker_init_fn)
 
     return training_loader, training_set, test_loader, test_set
+
+
+def set_reproducibility(seed=SEED):
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True

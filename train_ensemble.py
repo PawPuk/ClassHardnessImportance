@@ -11,15 +11,17 @@ import torch.optim as optim
 from tqdm import tqdm
 
 from neural_networks import ResNet18LowRes
-from utils import get_config
+from utils import get_config, set_reproducibility
 
 
 class ModelTrainer:
-    def __init__(self, training_loader, test_loader, dataset_name, pruning_type='none', save_probe_models=True,
-                 hardness='subjective', estimate_hardness=False, clean_data=False):
+    # TODO: Modify the code in other functions to match the new ModelTrainer
+    def __init__(self, training_set_size, training_loader, test_loader, dataset_name, pruning_type='none',
+                 save_probe_models=True, hardness='subjective', estimate_hardness=False, clean_data=False):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
+        :param training_set_size: Specified the size of the training set
         :param training_loader: DataLoader for the training dataset.
         :param test_loader: DataLoader for the test dataset.
         :param dataset_name: Name of the dataset being used.
@@ -28,63 +30,61 @@ class ModelTrainer:
         :param hardness: Whether to use the same seed for measuring hardness (subjective) or different (objective) as
         for training the probe networks and benchmark ensemble (ensemble trained on unpruned data)
         """
+        self.training_set_size = training_set_size
         self.training_loader = training_loader
         self.test_loader = test_loader
         self.pruning_type = pruning_type
         self.dataset_name = dataset_name
         self.save_probe_models = save_probe_models
+        self.hardness = hardness
         self.estimate_hardness = estimate_hardness
         self.clean_data = 'clean' if clean_data else 'unclean'
 
-        # Fetch the dataset-specific configuration
-        config = get_config(self.dataset_name)
-
-        # Use the fetched config values
-        self.num_epochs = config['num_epochs']
-        self.lr = config['lr']
-        self.momentum = config['momentum']
-        self.weight_decay = config['weight_decay']
-        self.lr_decay_milestones = config['lr_decay_milestones']
-        self.save_epoch = config['save_epoch']
-        self.num_classes = config['num_classes']
-        self.total_samples = sum(config['num_training_samples'])
-        if hardness == 'subjective':
-            self.base_seed = config['probe_base_seed']
-            self.seed_step = config['probe_seed_step']
-        else:
-            self.base_seed = config['new_base_seed']
-            self.seed_step = config['new_seed_step']
+        self.config = get_config(self.dataset_name)
 
         # Incorporate dataset_name and pruning_type into directories to prevent overwriting
-        self.save_dir = str(os.path.join(config['save_dir'], pruning_type, f"{self.clean_data}{dataset_name}"))
-        self.timings_dir = str(os.path.join(config['timings_dir'], pruning_type, f"{self.clean_data}{dataset_name}"))
+        self.save_dir = str(os.path.join(self.config['save_dir'], pruning_type, f"{self.clean_data}{dataset_name}"))
+        self.timings_dir = str(os.path.join(self.config['timings_dir'], pruning_type,
+                                            f"{self.clean_data}{dataset_name}"))
 
-        # Ensure directories exist
         os.makedirs(self.save_dir, exist_ok=True)
         os.makedirs(self.timings_dir, exist_ok=True)
 
     def get_latest_model_index(self):
-        """Find the latest model index from saved files in the save directory."""
+        """Find the latest model index from saved files in the save directory. This makes it easier to add more models
+        to the ensemble, as we don't have to retrain from scratch."""
         max_index = -1
         if os.path.exists(self.save_dir):
             for filename in os.listdir(self.save_dir):
-                match = re.search(r'model_(\d+)_epoch_200\.pth$', filename)
+                match = re.search(rf'model_(\d+)_epoch_{self.config["num_epochs"]}\.pth$', filename)
                 if match:
                     index = int(match.group(1))
                     max_index = max(max_index, index)
         return max_index
 
-    @staticmethod
-    def set_seed(seed):
-        """Set random seed for NumPy and PyTorch for reproducibility."""
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+    def compute_current_seed(self, model_id, current_model_index):
+        base_seed = self.config['probe_base_seed'] if self.hardness == 'subjective' else self.config['new_base_seed']
+        seed_step = self.config['probe_seed_step'] if self.hardness == 'subjective' else self.config['new_seed_step']
+        seed = base_seed + (model_id + current_model_index) * seed_step
+        return seed
 
-    def create_model(self):
-        """Creates and returns a ResNet-18 model with dynamic number of output classes."""
-        return ResNet18LowRes(num_classes=self.num_classes).cuda()
+    @staticmethod
+    def estimate_instance_hardness(indices, outputs, labels, predicted, all_AUMs, all_remembrance, all_forgetting):
+        index_within_batch = 0
+        for i, logit, label in zip(indices, outputs, labels):
+            i = i.item()
+            if label == predicted[index_within_batch]:
+                all_remembrance[i] = True
+            elif label != predicted[index_within_batch] and all_remembrance[i] == True:
+                all_remembrance[i] = False
+                all_forgetting[i] += 1
+
+            correct_logit = logit[label].item()
+            max_other_logit = torch.max(torch.cat((logit[:label], logit[label + 1:]))).item()
+            aum = correct_logit - max_other_logit
+            all_AUMs[i].append(aum)
+
+            index_within_batch += 1
 
     def evaluate_model(self, model, criterion):
         """Evaluate the model on the test set."""
@@ -107,25 +107,25 @@ class ModelTrainer:
 
     def train_model(self, model_id, current_model_index):
         """Train a single model."""
-        seed = self.base_seed + (model_id + current_model_index) * self.seed_step
-        self.set_seed(seed)
+        seed = self.compute_current_seed(model_id, current_model_index)
+        set_reproducibility(seed)
 
-        model = self.create_model()
+        model = ResNet18LowRes(num_classes=self.config['num_classes']).cuda()
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.SGD(model.parameters(), lr=self.lr, momentum=self.momentum, weight_decay=self.weight_decay,
-                              nesterov=True)
-        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.lr_decay_milestones, gamma=0.2)
-        all_AUMs = [[] for _ in range(self.total_samples)]
-        all_remembrance = [False for _ in range(self.total_samples)]
-        all_forgetting = [0 for _ in range(self.total_samples)]
+        optimizer = optim.SGD(model.parameters(), lr=self.config['lr'], momentum=self.config['momentum'],
+                              weight_decay=self.config['weight_decay'], nesterov=True)
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.config['lr_decay_milestones'], gamma=0.2)
 
-        for epoch in range(self.num_epochs):
+        all_AUMs = [[] for _ in range(self.training_set_size)]
+        all_remembrance = [False for _ in range(self.training_set_size)]
+        all_forgetting = [0 for _ in range(self.training_set_size)]
+
+        for epoch in range(self.config['num_epochs']):
             model.train()
             running_loss, correct_train, total_train = 0.0, 0, 0
 
             for inputs, labels, indices in self.training_loader:
                 inputs, labels = inputs.cuda(), labels.cuda()
-
                 optimizer.zero_grad()
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
@@ -138,49 +138,31 @@ class ModelTrainer:
                 correct_train += (predicted == labels).sum().item()
 
                 if self.estimate_hardness:
-                    index_within_batch = 0
-                    for i, logit, label in zip(indices, outputs, labels):
-                        i = i.item()
-                        correct_logit = logit[label].item()
-                        if label == predicted[index_within_batch]:
-                            all_remembrance[i] = True
-                        elif label != predicted[index_within_batch] and all_remembrance[i] == True:
-                            all_remembrance[i] = False
-                            all_forgetting[i] += 1
-                        max_other_logit = torch.max(torch.cat((logit[:label], logit[label + 1:]))).item()
-                        aum = correct_logit - max_other_logit
-
-                        # Append the AUM for this sample
-                        all_AUMs[i].append(aum)
-                        index_within_batch += 1
+                    self.estimate_instance_hardness(indices, outputs, labels, predicted, all_AUMs, all_remembrance,
+                                                    all_forgetting)
+            scheduler.step()
 
             avg_train_loss = running_loss / total_train
             train_accuracy = 100 * correct_train / total_train
-
-            # Evaluate the model on the test set
             avg_test_loss, test_accuracy = self.evaluate_model(model, criterion)
-
-            print(f'Model {model_id + current_model_index}, Epoch [{epoch + 1}/{self.num_epochs}] '
+            print(f'Model {model_id + current_model_index}, Epoch [{epoch + 1}/{self.config["num_epochs"]}] '
                   f'Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}%, '
                   f'Test Loss: {avg_test_loss:.4f}, Test Acc: {test_accuracy:.2f}%')
 
             # Optionally save the model at a specific epoch
-            if self.save_probe_models and epoch + 1 == self.save_epoch:
-                save_path = os.path.join(self.save_dir,
-                                         f'model_{model_id + current_model_index}_epoch_{self.save_epoch}.pth')
+            if self.save_probe_models and epoch + 1 == self.config['save_epoch']:
+                save_path = os.path.join(self.save_dir, f'model_{model_id + current_model_index}_epoch_'
+                                                        f'{self.config["save_epoch"]}.pth')
                 torch.save(model.state_dict(), save_path)
-                print(f'Model {model_id + current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved '
-                      f'at epoch {self.save_epoch}')
-
-            # Step the scheduler at the end of the epoch
-            scheduler.step()
+                print(f'Model {model_id + current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved'
+                      f' at epoch {self.config["save_epoch"]}.')
 
         # Save model after full training
         final_save_path = os.path.join(self.save_dir,
-                                       f'model_{model_id + current_model_index}_epoch_{self.num_epochs}.pth')
+                                       f'model_{model_id + current_model_index}_epoch_{self.config["num_epochs"]}.pth')
         torch.save(model.state_dict(), final_save_path)
         print(f'Model {model_id + current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved after '
-              f'full training at epoch {self.num_epochs}')
+              f'full training at epoch {self.config["num_epochs"]}.')
         return all_AUMs, all_forgetting
 
     def save_results(self, all_AUMs, all_forgetting_statistics):
@@ -232,23 +214,20 @@ class ModelTrainer:
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
         timings, all_AUMs, all_forgetting_statistics = [], [], []
-        config = get_config(self.dataset_name)
-        num_models = config['num_models']
         latest_model_index = self.get_latest_model_index()
 
-        print(f"Starting training ensemble of {num_models} models on {self.dataset_name} ({self.pruning_type}) "
-              f"dataset...")
+        print(f"Starting training ensemble of {self.config['num_models']} models on {self.dataset_name}.")
         print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")
         print(f"Number of samples in the test loader: {len(self.test_loader.dataset)}")
+        print('-'*20)
 
-        for model_id in tqdm(range(num_models)):
+        for model_id in tqdm(range(self.config['num_models'])):
             start_time = time.time()
             AUMs, forgetting_statistics = self.train_model(model_id, latest_model_index + 1)
             all_AUMs.append(AUMs)
             all_forgetting_statistics.append(forgetting_statistics)
             training_time = time.time() - start_time
             timings.append((model_id + latest_model_index + 1, training_time))
-            print(f'Time taken for Model {model_id + latest_model_index + 1}: {training_time:.2f} seconds')
 
         if self.estimate_hardness:
             self.save_results(all_AUMs, all_forgetting_statistics)

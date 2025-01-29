@@ -1,2 +1,12 @@
-# ClassHardnessImportance
-Empirically show the importance of class-level hardness in fields such as curriculum learning, data pruning and active learning.
+# Experiment 1
+
+Here we train an ensemble on the imbalanced datasets. The user can choose the dataset name, and whether they want to 
+perform label noise removal.
+
+# Verify Statistical Significance
+
+# Experiment 2
+
+# Experiment 3
+
+# Visualize Resampling Performance

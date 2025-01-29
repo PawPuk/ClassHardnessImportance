@@ -13,7 +13,7 @@ from utils import get_config
 from data_pruning import DataResampling
 from removing_noise import NoiseRemover
 from train_ensemble import ModelTrainer
-from utils import AugmentedSubset, IndexedDataset, load_dataset
+from utils import AugmentedSubset, IndexedDataset, load_dataset, set_reproducibility
 
 
 class Experiment3:
@@ -28,22 +28,6 @@ class Experiment3:
         self.num_classes = self.config['num_classes']
         self.num_epochs = get_config(args.dataset_name)['num_epochs']
         self.num_samples = sum(get_config(args.dataset_name)['num_training_samples'])
-
-        # Reproducibility settings
-        self.seed = 42
-        self.set_reproducibility()
-
-    def set_reproducibility(self):
-        """
-        Ensure reproducibility by setting seeds and configuring PyTorch settings.
-        """
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
-        torch.cuda.manual_seed(self.seed)
-        torch.cuda.manual_seed_all(self.seed)  # For multi-GPU setups
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
 
     def load_untransferred_dataset(self, train=True) -> Union[AugmentedSubset, IndexedDataset]:
         """
@@ -107,23 +91,6 @@ class Experiment3:
                           num_workers=2, worker_init_fn=worker_init_fn)
 
     @staticmethod
-    def plot_and_save_synthetic_samples(synthetic_data):
-        """
-        Create a 4x15 plot of 60 synthetic samples and save it to a file.
-        """
-        import matplotlib.pyplot as plt
-        fig, axes = plt.subplots(4, 15, figsize=(15, 8))
-        axes = axes.flatten()
-
-        for i in range(60):
-            image = synthetic_data[i].permute(1, 2, 0).numpy()  # Convert CxHxW to HxWxC for Matplotlib
-            axes[i].imshow(image)
-            axes[i].axis('off')
-
-        plt.tight_layout()
-        plt.show()
-
-    @staticmethod
     def perform_data_augmentation(dataset):
         data_augmentation = transforms.Compose([
             transforms.RandomHorizontalFlip(),
@@ -133,8 +100,7 @@ class Experiment3:
 
     def main(self):
         # The value of the shuffle parameter below does not matter as we don't use the loaders.
-        _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.remove_noise == 'clean',
-                                                            self.seed, True)
+        _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.remove_noise == 'clean', True)
         AUM_over_epochs_and_models = self.load_results()
         for model_idx, model_list in enumerate(AUM_over_epochs_and_models):
             AUM_over_epochs_and_models[model_idx] = [sample for sample in model_list if len(sample) > 0]
@@ -174,6 +140,8 @@ class Experiment3:
 
 
 if __name__ == "__main__":
+    set_reproducibility()
+
     parser = argparse.ArgumentParser(description="Experiment3 with Data Resampling.")
     parser.add_argument('--dataset_name', type=str, required=True,
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN)")
