@@ -10,9 +10,6 @@ from config import get_config
 from removing_noise import NoiseRemover
 
 
-SEED = 42
-
-
 class IndexedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
         # To make the training faster we transform the dataset into a TensorDataset
@@ -86,8 +83,8 @@ def load_dataset(dataset_name, remove_noise, shuffle):
         training_set = AugmentedSubset(IndexedDataset(torch.utils.data.Subset(training_set.dataset, retained_indices)))
 
     def worker_init_fn(worker_id):
-        np.random.seed(SEED + worker_id)
-        random.seed(SEED + worker_id)
+        np.random.seed(42 + worker_id)
+        random.seed(42 + worker_id)
 
     training_loader = DataLoader(training_set, batch_size=config['batch_size'], shuffle=shuffle, num_workers=2,
                                  worker_init_fn=worker_init_fn)

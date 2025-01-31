@@ -1,6 +1,3 @@
-SEED = 42
-
-
 dataset_configs = {
     'CIFAR10': {
         'batch_size': 128,
@@ -30,7 +27,7 @@ dataset_configs = {
         'save_epoch': 20,
         'save_dir': './Models/',
         'timings_dir': './Timings/',
-        'num_models': 10,
+        'num_models': 8,
         'num_classes': 100,
         'mean': (0.5071, 0.4867, 0.4408),
         'std': (0.2675, 0.2565, 0.2761),
@@ -105,7 +102,7 @@ def get_config(dataset_name):
     """
     if dataset_name in dataset_configs:
         config = dataset_configs[dataset_name]
-        config['probe_base_seed'] = SEED
+        config['probe_base_seed'] = 42
         config['probe_seed_step'] = 42
         config['new_base_seed'] = 4242
         config['new_seed_step'] = 42

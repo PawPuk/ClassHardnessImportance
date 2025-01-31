@@ -20,7 +20,7 @@ from utils import get_latest_model_index, load_aum_results, load_forgetting_resu
 class Visualizer:
     def __init__(self, dataset_name, remove_noise):
         self.remove_noise = remove_noise
-        config = get_config(args.dataset_name)
+        config = get_config(dataset_name)
         self.num_classes = config['num_classes']
         self.num_epochs = config['num_epochs']
         self.num_samples = sum(config['num_training_samples'])
@@ -28,15 +28,15 @@ class Visualizer:
         self.save_epoch = config['save_epoch']
         self.data_cleanliness = 'clean' if remove_noise else 'unclean'
 
-        self.results_save_dir = os.path.join('Results/', f"{self.data_cleanliness}{args.dataset_name}")
-        self.figures_save_dir = os.path.join('Figures/', f'{self.data_cleanliness}{args.dataset_name}')
-        self.hardness_save_dir = f"Results/{self.data_cleanliness}{args.dataset_name}/"
+        self.results_save_dir = os.path.join('Results/', f"{self.data_cleanliness}{dataset_name}")
+        self.figures_save_dir = os.path.join('Figures/', f'{self.data_cleanliness}{dataset_name}')
+        self.hardness_save_dir = f"Results/{self.data_cleanliness}{dataset_name}/"
         for save_dir in [self.results_save_dir, self.figures_save_dir, self.hardness_save_dir]:
             os.makedirs(save_dir, exist_ok=True)
 
         self.thresholds = np.arange(10, 100, 10)
         model_save_dir = os.path.join(config['save_dir'], 'none', f'{self.data_cleanliness}{dataset_name}')
-        self.num_models = get_latest_model_index(model_save_dir, self.num_epochs)
+        self.num_models = get_latest_model_index(model_save_dir, self.num_epochs) + 1
 
     def load_model(self, model_id: int) -> ResNet18LowRes:
         model = ResNet18LowRes(num_classes=self.num_classes).cuda()

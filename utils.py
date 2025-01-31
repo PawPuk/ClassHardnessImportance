@@ -8,10 +8,7 @@ import numpy as np
 import torch
 
 
-SEED = 42
-
-
-def set_reproducibility(seed=SEED):
+def set_reproducibility(seed=42):
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)

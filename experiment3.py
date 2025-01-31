@@ -13,7 +13,7 @@ from data import AugmentedSubset, IndexedDataset, load_dataset
 from data_pruning import DataResampling
 from removing_noise import NoiseRemover
 from train_ensemble import ModelTrainer
-from utils import set_reproducibility, load_aum_results, load_forgetting_results
+from utils import set_reproducibility, load_aum_results, load_forgetting_results, load_results
 
 
 class Experiment3:
@@ -24,7 +24,6 @@ class Experiment3:
         self.remove_noise = 'clean' if remove_noise else 'unclean'
         self.hardness_estimator = hardness_estimator
 
-        self.results_file = os.path.join('Results', f"{self.remove_noise}{self.dataset_name}", 'AUM.pkl')
         self.config = get_config(dataset_name)
         self.num_classes = self.config['num_classes']
         self.num_epochs = get_config(args.dataset_name)['num_epochs']
@@ -67,7 +66,7 @@ class Experiment3:
             del aum_scores
         elif self.hardness_estimator == 'EL2N':
             el2n_path = os.path.join(self.hardness_save_dir, 'el2n_scores.pkl')
-            hardness_over_models = np.array(utils.load_results(el2n_path))
+            hardness_over_models = np.array(load_results(el2n_path))
         else:
             raise ValueError('The chosen hardness estimator is not supported.')
 
@@ -98,8 +97,8 @@ class Experiment3:
         Create a DataLoader with deterministic worker initialization.
         """
         def worker_init_fn(worker_id):
-            np.random.seed(self.seed + worker_id)
-            random.seed(self.seed + worker_id)
+            np.random.seed(42 + worker_id)
+            random.seed(42 + worker_id)
 
         return DataLoader(dataset, batch_size=self.config['batch_size'], shuffle=shuffle,
                           num_workers=2, worker_init_fn=worker_init_fn)

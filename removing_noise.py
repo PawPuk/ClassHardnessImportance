@@ -1,5 +1,4 @@
 import os
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -143,7 +142,7 @@ class NoiseRemover:
         plt.savefig(os.path.join(self.figure_save_dir, "lowest_AUM_samples.pdf"))
 
     def clean(self):
-        hardness_save_dir = f"Results/unclean{self.dataset_name}/AUM.pkl"
+        hardness_save_dir = f"Results/unclean{self.dataset_name}"
         aum_scores_over_models = load_aum_results(hardness_save_dir, self.NUM_EPOCHS)
         self.compute_and_visualize_stability_of_noise_removal(aum_scores_over_models)
 
@@ -158,5 +157,3 @@ class NoiseRemover:
         self.visualize_lowest_aum_samples(removed_indices, aum_scores)
 
         return retained_indices
-
-
