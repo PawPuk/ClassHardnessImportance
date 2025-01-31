@@ -1,7 +1,6 @@
 import csv
 import os
 import pickle
-import re
 import time
 
 import numpy as np
@@ -10,8 +9,9 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 
+from config import get_config
 from neural_networks import ResNet18LowRes
-from utils import get_config, set_reproducibility
+from utils import set_reproducibility, get_latest_model_index
 
 
 class ModelTrainer:
@@ -49,18 +49,6 @@ class ModelTrainer:
 
         os.makedirs(self.save_dir, exist_ok=True)
         os.makedirs(self.timings_dir, exist_ok=True)
-
-    def get_latest_model_index(self):
-        """Find the latest model index from saved files in the save directory. This makes it easier to add more models
-        to the ensemble, as we don't have to retrain from scratch."""
-        max_index = -1
-        if os.path.exists(self.save_dir):
-            for filename in os.listdir(self.save_dir):
-                match = re.search(rf'model_(\d+)_epoch_{self.config["num_epochs"]}\.pth$', filename)
-                if match:
-                    index = int(match.group(1))
-                    max_index = max(max_index, index)
-        return max_index
 
     def compute_current_seed(self, model_id, current_model_index):
         base_seed = self.config['probe_base_seed'] if self.hardness == 'subjective' else self.config['new_base_seed']
@@ -214,7 +202,7 @@ class ModelTrainer:
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
         timings, all_AUMs, all_forgetting_statistics = [], [], []
-        latest_model_index = self.get_latest_model_index()
+        latest_model_index = get_latest_model_index(self.save_dir, self.config['num_epochs'])
 
         print(f"Starting training ensemble of {self.config['num_models']} models on {self.dataset_name}.")
         print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")

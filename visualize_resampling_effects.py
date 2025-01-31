@@ -8,11 +8,12 @@ import numpy as np
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import CIFAR10, CIFAR100
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from config import get_config
+from data import load_dataset
 from neural_networks import ResNet18LowRes
-from utils import get_config, load_dataset
 
 
 def load_models(dataset_name: str) -> Dict[Tuple[str, str, str], List[dict]]:
@@ -27,14 +28,12 @@ def load_models(dataset_name: str) -> Dict[Tuple[str, str, str], List[dict]]:
     models_dir, models_by_strategy = "Models", {}
 
     for root, dirs, files in os.walk(models_dir):
-        # Check for cleaned dataset models
         if f"unclean{dataset_name}" in root and 'over_' in root and '_under_' in root:
             dataset_type = 'unclean'
-        # Check for uncleaned dataset models
         elif f"clean{dataset_name}" in root and 'over_' in root and '_under_' in root:
             dataset_type = 'clean'
         else:
-            continue  # Skip directories that don't match either case
+            continue
 
         try:
             oversampling_strategy = root.split("over_")[1].split("_under_")[0]

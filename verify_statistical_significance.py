@@ -11,19 +11,22 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from config import get_config
+from data import load_dataset
 from neural_networks import ResNet18LowRes
-from utils import get_config, load_dataset
+from utils import get_latest_model_index, load_aum_results, load_forgetting_results
 
 
 class Visualizer:
     def __init__(self, dataset_name, remove_noise):
+        self.remove_noise = remove_noise
         config = get_config(args.dataset_name)
         self.num_classes = config['num_classes']
         self.num_epochs = config['num_epochs']
-        self.num_samples = config['num_samples']
-        self.model_dir = config['model_dir']
+        self.num_samples = sum(config['num_training_samples'])
+        self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
-        self.data_cleanliness = 'clean' if args.remove_noise else 'unclean'
+        self.data_cleanliness = 'clean' if remove_noise else 'unclean'
 
         self.results_save_dir = os.path.join('Results/', f"{self.data_cleanliness}{args.dataset_name}")
         self.figures_save_dir = os.path.join('Figures/', f'{self.data_cleanliness}{args.dataset_name}')
@@ -32,9 +35,8 @@ class Visualizer:
             os.makedirs(save_dir, exist_ok=True)
 
         self.thresholds = np.arange(10, 100, 10)
-
-        # Modify the below to extract this from the folder (check how many models were trained)
-        NUM_MODELS = get_config(args.dataset_name)['num_models']
+        model_save_dir = os.path.join(config['save_dir'], 'none', f'{self.data_cleanliness}{dataset_name}')
+        self.num_models = get_latest_model_index(model_save_dir, self.num_epochs)
 
     def load_model(self, model_id: int) -> ResNet18LowRes:
         model = ResNet18LowRes(num_classes=self.num_classes).cuda()
@@ -79,51 +81,17 @@ class Visualizer:
         with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
             pickle.dump(el2n_scores, file)
 
-    @staticmethod
-    def load_results(path):
-        with open(path, 'rb') as file:
-            return pickle.load(file)
-
-    def load_aum_results(self) -> List[List[float]]:
-        """Loading the AUM results and changing their format to match that of other hardness estimators by summing over
-        epochs."""
-        aum_path = os.path.join(self.hardness_save_dir, 'AUM.pkl')
-        aum_over_epochs_and_models = self.load_results(aum_path)
-
-        #TODO: This is CURRENTLY required as train_ensemble.py wasn't initially working properly with denoised datasets.
-        for model_idx, model_list in enumerate(aum_over_epochs_and_models):
-            aum_over_epochs_and_models[model_idx] = [sample for sample in model_list if len(sample) > 0]
-
-        aum_scores = [
-            [
-                sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(self.num_epochs)) / self.num_epochs
-                for sample_idx in range(len(aum_over_epochs_and_models[0]))
-            ]
-            for model_list in aum_over_epochs_and_models
-        ]
-
-        return aum_scores
-
-    def load_forgetting_results(self, aum_scores) -> List[List[float]]:
-        forgetting_path = os.path.join(self.hardness_save_dir, 'Forgetting.pkl')
-        forgetting_scores = self.load_results(forgetting_path)
-
-        # TODO: This is CURRENTLY required as train_ensemble.py wasn't initially working properly with denoised datasets.
-        forgetting_scores = [model_list[:len(aum_scores[0])] for model_list in forgetting_scores]
-        return forgetting_scores
-
-
     def get_pruned_indices(self, el2n_scores: List[List[float]], aum_scores: List[List[float]],
                            forgetting_scores: List[List[float]]) -> Dict[str, List[List[List[int]]]]:
         results = {}
 
         for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
-                                                ("forgetting", forgetting_scores)], desc='Iterating through metrics.'):
+                                                ("forgetting", forgetting_scores)], desc='Computing pruned indices.'):
             metric_scores = np.array(metric_scores)
             results[metric_name] = []
 
             for thresh in self.thresholds:
-                prune_count = int((thresh / 100) * sum(self.num_samples))
+                prune_count = int((thresh / 100) * self.num_samples)
                 metric_results = []
 
                 for num_ensemble_models in range(1, self.num_models + 1):
@@ -141,7 +109,7 @@ class Visualizer:
     def compute_and_visualize_stability_of_pruning(self, results):
         metric_names = list(results.keys())
 
-        for metric_name in metric_names:
+        for metric_name in tqdm(metric_names, desc='Computing and visualizing stability of pruning across metrics'):
             metric_results = results[metric_name]
             num_thresholds = len(metric_results)
             num_models = len(metric_results[0])
@@ -157,81 +125,84 @@ class Visualizer:
 
             plt.figure(figsize=(10, 6))
             sns.heatmap(stability_results, annot=True, cmap='coolwarm', cbar_kws={'label': 'Jaccard Overlap'})
-            plt.title(f'Pruned Indices Change (%) After Adding a Model {metric_name.upper()}')
-            plt.xlabel('Number of Models in Ensemble (j) Before Adding a Model')
-            plt.ylabel('Pruning Threshold (%)')
+            plt.title(f'Pruned indices change (%) after adding a model {metric_name.upper()}')
+            plt.xlabel('Number of models in ensemble (j) before adding a model')
+            plt.ylabel('Pruning threshold (%)')
             plt.xticks(np.arange(num_models) + 0.5, np.arange(1, num_models + 1))
             plt.yticks(np.arange(num_thresholds) + 0.5, np.arange(10, 100, 10))
             plt.savefig(os.path.join(self.figures_save_dir, f'pruning_stability_based_on_{metric_name}.pdf'))
-
 
     def pruned_indices_vs_hardness_estimator(self, results):
         metric_names = list(results.keys())
         num_metrics = len(metric_names)
 
         plt.figure(figsize=(10, 6))
-        for i in range(num_metrics):
+        for i in tqdm(range(num_metrics), desc='Comparing pruned indices across hardness estimators'):
             for j in range(i + 1, num_metrics):  # Only compute unique pairs.
                 overlaps = []
-                for t, thresh in enumerate(self.thresholds):
-                    set1 = set(results[metric_names[i]][t][-1])  # Using the full ensemble.
-                    set2 = set(results[metric_names[j]][t][-1])
+                for thresh_idx, thresh in enumerate(self.thresholds):
+                    set1 = set(results[metric_names[i]][thresh_idx][-1])  # Using the full ensemble.
+                    set2 = set(results[metric_names[j]][thresh_idx][-1])
                     intersection = len(set1 & set2)
                     union = len(set1 | set2)
                     overlap = intersection / union if union > 0 else 0.0
                     overlaps.append(overlap)
 
-                # Plot overlaps as a function of thresholds.
                 plt.plot(self.thresholds, overlaps, label=f"{metric_names[i]} vs {metric_names[j]}", marker='o')
 
         # Customizing the plot.
-        plt.xlabel("Pruning Threshold (%)")
-        plt.ylabel("Overlap Percentage (%)")
-        plt.title("Overlap of Pruned Sets Across Hardness Estimators")
-        plt.legend(title="Metric Pairs")
+        plt.xlabel("Pruning threshold (%)")
+        plt.ylabel("Overlap percentage (%)")
+        plt.title("Overlap of pruned sets across hardness estimators")
+        plt.legend(title="Metric pairs")
         plt.grid(alpha=0.3)
         plt.tight_layout()
         plt.savefig(os.path.join(self.figures_save_dir, f'overlap_across_hardness_estimators.pdf'))
 
-
-    def compute_effect_of_ensemble_size_on_resampling(el2n_scores, aum_scores, forgetting_scores, dataset):
-        num_models = len(el2n_scores)  # number of models in the ensemble
+    def compute_effect_of_ensemble_size_on_resampling(self, el2n_scores, aum_scores, forgetting_scores, dataset):
         results = {}
         for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
-                                                ("forgetting", forgetting_scores)], desc='Iterating through metrics.'):
+                                                ("forgetting", forgetting_scores)], desc='Computing effect of ensemble '
+                                                                                         'size on resampling.'):
             metric_scores = np.array(metric_scores)
             results[metric_name] = []
-            for num_ensemble_models in range(2, num_models + 1):
-                prev_avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models - 1], axis=0)
+            for num_ensemble_models in range(1, self.num_models):
                 curr_avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
-                prev_class_results, curr_class_results = [[] for _ in range(NUM_CLASSES)], [[] for _ in range(NUM_CLASSES)]
-                prev_ratios, curr_ratios = {}, {}
+                next_avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models + 1], axis=0)
+                curr_class_results = [[] for _ in range(self.num_classes)]
+                next_class_results = [[] for _ in range(self.num_classes)]
+                curr_class_hardness, next_class_hardness = {}, {}
 
                 for i, (_, label, _) in enumerate(dataset):
-                    prev_class_results[label].append(prev_avg_hardness_scores[i])
                     curr_class_results[label].append(curr_avg_hardness_scores[i])
-                for label in range(NUM_CLASSES):
-                    prev_ratios[label] = np.mean(prev_class_results[label])
-                    curr_ratios[label] = np.mean(curr_class_results[label])
+                    next_class_results[label].append(next_avg_hardness_scores[i])
+                for label in range(self.num_classes):
+                    # For AUM high values indicate easier samples so inversion is necessary
+                    if metric_name == 'aum':
+                        curr_class_hardness[label] = 1 / np.mean(curr_class_results[label])
+                        next_class_hardness[label] = 1 / np.mean(next_class_results[label])
+                    else:
+                        curr_class_hardness[label] = np.mean(curr_class_results[label])
+                        next_class_hardness[label] = np.mean(next_class_results[label])
 
-                prev_normalized_ratios = {class_id: ratio / sum(prev_ratios.values())
-                                          for class_id, ratio in prev_ratios.items()}
-                curr_normalized_ratios = {class_id: ratio / sum(curr_ratios.values())
-                                          for class_id, ratio in curr_ratios.items()}
+                curr_ratios = {class_id: curr_hardness / sum(curr_class_hardness.values())
+                               for class_id, curr_hardness in curr_class_hardness.items()}
+                next_ratios = {class_id: next_hardness / sum(next_class_hardness.values())
+                               for class_id, next_hardness in next_class_hardness.items()}
 
-                prev_samples_per_class = {class_id: int(round(prev_normalized_ratio * NUM_SAMPLES))
-                                          for class_id, prev_normalized_ratio in prev_normalized_ratios.items()}
-                curr_samples_per_class = {class_id: int(round(curr_normalized_ratio * NUM_SAMPLES))
-                                          for class_id, curr_normalized_ratio in curr_normalized_ratios.items()}
+                curr_samples_per_class = {class_id: int(round(curr_ratio * self.num_samples))
+                                          for class_id, curr_ratio in curr_ratios.items()}
+                next_samples_per_class = {class_id: int(round(next_ratio * self.num_samples))
+                                          for class_id, next_ratio in next_ratios.items()}
 
-                differences = [abs(curr_samples_per_class[l] - prev_samples_per_class[l]) for l in range(NUM_CLASSES)]
-                relative_differences = [differences[l] / prev_samples_per_class[l] for l in range(NUM_CLASSES)]
+                differences = [abs(next_samples_per_class[k] - curr_samples_per_class[k])
+                               for k in range(self.num_classes)]
+                relative_differences = [differences[k] / curr_samples_per_class[k] for k in range(self.num_classes)]
                 results[metric_name].append((num_ensemble_models, differences, relative_differences))
         return results
 
 
-    def visualize_stability_of_resampling(results):
-
+    def visualize_stability_of_resampling(self, results):
         metrics = list(results.keys())
         ensemble_sizes = {metric: [entry[0] for entry in results[metric]] for metric in metrics}
         differences = {metric: [entry[1] for entry in results[metric]] for metric in metrics}
@@ -249,12 +220,12 @@ class Visualizer:
             plt.plot(ensemble_sizes[metric], max_diffs, label=f'{metric.upper()} Max Diff', linestyle='-', marker='o')
             plt.plot(ensemble_sizes[metric], min_diffs, label=f'{metric.upper()} Min Diff', linestyle='--', marker='x')
             plt.plot(ensemble_sizes[metric], avg_diffs, label=f'{metric.upper()} Avg Diff', linestyle=':', marker='s')
-        plt.title("Absolute Differences Across Ensemble Sizes for Hardness Estimators")
-        plt.xlabel('Ensemble Size')
-        plt.ylabel("Absolute Difference")
+        plt.title("Absolute differences across ensemble sizes for hardness estimators")
+        plt.xlabel('Ensemble size')
+        plt.ylabel("Absolute difference")
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(FIGURES_SAVE_DIR, f'absolute_differences_across_ensemble_sizes.pdf'))
+        plt.savefig(os.path.join(self.figures_save_dir, f'absolute_differences_across_ensemble_sizes.pdf'))
 
         plt.figure(figsize=(15, 8))
         for metric in metrics:
@@ -265,12 +236,12 @@ class Visualizer:
                      marker='x')
             plt.plot(ensemble_sizes[metric], avg_rel_diffs, label=f'{metric.upper()} Avg Rel Diff', linestyle=':',
                      marker='s')
-        plt.title("Relative Differences Across Ensemble Sizes for Hardness Estimators")
-        plt.xlabel('Ensemble Size')
-        plt.ylabel("Relative Difference")
+        plt.title("Relative differences across ensemble sizes for hardness estimators")
+        plt.xlabel('Ensemble size')
+        plt.ylabel("Relative difference")
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(FIGURES_SAVE_DIR, f'relative_differences_across_ensemble_sizes.pdf'))
+        plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_across_ensemble_sizes.pdf'))
 
         # I produce also the below Figures to allow for more clear analysis of the results (metrics have different values)
         for metric in metrics:
@@ -279,46 +250,48 @@ class Visualizer:
             plt.plot(ensemble_sizes[metric], max_diffs, label=f'Max Diff', linestyle='-', marker='o')
             plt.plot(ensemble_sizes[metric], min_diffs, label=f'Min Diff', linestyle='--', marker='x')
             plt.plot(ensemble_sizes[metric], avg_diffs, label=f'Avg Diff', linestyle=':', marker='s')
-            plt.title(f"Absolute Differences for {metric.upper()}")
-            plt.xlabel('Ensemble Size')
-            plt.ylabel("Absolute Difference")
+            plt.title(f"Absolute differences for {metric.upper()}")
+            plt.xlabel('Ensemble size')
+            plt.ylabel("Absolute difference")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
-            plt.savefig(os.path.join(FIGURES_SAVE_DIR, f'absolute_differences_{metric}.pdf'))
+            plt.savefig(os.path.join(self.figures_save_dir, f'absolute_differences_{metric}.pdf'))
 
             max_rel_diffs, min_rel_diffs, avg_rel_diffs = compute_stats(relative_differences[metric])
             plt.figure(figsize=(10, 6))
             plt.plot(ensemble_sizes[metric], max_rel_diffs, label=f'Max Rel Diff', linestyle='-', marker='o')
             plt.plot(ensemble_sizes[metric], min_rel_diffs, label=f'Min Rel Diff', linestyle='--', marker='x')
             plt.plot(ensemble_sizes[metric], avg_rel_diffs, label=f'Avg Rel Diff', linestyle=':', marker='s')
-            plt.title(f"Relative Differences for {metric.upper()}")
-            plt.xlabel('Ensemble Size')
-            plt.ylabel("Relative Difference")
+            plt.title(f"Relative differences for {metric.upper()}")
+            plt.xlabel('Ensemble size')
+            plt.ylabel("Relative difference")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
-            plt.savefig(os.path.join(FIGURES_SAVE_DIR, f'relative_differences_{metric}.pdf'))
+            plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))
 
     def main(self):
-        training_loader, _, _, _ = load_dataset(args.dataset_name, args.remove_noise, False)
+        # TODO: Modify the below to not augment the training data for the EL2N computation
+        training_loader, _, _, _ = load_dataset(args.dataset_name, self.remove_noise, False)
         training_all_el2n_scores = self.collect_el2n_scores(training_loader)
         self.save_el2n_scores(training_all_el2n_scores)
 
-        aum_scores = self.load_aum_results()
-        forgetting_scores = self.load_forgetting_results(aum_scores)
+        aum_scores = load_aum_results(self.hardness_save_dir, self.num_epochs)
+        forgetting_scores = load_forgetting_results(self.hardness_save_dir, len(aum_scores[0]))
 
-        print(len(aum_scores), len(aum_scores[0]))
-        print(len(forgetting_scores), len(forgetting_scores[0]))
-        print(len(training_all_el2n_scores), len(training_all_el2n_scores[0]))
+        print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')
+        print(f'Shape of hardness estimated via AUM: {len(aum_scores)}, {len(aum_scores[0])}')
+        print(f'Shape of hardness estimated via Forgetting: {len(forgetting_scores)}, {len(forgetting_scores[0])}')
+        print(f'Shape of hardness estimated via EL2N: {len(training_all_el2n_scores)}, '
+              f'{len(training_all_el2n_scores[0])}')
         print()
 
-        print('Measuring the stability of data pruning with respect to different hardness estimators.')
         pruned_indices = self.get_pruned_indices(training_all_el2n_scores, aum_scores, forgetting_scores)
         self.compute_and_visualize_stability_of_pruning(pruned_indices)
         self.pruned_indices_vs_hardness_estimator(pruned_indices)
 
-        differences = compute_effect_of_ensemble_size_on_resampling(
-            training_all_el2n_scores, AUM_scores, forgetting_scores, training_loader.dataset)
-        visualize_stability_of_resampling(differences)
+        differences = self.compute_effect_of_ensemble_size_on_resampling(
+            training_all_el2n_scores, aum_scores, forgetting_scores, training_loader.dataset)
+        self.visualize_stability_of_resampling(differences)
 
 
 if __name__ == '__main__':

@@ -1,7 +1,8 @@
 import argparse
 
+from data import load_dataset
 from train_ensemble import ModelTrainer
-from utils import load_dataset, set_reproducibility
+from utils import set_reproducibility
 
 
 def main(dataset_name: str, remove_noise: bool):

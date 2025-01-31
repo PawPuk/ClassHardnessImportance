@@ -10,8 +10,9 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, Subset
 
+from config import get_config
+from data import AugmentedSubset, IndexedDataset
 from neural_networks import ResNet18LowRes
-from utils import get_config, AugmentedSubset, IndexedDataset
 
 
 class DataResampling:

@@ -1,33 +1,37 @@
 import argparse
 import os
-import pickle
 import random
-from typing import Dict, Union
+from typing import List, Union
 
 import numpy as np
 import torch
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-from utils import get_config
 
+from config import get_config
+from data import AugmentedSubset, IndexedDataset, load_dataset
 from data_pruning import DataResampling
 from removing_noise import NoiseRemover
 from train_ensemble import ModelTrainer
-from utils import AugmentedSubset, IndexedDataset, load_dataset, set_reproducibility
+from utils import set_reproducibility, load_aum_results, load_forgetting_results
 
 
 class Experiment3:
-    def __init__(self, dataset_name, oversampling_strategy, undersampling_strategy, remove_noise):
+    def __init__(self, dataset_name, oversampling_strategy, undersampling_strategy, remove_noise, hardness_estimator):
         self.dataset_name = dataset_name
         self.oversampling_strategy = oversampling_strategy
         self.undersampling_strategy = undersampling_strategy
         self.remove_noise = 'clean' if remove_noise else 'unclean'
+        self.hardness_estimator = hardness_estimator
 
         self.results_file = os.path.join('Results', f"{self.remove_noise}{self.dataset_name}", 'AUM.pkl')
         self.config = get_config(dataset_name)
         self.num_classes = self.config['num_classes']
         self.num_epochs = get_config(args.dataset_name)['num_epochs']
         self.num_samples = sum(get_config(args.dataset_name)['num_training_samples'])
+
+        self.hardness_save_dir = f"Results/{self.remove_noise}{args.dataset_name}/"
+
 
     def load_untransferred_dataset(self, train=True) -> Union[AugmentedSubset, IndexedDataset]:
         """
@@ -54,29 +58,39 @@ class Experiment3:
             dataset = AugmentedSubset(torch.utils.data.Subset(dataset.dataset.dataset, retained_indices))
         return dataset
 
-    def load_results(self):
-        """
-        Load the computed accuracies from results_file.
-        """
-        with open(self.results_file, 'rb') as file:
-            return pickle.load(file)
+    def load_hardness_estimates(self) -> List[float]:
+        if self.hardness_estimator == 'AUM':
+            hardness_over_models = np.array(load_aum_results(self.hardness_save_dir, self.num_epochs))
+        elif self.hardness_estimator == 'Forgetting':
+            aum_scores = load_aum_results(self.hardness_save_dir, self.num_epochs)
+            hardness_over_models = np.array(load_forgetting_results(self.hardness_save_dir, len(aum_scores[0])))
+            del aum_scores
+        elif self.hardness_estimator == 'EL2N':
+            el2n_path = os.path.join(self.hardness_save_dir, 'el2n_scores.pkl')
+            hardness_over_models = np.array(utils.load_results(el2n_path))
+        else:
+            raise ValueError('The chosen hardness estimator is not supported.')
 
-    def compute_sample_allocation(self, aum_scores, dataset):
+        hardness_of_ensemble = np.mean(hardness_over_models, axis=0)
+        return hardness_of_ensemble
+
+    def compute_sample_allocation(self, hardness_scores, dataset):
         """
         Compute hardness-based ratios based on class-level accuracies.
         """
-
         hardnesses_by_class, hardness_of_classes = {class_id: [] for class_id in range(self.num_classes)}, {}
-        print(type(dataset))
+
         for i, (_, label, _) in enumerate(dataset):
-            hardnesses_by_class[label].append(aum_scores[i])
+            hardnesses_by_class[label].append(hardness_scores[i])
         for label in range(self.num_classes):
-            hardness_of_classes[label] = np.mean(hardnesses_by_class[label])
-        inverted_ratios = {class_id: 1 / class_hardness for class_id, class_hardness in hardness_of_classes.items()}
-        normalized_ratios = {class_id: inverted_ratio / sum(inverted_ratios.values())
-                             for class_id, inverted_ratio in inverted_ratios.items()}
-        samples_per_class = {class_id: int(round(normalized_ratio * self.num_samples))
-                             for class_id, normalized_ratio in normalized_ratios.items()}
+            if self.hardness_estimator == 'AUM':
+                hardness_of_classes[label] = 1 / np.mean(hardnesses_by_class[label])
+            else:
+                hardness_of_classes[label] = np.mean(hardnesses_by_class[label])
+
+        ratios = {class_id: class_hardness / sum(hardness_of_classes.values())
+                  for class_id, class_hardness in hardness_of_classes.items()}
+        samples_per_class = {class_id: int(round(ratio * self.num_samples)) for class_id, ratio in ratios.items()}
         return hardnesses_by_class, samples_per_class
 
     def get_dataloader(self, dataset, shuffle=True):
@@ -92,6 +106,7 @@ class Experiment3:
 
     @staticmethod
     def perform_data_augmentation(dataset):
+        # TODO: Modify the below to work for different datasets (some might require different data augmentation)
         data_augmentation = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.RandomCrop(32, padding=4)
@@ -100,31 +115,18 @@ class Experiment3:
 
     def main(self):
         # The value of the shuffle parameter below does not matter as we don't use the loaders.
+        # TODO: Modify the below to load unaugmented data (important for resampling)
         _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.remove_noise == 'clean', True)
-        AUM_over_epochs_and_models = self.load_results()
-        for model_idx, model_list in enumerate(AUM_over_epochs_and_models):
-            AUM_over_epochs_and_models[model_idx] = [sample for sample in model_list if len(sample) > 0]
+        hardness_scores = self.load_hardness_estimates()
 
-        AUM_scores_over_models = [
-            [
-                sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(self.num_epochs)) / self.num_epochs
-                for sample_idx in range(len(AUM_over_epochs_and_models[0]))
-            ]
-            for model_list in AUM_over_epochs_and_models
-        ]
-        AUM_scores = np.mean(AUM_scores_over_models, axis=0)
+        hardnesses_by_class, samples_per_class = self.compute_sample_allocation(hardness_scores, training_dataset)
 
-        # Compute hardness-based ratios and sample allocation
-        hardnesses_by_class, samples_per_class = self.compute_sample_allocation(AUM_scores, training_dataset)
-
-        # Perform resampling
         resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
                                    self.undersampling_strategy, hardnesses_by_class, self.dataset_name)
         resampled_dataset = AugmentedSubset(resampler.resample_data(samples_per_class))
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
 
-        # Get DataLoaders
         resampled_loader = self.get_dataloader(augmented_resampled_dataset, shuffle=True)
         test_loader = self.get_dataloader(test_dataset, shuffle=False)
 
@@ -152,7 +154,9 @@ if __name__ == "__main__":
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, and `prune_extreme`)')
     parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
+    parser.add_argument('hardness_estimator', type=str, choices=['EL2N', 'AUM', 'Forgetting'], default='AUM',
+                        help='Specifies which instance level hardness estimator to use.')
     args = parser.parse_args()
 
-    experiment = Experiment3(args.dataset_name, args.oversampling, args.undersampling, args.remove_noise)
+    experiment = Experiment3(**vars(args))
     experiment.main()
