@@ -27,3 +27,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args.dataset_name, args.remove_noise)
+
+
+# check the i, (_, label, _) in enumerate(dataset) - the label is a tensor apparently and not an int
+# Rerun experiment 3 after fixing data_pruning.py
+# Modify the removing_noise.py to remove 13% from CIFAR100 (hard coded taken from the paper; maybe make it 12%)

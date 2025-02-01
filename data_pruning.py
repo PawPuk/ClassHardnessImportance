@@ -16,15 +16,15 @@ from neural_networks import ResNet18LowRes
 
 
 class DataResampling:
-    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, hardness, dataset_name):
-        """
-        Initialize with the dataset, number of classes, and resampling strategies.
-        """
+    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, hardness, dataset_name,
+                 high_is_hard):
         self.dataset = dataset
         self.num_classes = num_classes
         self.oversampling_strategy = oversampling_strategy
         self.undersampling_strategy = undersampling_strategy
         self.hardness = hardness
+        self.high_is_hard = high_is_hard
+
         self.fig_save_dir = 'Figures/'
         self.model_save_dir = f'Models/none/{dataset_name}/'
 
@@ -70,39 +70,21 @@ class DataResampling:
 
     @staticmethod
     def random_undersample(desired_count, hardness_scores):
-        """
-        Perform random undersampling to match the desired count.
-        """
         return random.sample(range(len(hardness_scores)), desired_count)
 
-    @staticmethod
-    def prune_easy(desired_count, hardness_scores):
-        """
-        Perform undersampling by pruning the easiest samples based on hardness scores.
-        """
+    def prune_easy(self, desired_count, hardness_scores):
         sorted_indices = np.argsort(hardness_scores)
-        return sorted_indices[-desired_count:]
+        if self.high_is_hard:
+            return sorted_indices[-desired_count:]
+        else:
+            return sorted_indices[:desired_count]
 
-    @staticmethod
-    def prune_hard(desired_count, hardness_scores):
-        """
-        Perform undersampling by pruning the hardest samples based on hardness scores.
-        """
+    def prune_hard(self, desired_count, hardness_scores):
         sorted_indices = np.argsort(hardness_scores)
-        return sorted_indices[:desired_count]
-
-    @staticmethod
-    def prune_extreme(desired_count, hardness_scores):
-        """
-        Perform undersampling by firstly pruning 1% of the hardest samples and then pruning the easy samples.
-        """
-        sorted_indices = np.argsort(hardness_scores)
-        one_percent_count = max(1, desired_count // 100)
-        ninety_nine_percent_count = desired_count - one_percent_count
-
-        hardest_indices = sorted_indices[-one_percent_count:]
-        easiest_indices = sorted_indices[:ninety_nine_percent_count]
-        return np.concatenate([easiest_indices, hardest_indices])
+        if self.high_is_hard:
+            return sorted_indices[:desired_count]
+        else:
+            return sorted_indices[-desired_count:]
 
     @staticmethod
     def random_oversample(desired_count, hardness_scores):
@@ -112,71 +94,15 @@ class DataResampling:
         additional_indices = random.choices(range(len(hardness_scores)), k=desired_count - len(hardness_scores))
         return list(range(len(hardness_scores))) + additional_indices
 
-    @staticmethod
-    def plot_and_save_synthetic_samples(synthetic_data, filename):
-        """
-        Create a 4x15 plot of 60 synthetic samples and save it to a file.
-        """
-        fig, axes = plt.subplots(4, 15, figsize=(15, 8))
-        axes = axes.flatten()
-
-        CIFAR10_MEAN = torch.tensor([0.4914, 0.4822, 0.4465])
-        CIFAR10_STD = torch.tensor([0.247, 0.243, 0.261])
-
-        for i in range(60):
-            unnormalized_image = synthetic_data[i] * CIFAR10_STD[:, None, None] + CIFAR10_MEAN[:, None, None]
-            axes[i].imshow(unnormalized_image.permute(1, 2, 0).numpy())  # Convert from CxHxW to HxWxC for image display
-            axes[i].axis('off')
-
-        plt.tight_layout()
-        plt.savefig(filename)
-        plt.close(fig)
-
-    def SMOTE(self, desired_count, hardness_scores, current_indices, hardness_stats, k=5):
-        """
-        Perform oversampling using SMOTE to match the desired count.
-        """
-        current_n_samples = len(current_indices)
-
-        data = torch.stack([self.dataset[idx][0] for idx in current_indices])
-        labels = torch.tensor([self.dataset[idx][1] for idx in current_indices])
-        data_flattened = data.view(current_n_samples, -1)
-
-        neighbors = NearestNeighbors(n_neighbors=k + 1).fit(data_flattened.numpy())
-        _, neighbor_indices = neighbors.kneighbors(data_flattened.numpy())
-
-        synthetic_samples = []
-        print('-'*20)
-        print(desired_count, current_n_samples, desired_count - current_n_samples)
-        print()
-        for _ in range(desired_count - current_n_samples):
-            idx = torch.randint(0, current_n_samples, (1,)).item()
-            neighbor_idx = torch.randint(1, k + 1, (1,)).item()  # Skip the first neighbor (itself)
-
-            sample = data[idx]
-            sample_hardness = hardness_scores[idx]
-            neighbor = data[neighbor_indices[idx][neighbor_idx]]
-            neighbor_hardness = hardness_scores[neighbor_indices[idx][neighbor_idx]]
-
-            hardness_stats['avg_pair_hardness'].append(sample_hardness)
-            hardness_stats['avg_pair_hardness'].append(neighbor_hardness)
-            hardness_stats['avg_hardness_diff_within_pair'].append(abs(sample_hardness - neighbor_hardness))
-
-            # Interpolate between the sample and its neighbor
-            alpha = torch.rand(1).item()
-            synthetic_sample = sample + alpha * (neighbor - sample)
-            synthetic_samples.append(synthetic_sample)
-
-        synthetic_samples = torch.stack(synthetic_samples, dim=0)
-        # self.plot_and_save_synthetic_samples(synthetic_samples, f'Figures/synthetic_samples_class_{class_id}.png')
-        return data, labels, synthetic_samples
-
     def oversample_easy(self, desired_count, hardness_scores, class_id):
         """
         Perform oversampling with a higher chance of duplicating easy samples.
         """
         # Sort indices by ascending hardness (the easiest samples first)
-        sorted_indices = np.argsort(hardness_scores)
+        if self.high_is_hard:
+            sorted_indices = np.argsort(hardness_scores)
+        else:
+            sorted_indices = np.argsort(hardness_scores)[::-1]
         n = len(hardness_scores)
 
         # Calculate probabilities using the adjusted exponential formula
@@ -202,7 +128,10 @@ class DataResampling:
         Perform oversampling with a higher chance of duplicating hard samples.
         """
         # Sort indices by descending hardness (the hardest samples first)
-        sorted_indices = np.argsort(hardness_scores)[::-1]
+        if self.high_is_hard:
+            sorted_indices = np.argsort(hardness_scores)[::-1]
+        else:
+            sorted_indices = np.argsort(hardness_scores)
         n = len(hardness_scores)
 
         # Calculate probabilities using the adjusted exponential formula
@@ -223,6 +152,41 @@ class DataResampling:
 
         return list(range(n)) + additional_indices
 
+    def SMOTE(self, desired_count, hardness_scores, current_indices, hardness_stats, k=5):
+        """
+        Perform oversampling using SMOTE to match the desired count.
+        """
+        current_n_samples = len(current_indices)
+
+        data = torch.stack([self.dataset[idx][0] for idx in current_indices])
+        labels = torch.tensor([self.dataset[idx][1] for idx in current_indices])
+        data_flattened = data.view(current_n_samples, -1)
+
+        neighbors = NearestNeighbors(n_neighbors=k + 1).fit(data_flattened.numpy())
+        _, neighbor_indices = neighbors.kneighbors(data_flattened.numpy())
+
+        synthetic_samples = []
+        for _ in range(desired_count - current_n_samples):
+            idx = torch.randint(0, current_n_samples, (1,)).item()
+            neighbor_idx = torch.randint(1, k + 1, (1,)).item()  # Skip the first neighbor (itself)
+
+            sample = data[idx]
+            sample_hardness = hardness_scores[idx]
+            neighbor = data[neighbor_indices[idx][neighbor_idx]]
+            neighbor_hardness = hardness_scores[neighbor_indices[idx][neighbor_idx]]
+
+            hardness_stats['avg_pair_hardness'].append(sample_hardness)
+            hardness_stats['avg_pair_hardness'].append(neighbor_hardness)
+            hardness_stats['avg_hardness_diff_within_pair'].append(abs(sample_hardness - neighbor_hardness))
+
+            # Interpolate between the sample and its neighbor
+            alpha = torch.rand(1).item()
+            synthetic_sample = sample + alpha * (neighbor - sample)
+            synthetic_samples.append(synthetic_sample)
+
+        synthetic_samples = torch.stack(synthetic_samples, dim=0)
+        return data, labels, synthetic_samples
+
     def select_undersampling_method(self):
         """
         Select the appropriate undersampling method based on the strategy.
@@ -233,8 +197,6 @@ class DataResampling:
             return lambda count, hardness: self.prune_easy(count, hardness)
         elif self.undersampling_strategy == 'hard':
             return lambda count, hardness: self.prune_hard(count, hardness)
-        elif self.undersampling_strategy == 'extreme':
-            return lambda count, hardness: self.prune_extreme(count, hardness)
         else:
             raise ValueError(f"Undersampling strategy {self.undersampling_strategy} is not supported.")
 
@@ -269,7 +231,7 @@ class DataResampling:
             # Extract data and labels, ignoring the index
             data = torch.stack([data for data, _, _ in self.dataset])
             labels = torch.tensor([label for _, label, _ in self.dataset])
-            return data.float(), labels
+            return data.float(), labels.item()
 
         else:
             raise TypeError(
@@ -326,12 +288,13 @@ class DataResampling:
         # Organize dataset by class
         class_indices = {i: [] for i in range(self.num_classes)}
         for idx, (_, label, _) in enumerate(self.dataset):
-            class_indices[label].append(idx)
+            class_indices[label.item()].append(idx)
 
         # Perform resampling for each class
         resampled_indices, synthetic_data, synthetic_labels = [], [], []
         hardness_stats = {'avg_pair_hardness': [], 'avg_hardness_diff_within_pair': [],
                           'avg_synthetic_data_hardness': [], 'avg_respective_synthetic_data_hardness': []}
+        print(f'After resampling the dataset should have {sum(samples_per_class.values())} data samples.')
 
         for class_id, hardnesses_within_class in self.hardness.items():
             desired_count = samples_per_class[class_id]
@@ -341,12 +304,12 @@ class DataResampling:
                 class_retain_indices = undersample(desired_count, hardnesses_within_class)
                 resampled_indices.extend(current_indices[class_retain_indices])
             elif len(current_indices) < desired_count:
-                if self.oversampling_strategy in ['SMOTE', 'BSMOTE']:
+                if self.oversampling_strategy == 'SMOTE':
                     # This if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
                     original_data, original_labels, generated_data = oversample(desired_count, hardnesses_within_class,
                                                                                 current_indices, hardness_stats)
                     generated_labels = torch.full((generated_data.size(0),), class_id)
-                    print(f'Generated {len(generated_data)} data samples via SMOTE.')
+                    print(f'Generated {len(generated_data)} data samples via SMOTE for class {class_id}.')
                     if len(generated_data) + len(current_indices) != desired_count:
                         print(len(generated_data), len(current_indices), desired_count)
                         raise Exception

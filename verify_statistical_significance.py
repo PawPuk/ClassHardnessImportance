@@ -201,7 +201,6 @@ class Visualizer:
                 results[metric_name].append((num_ensemble_models, differences, relative_differences))
         return results
 
-
     def visualize_stability_of_resampling(self, results):
         metrics = list(results.keys())
         ensemble_sizes = {metric: [entry[0] for entry in results[metric]] for metric in metrics}
@@ -243,7 +242,7 @@ class Visualizer:
         plt.grid(True, linestyle='--', alpha=0.6)
         plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_across_ensemble_sizes.pdf'))
 
-        # I produce also the below Figures to allow for more clear analysis of the results (metrics have different values)
+        # produce the below Figures to allow for clearer analysis of the results (metrics have different values)
         for metric in metrics:
             max_diffs, min_diffs, avg_diffs = compute_stats(differences[metric])
             plt.figure(figsize=(10, 6))
@@ -270,8 +269,7 @@ class Visualizer:
             plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))
 
     def main(self):
-        # TODO: Modify the below to not augment the training data for the EL2N computation
-        training_loader, _, _, _ = load_dataset(args.dataset_name, self.remove_noise, False)
+        training_loader, _, _, _ = load_dataset(args.dataset_name, self.remove_noise, False, False)
         training_all_el2n_scores = self.collect_el2n_scores(training_loader)
         self.save_el2n_scores(training_all_el2n_scores)
 

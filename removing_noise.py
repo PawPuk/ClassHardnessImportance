@@ -30,9 +30,9 @@ class NoiseRemover:
             cur_sorted_data = np.sort(cur_average_results)
             next_sorted_data = np.sort(next_average_results)
             # TODO: Modify the below to compute x like it was done in the paper, rather than hardcoding it
-            x_value = 1.5
-            cur_elbow_index = np.searchsorted(cur_sorted_data, x_value, side='left')
-            next_elbow_index = np.searchsorted(next_sorted_data, x_value, side='left')
+            prune_fraction = 0.12
+            cur_elbow_index = int(len(cur_sorted_data) * prune_fraction)
+            next_elbow_index = int(len(next_sorted_data) * prune_fraction)
             cur_sorted_indices = np.argsort(cur_average_results)
             next_sorted_indices = np.argsort(next_average_results)
             cur_removed_indices = set(cur_sorted_indices[:cur_elbow_index])
@@ -65,8 +65,10 @@ class NoiseRemover:
 
         # This value is chosen manually, so that there should be some hyper-tuning, but I'll leave that for later.
         # TODO: Modify the below to compute x like it was done in the paper, rather than hardcoding it
-        x_value = 1.5
-        y_value = np.interp(x_value, sorted_data, cumulative_percentage)
+        prune_fraction = 0.12
+        elbow_index = int(len(sorted_data) * prune_fraction)
+        x_value = sorted_data[elbow_index]
+        y_value = cumulative_percentage[elbow_index]
         elbow_index = np.searchsorted(sorted_data, x_value, side='left')
         plt.axhline(y=y_value, color='red', linestyle='--', label=f'Value at x = {x_value}')
         plt.scatter([x_value], [y_value], color='red', zorder=5)  # Label the point for clarity
@@ -100,7 +102,7 @@ class NoiseRemover:
         sorted_class_names = [class_names[i] for i in sorted_indices]
 
         plt.figure(figsize=(15, 6))
-        plt.bar(range(len(sorted_percentages)), sorted_percentages, color='lightcoral', edgecolor='black')
+        plt.bar(range(len(sorted_percentages)), sorted_percentages, color='skyblue', edgecolor='black')
         plt.xticks(range(len(sorted_percentages)), sorted_class_names, rotation=90)
         plt.xlabel("Class (Sorted)")
         plt.ylabel("Proportion of Removed Samples")
@@ -110,8 +112,8 @@ class NoiseRemover:
         plt.close()
 
     def visualize_lowest_aum_samples(self, indices, aum_values):
-        num_samples_to_visualize = min(40, len(indices))
-        fig, axes = plt.subplots(4, 10, figsize=(20, 5))
+        num_samples_to_visualize = min(30, len(indices))
+        fig, axes = plt.subplots(3, 12, figsize=(20, 5))
         fig.suptitle("Samples with Lowest AUM Values", fontsize=16)
 
         mean = np.array(self.config['mean'])
@@ -136,7 +138,7 @@ class NoiseRemover:
 
             row, col = divmod(i, 10)
             axes[row, col].imshow(data.squeeze(), cmap=cmap)
-            axes[row, col].set_title(f"Class: {class_names[label]}\nAUM: {aum:.2f}")
+            axes[row, col].set_title(f"Class: {class_names[label]}\nAUM: {aum:.2f}\nIdx: {idx}")
             axes[row, col].axis("off")
 
         plt.savefig(os.path.join(self.figure_save_dir, "lowest_AUM_samples.pdf"))

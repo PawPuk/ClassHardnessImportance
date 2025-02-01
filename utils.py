@@ -42,7 +42,7 @@ def load_aum_results(hardness_save_dir, num_epochs) -> List[List[float]]:
     aum_path = os.path.join(hardness_save_dir, 'AUM.pkl')
     aum_over_epochs_and_models = load_results(aum_path)
 
-    #TODO: This is CURRENTLY required as train_ensemble.py wasn't initially working properly with denoised datasets.
+    # TODO: This is CURRENTLY required as train_ensemble.py wasn't initially working properly with denoised datasets.
     for model_idx, model_list in enumerate(aum_over_epochs_and_models):
         aum_over_epochs_and_models[model_idx] = [sample for sample in model_list if len(sample) > 0]
 
@@ -55,6 +55,7 @@ def load_aum_results(hardness_save_dir, num_epochs) -> List[List[float]]:
     ]
 
     return aum_scores
+
 
 def load_forgetting_results(hardness_save_dir, num_samples) -> List[List[float]]:
     forgetting_path = os.path.join(hardness_save_dir, 'Forgetting.pkl')

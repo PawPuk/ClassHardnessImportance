@@ -1,7 +1,7 @@
 import argparse
 import os
 import random
-from typing import List, Union
+from typing import Union
 
 import numpy as np
 import torch
@@ -17,10 +17,10 @@ from utils import set_reproducibility, load_aum_results, load_forgetting_results
 
 
 class Experiment3:
-    def __init__(self, dataset_name, oversampling_strategy, undersampling_strategy, remove_noise, hardness_estimator):
+    def __init__(self, dataset_name, oversampling, undersampling, hardness_estimator, remove_noise):
         self.dataset_name = dataset_name
-        self.oversampling_strategy = oversampling_strategy
-        self.undersampling_strategy = undersampling_strategy
+        self.oversampling_strategy = oversampling
+        self.undersampling_strategy = undersampling
         self.remove_noise = 'clean' if remove_noise else 'unclean'
         self.hardness_estimator = hardness_estimator
 
@@ -30,7 +30,6 @@ class Experiment3:
         self.num_samples = sum(get_config(args.dataset_name)['num_training_samples'])
 
         self.hardness_save_dir = f"Results/{self.remove_noise}{args.dataset_name}/"
-
 
     def load_untransferred_dataset(self, train=True) -> Union[AugmentedSubset, IndexedDataset]:
         """
@@ -57,7 +56,7 @@ class Experiment3:
             dataset = AugmentedSubset(torch.utils.data.Subset(dataset.dataset.dataset, retained_indices))
         return dataset
 
-    def load_hardness_estimates(self) -> List[float]:
+    def load_hardness_estimates(self):
         if self.hardness_estimator == 'AUM':
             hardness_over_models = np.array(load_aum_results(self.hardness_save_dir, self.num_epochs))
         elif self.hardness_estimator == 'Forgetting':
@@ -80,7 +79,7 @@ class Experiment3:
         hardnesses_by_class, hardness_of_classes = {class_id: [] for class_id in range(self.num_classes)}, {}
 
         for i, (_, label, _) in enumerate(dataset):
-            hardnesses_by_class[label].append(hardness_scores[i])
+            hardnesses_by_class[label.item()].append(hardness_scores[i])
         for label in range(self.num_classes):
             if self.hardness_estimator == 'AUM':
                 hardness_of_classes[label] = 1 / np.mean(hardnesses_by_class[label])
@@ -114,14 +113,15 @@ class Experiment3:
 
     def main(self):
         # The value of the shuffle parameter below does not matter as we don't use the loaders.
-        # TODO: Modify the below to load unaugmented data (important for resampling)
-        _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.remove_noise == 'clean', True)
+        _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.remove_noise == 'clean', True,
+                                                            False)
         hardness_scores = self.load_hardness_estimates()
 
         hardnesses_by_class, samples_per_class = self.compute_sample_allocation(hardness_scores, training_dataset)
 
         resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
-                                   self.undersampling_strategy, hardnesses_by_class, self.dataset_name)
+                                   self.undersampling_strategy, hardnesses_by_class, self.dataset_name,
+                                   self.hardness_estimator != 'AUM')
         resampled_dataset = AugmentedSubset(resampler.resample_data(samples_per_class))
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
@@ -134,9 +134,10 @@ class Experiment3:
         for class_id, count in samples_per_class.items():
             print(f"  Class {class_id}: {count}")
 
+        print(len(resampled_dataset))
         model_save_dir = f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_size_hardness"
-        trainer = ModelTrainer(resampled_loader, test_loader, self.dataset_name, model_save_dir, False,
-                               hardness='objective', clean_data=self.remove_noise)
+        trainer = ModelTrainer(len(resampled_dataset), resampled_loader, test_loader, self.dataset_name, model_save_dir,
+                               False, hardness='objective', clean_data=self.remove_noise)
         trainer.train_ensemble()
 
 
@@ -152,9 +153,9 @@ if __name__ == "__main__":
     parser.add_argument('--undersampling', type=str, required=True, choices=['random', 'easy', 'hard', 'extreme'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, and `prune_extreme`)')
-    parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
-    parser.add_argument('hardness_estimator', type=str, choices=['EL2N', 'AUM', 'Forgetting'], default='AUM',
+    parser.add_argument('--hardness_estimator', type=str, choices=['EL2N', 'AUM', 'Forgetting'], default='AUM',
                         help='Specifies which instance level hardness estimator to use.')
+    parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
     args = parser.parse_args()
 
     experiment = Experiment3(**vars(args))

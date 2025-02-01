@@ -51,20 +51,32 @@ class AugmentedSubset(torch.utils.data.Dataset):
         return data, label, idx
 
 
-def load_dataset(dataset_name, remove_noise, shuffle):
-    config = get_config(dataset_name)
+def get_transform(dataset_name, apply_augmentation, config):
 
-    # TODO: we might want to make the below dataset-specific and enable more datasets
-    train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomCrop(32, padding=4),
-        transforms.ToTensor(),
-        transforms.Normalize(config['mean'], config['std']),
-    ])
+    if apply_augmentation and dataset_name in ['CIFAR100', 'CIFAR10']:
+        train_transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomCrop(32, padding=4),
+            transforms.ToTensor(),
+            transforms.Normalize(config['mean'], config['std']),
+        ])
+    else:
+        train_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(config['mean'], config['std']),
+        ])
+
     test_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(config['mean'], config['std']),
     ])
+    return train_transform, test_transform
+
+
+def load_dataset(dataset_name, remove_noise, shuffle, apply_augmentation):
+    config = get_config(dataset_name)
+
+    train_transform, test_transform = get_transform(dataset_name, apply_augmentation, config)
     if dataset_name == 'CIFAR10':
         training_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True,
                                                     transform=train_transform)
