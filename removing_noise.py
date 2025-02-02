@@ -113,7 +113,7 @@ class NoiseRemover:
 
     def visualize_lowest_aum_samples(self, indices, aum_values):
         num_samples_to_visualize = min(30, len(indices))
-        fig, axes = plt.subplots(3, 12, figsize=(20, 5))
+        fig, axes = plt.subplots(3, 10, figsize=(20, 8))
         fig.suptitle("Samples with Lowest AUM Values", fontsize=16)
 
         mean = np.array(self.config['mean'])

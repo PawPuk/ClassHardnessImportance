@@ -54,6 +54,7 @@ class AugmentedSubset(torch.utils.data.Dataset):
 def get_transform(dataset_name, apply_augmentation, config):
 
     if apply_augmentation and dataset_name in ['CIFAR100', 'CIFAR10']:
+        print('ajuisdhaijukbdhaijudhwijua')
         train_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.RandomCrop(32, padding=4),

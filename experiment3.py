@@ -69,7 +69,7 @@ class Experiment3:
         else:
             raise ValueError('The chosen hardness estimator is not supported.')
 
-        hardness_of_ensemble = np.mean(hardness_over_models, axis=0)
+        hardness_of_ensemble = np.mean(hardness_over_models[:self.config['robust_ensemble_size']], axis=0)
         return hardness_of_ensemble
 
     def compute_sample_allocation(self, hardness_scores, dataset):

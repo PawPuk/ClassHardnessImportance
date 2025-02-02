@@ -28,46 +28,6 @@ class DataResampling:
         self.fig_save_dir = 'Figures/'
         self.model_save_dir = f'Models/none/{dataset_name}/'
 
-    def plot_probability_distribution(self, probabilities, method_name, class_id):
-        """
-        Plot and save both unsorted and sorted probability distributions for oversampling.
-        """
-        os.makedirs(self.fig_save_dir, exist_ok=True)
-
-        # Plot the unsorted probabilities
-        plt.figure()
-        plt.plot(probabilities, marker='o', linestyle='-', alpha=0.75)
-        plt.title(f'Probability Distribution ({method_name.capitalize()} Oversampling, Class {class_id}) - Unsorted')
-        plt.xlabel('Samples')
-        plt.ylabel('Probability')
-        plt.grid(True)
-
-        # Save the unsorted plot
-        plot_filename_unsorted = os.path.join(
-            self.fig_save_dir,
-            f'{method_name}_oversampling_class_{class_id}_probabilities_unsorted.png'
-        )
-        plt.savefig(plot_filename_unsorted)
-        plt.close()
-
-        # Plot the sorted probabilities
-        sorted_probabilities = np.sort(probabilities)[::-1]
-
-        plt.figure()
-        plt.plot(sorted_probabilities, marker='o', linestyle='-', alpha=0.75)
-        plt.title(f'Sorted Probability Distribution ({method_name.capitalize()} Oversampling, Class {class_id})')
-        plt.xlabel('Samples (sorted)')
-        plt.ylabel('Probability')
-        plt.grid(True)
-
-        # Save the sorted plot
-        plot_filename_sorted = os.path.join(
-            self.fig_save_dir,
-            f'{method_name}_oversampling_class_{class_id}_probabilities_sorted.png'
-        )
-        plt.savefig(plot_filename_sorted)
-        plt.close()
-
     @staticmethod
     def random_undersample(desired_count, hardness_scores):
         return random.sample(range(len(hardness_scores)), desired_count)
@@ -118,9 +78,6 @@ class DataResampling:
         # Perform weighted sampling
         additional_indices = random.choices(range(n), weights=probabilities, k=desired_count - n)
 
-        # Plot and save the probability distribution
-        self.plot_probability_distribution(probabilities, 'easy', class_id)
-
         return list(range(n)) + additional_indices
 
     def oversample_hard(self, desired_count, hardness_scores, class_id):
@@ -146,9 +103,6 @@ class DataResampling:
 
         # Perform weighted sampling
         additional_indices = random.choices(range(n), weights=probabilities, k=desired_count - n)
-
-        # Plot and save the probability distribution
-        self.plot_probability_distribution(probabilities, 'hard', class_id)
 
         return list(range(n)) + additional_indices
 

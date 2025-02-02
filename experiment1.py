@@ -6,7 +6,7 @@ from utils import set_reproducibility
 
 
 def main(dataset_name: str, remove_noise: bool):
-    training_loader, training_set, test_loader, _ = load_dataset(dataset_name, remove_noise, True)
+    training_loader, training_set, test_loader, _ = load_dataset(dataset_name, remove_noise, True, True)
     training_set_size = len(training_set)
 
     trainer = ModelTrainer(training_set_size, training_loader, test_loader, dataset_name, estimate_hardness=True,
@@ -32,3 +32,5 @@ if __name__ == '__main__':
 # check the i, (_, label, _) in enumerate(dataset) - the label is a tensor apparently and not an int
 # Rerun experiment 3 after fixing data_pruning.py
 # Modify the removing_noise.py to remove 13% from CIFAR100 (hard coded taken from the paper; maybe make it 12%)
+# Make sure that when resampling on denoised data we fit the number of samples that was obtained after denoising
+

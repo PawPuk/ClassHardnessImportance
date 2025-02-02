@@ -203,13 +203,15 @@ class ModelTrainer:
         """Train an ensemble of models and measure the timing."""
         timings, all_AUMs, all_forgetting_statistics = [], [], []
         latest_model_index = get_latest_model_index(self.save_dir, self.config['num_epochs'])
+        num_models = self.config['robust_ensemble_size'] if \
+            self.config['robust_ensemble_size'] < self.config['num_models'] else self.config['num_models']
 
         print(f"Starting training ensemble of {self.config['num_models']} models on {self.dataset_name}.")
         print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")
         print(f"Number of samples in the test loader: {len(self.test_loader.dataset)}")
         print('-'*20)
 
-        for model_id in tqdm(range(self.config['num_models'])):
+        for model_id in tqdm(range(num_models)):
             start_time = time.time()
             AUMs, forgetting_statistics = self.train_model(model_id, latest_model_index + 1)
             all_AUMs.append(AUMs)
