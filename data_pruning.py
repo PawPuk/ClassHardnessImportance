@@ -184,8 +184,8 @@ class DataResampling:
         elif isinstance(self.dataset, (IndexedDataset, AugmentedSubset)):
             # Extract data and labels, ignoring the index
             data = torch.stack([data for data, _, _ in self.dataset])
-            labels = torch.tensor([label for _, label, _ in self.dataset])
-            return data.float(), labels.item()
+            labels = torch.tensor([label.item() for _, label, _ in self.dataset])
+            return data.float(), labels
 
         else:
             raise TypeError(

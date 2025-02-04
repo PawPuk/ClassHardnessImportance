@@ -1,4 +1,5 @@
 import argparse
+from collections import Counter
 import os
 import pickle
 from typing import Dict, List
@@ -27,6 +28,7 @@ class Visualizer:
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
         self.data_cleanliness = 'clean' if remove_noise else 'unclean'
+        self.optimal_num_models = config['robust_ensemble_size']
 
         self.results_save_dir = os.path.join('Results/', f"{self.data_cleanliness}{dataset_name}")
         self.figures_save_dir = os.path.join('Figures/', f'{self.data_cleanliness}{dataset_name}')
@@ -81,6 +83,25 @@ class Visualizer:
         with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
             pickle.dump(el2n_scores, file)
 
+    def visualize_forgetting_results(self, forgetting_events):
+        forgetting_events = np.mean(forgetting_events[:self.optimal_num_models], axis=0)
+        forgetting_counts = Counter(forgetting_events)
+        sorted_counts = sorted(forgetting_counts.items())
+        x_values, y_values = zip(*sorted_counts)
+        print("Number of Forgetting Events | Number of Data Samples")
+        print("----------------------------------------------")
+        for x, y in zip(x_values, y_values):
+            print(f"{x:<26} | {y}")
+
+        plt.figure(figsize=(8, 6))
+        plt.bar(x_values, y_values, color='blue', alpha=0.7)
+        plt.xlabel("Number of Forgetting Events")
+        plt.ylabel("Number of Data Samples")
+        plt.title("Distribution of Forgetting Events")
+        plt.xticks(range(min(x_values), max(x_values) + 1))
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.savefig(os.path.join(self.figures_save_dir, f'distribution_of_forgetting_events.pdf'))
+
     def get_pruned_indices(self, el2n_scores: List[List[float]], aum_scores: List[List[float]],
                            forgetting_scores: List[List[float]]) -> Dict[str, List[List[List[int]]]]:
         results = {}
@@ -113,7 +134,7 @@ class Visualizer:
             metric_results = results[metric_name]
             num_thresholds = len(metric_results)
             num_models = len(metric_results[0])
-            stability_results = np.zeros((num_thresholds, num_models))
+            stability_results = np.zeros((num_thresholds, num_models - 1))
 
             for i in range(num_thresholds):
                 for j in range(num_models - 1):
@@ -123,12 +144,32 @@ class Visualizer:
                     changed = len(set2 - set1) / len(set1)
                     stability_results[i, j] = changed * 100
 
+            # Format the annotation values
+            def custom_format(val):
+                if val >= 10:
+                    return f"{int(round(val))}"
+                elif round(val) == 10 and val >= 9.95:
+                    return f"{int(round(val))}"
+                elif 1 < val < 10:
+                    return f"{val:.1f}"
+                elif round(val) == 1 and val > 0.99:
+                    return f"{val:.1f}"
+                else:
+                    return f"{round(val, 2):.2f}"[1:]
+
+            # Create figure and plot the heatmap
             plt.figure(figsize=(10, 6))
-            sns.heatmap(stability_results, annot=True, cmap='coolwarm', cbar_kws={'label': 'Jaccard Overlap'})
+            sns.heatmap(stability_results, annot=True, fmt='.2f', cmap='coolwarm',
+                        cbar_kws={'label': 'Jaccard Overlap'})
+
+            # Adjust annotation format
+            for text in plt.gca().texts:
+                text.set_text(custom_format(float(text.get_text())))
+
             plt.title(f'Pruned indices change (%) after adding a model {metric_name.upper()}')
             plt.xlabel('Number of models in ensemble (j) before adding a model')
             plt.ylabel('Pruning threshold (%)')
-            plt.xticks(np.arange(num_models) + 0.5, np.arange(1, num_models + 1))
+            plt.xticks(np.arange(num_models - 1) + 0.5, np.arange(1, num_models))
             plt.yticks(np.arange(num_thresholds) + 0.5, np.arange(10, 100, 10))
             plt.savefig(os.path.join(self.figures_save_dir, f'pruning_stability_based_on_{metric_name}.pdf'))
 
@@ -221,6 +262,7 @@ class Visualizer:
             plt.plot(ensemble_sizes[metric], avg_diffs, label=f'{metric.upper()} Avg Diff', linestyle=':', marker='s')
         plt.title("Absolute differences across ensemble sizes for hardness estimators")
         plt.xlabel('Ensemble size')
+        plt.xticks(range(1, 20, 2))
         plt.ylabel("Absolute difference")
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
@@ -237,6 +279,7 @@ class Visualizer:
                      marker='s')
         plt.title("Relative differences across ensemble sizes for hardness estimators")
         plt.xlabel('Ensemble size')
+        plt.xticks(range(1, 20, 2))
         plt.ylabel("Relative difference")
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
@@ -251,6 +294,7 @@ class Visualizer:
             plt.plot(ensemble_sizes[metric], avg_diffs, label=f'Avg Diff', linestyle=':', marker='s')
             plt.title(f"Absolute differences for {metric.upper()}")
             plt.xlabel('Ensemble size')
+            plt.xticks(range(1, 20, 2))
             plt.ylabel("Absolute difference")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
@@ -263,6 +307,7 @@ class Visualizer:
             plt.plot(ensemble_sizes[metric], avg_rel_diffs, label=f'Avg Rel Diff', linestyle=':', marker='s')
             plt.title(f"Relative differences for {metric.upper()}")
             plt.xlabel('Ensemble size')
+            plt.xticks(range(1, 20, 2))
             plt.ylabel("Relative difference")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
@@ -275,6 +320,7 @@ class Visualizer:
 
         aum_scores = load_aum_results(self.hardness_save_dir, self.num_epochs)
         forgetting_scores = load_forgetting_results(self.hardness_save_dir, len(aum_scores[0]))
+        # self.visualize_forgetting_results(forgetting_scores)
 
         print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')
         print(f'Shape of hardness estimated via AUM: {len(aum_scores)}, {len(aum_scores[0])}')
