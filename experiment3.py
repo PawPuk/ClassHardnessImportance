@@ -1,8 +1,10 @@
 import argparse
+from collections import Counter
 import os
 import random
 from typing import Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torchvision import datasets, transforms
@@ -26,10 +28,11 @@ class Experiment3:
 
         self.config = get_config(dataset_name)
         self.num_classes = self.config['num_classes']
-        self.num_epochs = get_config(args.dataset_name)['num_epochs']
-        self.num_samples = sum(get_config(args.dataset_name)['num_training_samples'])
+        self.num_epochs = self.config['num_epochs']
+        self.num_samples = sum(self.config['num_training_samples'])
 
-        self.hardness_save_dir = f"Results/{self.remove_noise}{args.dataset_name}/"
+        self.hardness_save_dir = f"Results/{self.remove_noise}{self.dataset_name}/"
+        self.figure_save_dir = f"Figures/{self.dataset_name}/"
 
     def load_untransferred_dataset(self, train=True) -> Union[AugmentedSubset, IndexedDataset]:
         """
@@ -102,6 +105,32 @@ class Experiment3:
         return DataLoader(dataset, batch_size=self.config['batch_size'], shuffle=shuffle,
                           num_workers=2, worker_init_fn=worker_init_fn)
 
+    def visualize_resampling_results(self, dataset):
+        class_counts = Counter()
+
+        for _, label, _ in dataset:
+            class_counts[label] += 1
+
+        classes, counts = zip(*class_counts.items())
+
+        plt.figure(figsize=(8, 5))
+        plt.bar(classes, counts, color='skyblue')
+        plt.xlabel('Class')
+        plt.ylabel('Count')
+        plt.title('Class Distribution (Natural Order)')
+        plt.savefig(os.path.join(self.figure_save_dir, 'resampled_dataset.pdf'))
+
+        # Plot class distribution in sorted order
+        sorted_classes_counts = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
+        sorted_classes, sorted_counts = zip(*sorted_classes_counts)
+
+        plt.figure(figsize=(8, 5))
+        plt.bar(sorted_classes, sorted_counts, color='orange')
+        plt.xlabel('Class')
+        plt.ylabel('Count')
+        plt.title('Class Distribution (Sorted Order)')
+        plt.savefig(os.path.join(self.figure_save_dir, 'sorted_resampled_dataset.pdf'))
+
     @staticmethod
     def perform_data_augmentation(dataset):
         # TODO: Modify the below to work for different datasets (some might require different data augmentation)
@@ -123,6 +152,7 @@ class Experiment3:
                                    self.undersampling_strategy, hardnesses_by_class, self.dataset_name,
                                    self.hardness_estimator != 'AUM')
         resampled_dataset = AugmentedSubset(resampler.resample_data(samples_per_class))
+        self.visualize_resampling_results(resampled_dataset)
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
 
