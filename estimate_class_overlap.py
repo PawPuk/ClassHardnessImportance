@@ -1,3 +1,4 @@
+from multiprocessing import Pool, cpu_count, Manager, Lock
 import os
 from tqdm import tqdm
 
@@ -40,21 +41,24 @@ def get_data_for_classes(class1, class2, dataset):
 accuracy_file = 'ovo_accuracies.npy'
 if os.path.exists(accuracy_file):
     print("Accuracies file found. Loading existing progress...")
-    accuracies = np.load(accuracy_file, allow_pickle=True).item()
+    loaded_accuracies = np.load(accuracy_file, allow_pickle=True).item()
 else:
     print("No accuracy file found. Starting fresh training...")
-    accuracies = {i: [] for i in range(100)}
+    loaded_accuracies = {i: [] for i in range(100)}
 
 # 4. Identify completed class pairs
 completed_pairs = set()
-for class_idx in accuracies:
-    for class_pair in accuracies[class_idx]:
+for class_idx in loaded_accuracies:
+    for class_pair in loaded_accuracies[class_idx]:
         completed_pairs.add((class_idx, class_pair[0]))
 
-# 5. Resume Training for Incomplete Pairs
-for class1, class2 in tqdm(itertools.combinations(range(100), 2), desc='Iterating through unique class pairs'):
+# 5. Define Training Function (Runs in Parallel)
+def train_ovo_lsvc(class_pair, shared_accuracies, lock):
+    """Trains an LSVC model for a given class pair and returns the result."""
+    class1, class2 = class_pair
+
     if (class1, class2) in completed_pairs or (class2, class1) in completed_pairs:
-        continue  # Skip already trained pairs
+        return None
 
     print(f"Training LSVC for class pair ({class1}, {class2})...")
 
@@ -67,12 +71,34 @@ for class1, class2 in tqdm(itertools.combinations(range(100), 2), desc='Iteratin
     y_test_pred = model.predict(X_test)
     test_accuracy = accuracy_score(y_test, y_test_pred)
 
-    accuracies[class1].append((class2, test_accuracy))
-    accuracies[class2].append((class1, test_accuracy))
+    with lock:
+        shared_accuracies[class1].append((class2, test_accuracy))
+        shared_accuracies[class2].append((class1, test_accuracy))
 
-    # Save progress after every model to prevent data loss
-    np.save(accuracy_file, accuracies)
+        # Save after every model is trained
+        np.save(accuracy_file, dict(shared_accuracies))
 
-# 6. Final Save
-np.save(accuracy_file, accuracies)
+    return class1, class2, test_accuracy
+
+# 6. Set Up Shared Memory & Parallel Training
+manager = Manager()
+shared_accuracies = manager.dict(loaded_accuracies)  # Shared dictionary between processes
+lock = manager.Lock()  # Lock to prevent simultaneous file writes
+
+all_class_pairs = list(itertools.combinations(range(100), 2))
+remaining_pairs = [pair for pair in all_class_pairs
+                   if pair not in completed_pairs and (pair[1], pair[0]) not in completed_pairs]
+
+print(f"Starting parallel training with {cpu_count()} CPU cores...")
+def worker_train_ovo_lsvc(pair):
+    """ Wrapper function to call train_ovo_lsvc with shared variables. """
+    return train_ovo_lsvc(pair, shared_accuracies, lock)
+
+# Use this instead of the lambda function:
+with Pool(processes=cpu_count()) as pool:
+    results = list(tqdm(pool.imap(worker_train_ovo_lsvc, remaining_pairs), total=len(remaining_pairs)))
+
+
+# 7. Final Save
+np.save(accuracy_file, dict(shared_accuracies))
 print(f"Final results saved to {accuracy_file}")
