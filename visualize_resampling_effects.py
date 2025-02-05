@@ -29,7 +29,9 @@ def load_models(dataset_name: str) -> Dict[Tuple[str, str, str], List[dict]]:
     target_ensemble_size = config['robust_ensemble_size']
 
     for root, dirs, files in os.walk(models_dir):
-        if f"unclean{dataset_name}" in root and 'over_' in root and '_under_' in root:
+        if 'CIFAR100' in root and dataset_name != 'CIFAR100':
+            continue  # This is required as 'CIFAR10' string is also contained in 'CIFAR100'...
+        elif f"unclean{dataset_name}" in root and 'over_' in root and '_under_' in root:
             dataset_type = 'unclean'
         elif f"clean{dataset_name}" in root and 'over_' in root and '_under_' in root:
             dataset_type = 'clean'
@@ -99,7 +101,7 @@ def evaluate_ensemble(ensemble: List[dict], test_loader, class_index: int, strat
         model.eval()
 
         with torch.no_grad():
-            for images, labels in test_loader:
+            for images, labels, _ in test_loader:
                 images, labels = images.to(device), labels.to(device)
                 outputs = model(images)
                 _, predicted = outputs.max(1)

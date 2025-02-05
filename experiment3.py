@@ -167,7 +167,7 @@ class Experiment3:
         print(len(resampled_dataset))
         model_save_dir = f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_size_hardness"
         trainer = ModelTrainer(len(resampled_dataset), resampled_loader, test_loader, self.dataset_name, model_save_dir,
-                               False, hardness='objective', clean_data=self.remove_noise)
+                               False, hardness='objective', clean_data=self.remove_noise == 'clean')
         trainer.train_ensemble()
 
 
