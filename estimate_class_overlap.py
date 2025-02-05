@@ -1,4 +1,4 @@
-from multiprocessing import Pool, cpu_count, Manager, Lock
+from multiprocessing import Pool, cpu_count
 import os
 from tqdm import tqdm
 
@@ -48,12 +48,14 @@ else:
 
 # 4. Identify completed class pairs
 completed_pairs = set()
+print(loaded_accuracies)
 for class_idx in loaded_accuracies:
     for class_pair in loaded_accuracies[class_idx]:
         completed_pairs.add((class_idx, class_pair[0]))
+print(f'Identified {len(completed_pairs)} completed pairs.')
 
 # 5. Define Training Function (Runs in Parallel)
-def train_ovo_lsvc(class_pair, shared_accuracies, lock):
+def train_ovo_lsvc(class_pair):
     """Trains an LSVC model for a given class pair and returns the result."""
     class1, class2 = class_pair
 
@@ -71,34 +73,27 @@ def train_ovo_lsvc(class_pair, shared_accuracies, lock):
     y_test_pred = model.predict(X_test)
     test_accuracy = accuracy_score(y_test, y_test_pred)
 
-    with lock:
-        shared_accuracies[class1].append((class2, test_accuracy))
-        shared_accuracies[class2].append((class1, test_accuracy))
-
-        # Save after every model is trained
-        np.save(accuracy_file, dict(shared_accuracies))
-
     return class1, class2, test_accuracy
 
 # 6. Set Up Shared Memory & Parallel Training
-manager = Manager()
-shared_accuracies = manager.dict(loaded_accuracies)  # Shared dictionary between processes
-lock = manager.Lock()  # Lock to prevent simultaneous file writes
-
 all_class_pairs = list(itertools.combinations(range(100), 2))
 remaining_pairs = [pair for pair in all_class_pairs
                    if pair not in completed_pairs and (pair[1], pair[0]) not in completed_pairs]
 
-print(f"Starting parallel training with {cpu_count()} CPU cores...")
+print(f"Starting parallel training with {cpu_count() - 1} CPU cores...")
+
 def worker_train_ovo_lsvc(pair):
     """ Wrapper function to call train_ovo_lsvc with shared variables. """
-    return train_ovo_lsvc(pair, shared_accuracies, lock)
+    return train_ovo_lsvc(pair)
 
 # Use this instead of the lambda function:
-with Pool(processes=cpu_count()) as pool:
-    results = list(tqdm(pool.imap(worker_train_ovo_lsvc, remaining_pairs), total=len(remaining_pairs)))
+with Pool(processes=cpu_count() - 1) as pool:
+    results = list(tqdm(pool.imap(worker_train_ovo_lsvc, remaining_pairs[:3]), total=len(remaining_pairs)))
 
+for r in results:
+    loaded_accuracies[r[0]].append((r[1], r[2]))
+    loaded_accuracies[r[1]].append((r[0], r[2]))
 
-# 7. Final Save
-np.save(accuracy_file, dict(shared_accuracies))
-print(f"Final results saved to {accuracy_file}")
+# 7. Final Save - Once all training is done
+np.save(accuracy_file, loaded_accuracies)
+print(f'Saving {loaded_accuracies} to {accuracy_file}.')
