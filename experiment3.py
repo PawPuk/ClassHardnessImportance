@@ -106,27 +106,23 @@ class Experiment3:
                           num_workers=2, worker_init_fn=worker_init_fn)
 
     def visualize_resampling_results(self, dataset):
-        # TODO: This does not work for now!!!
-        class_counts = Counter()
+        class_counts = [0 for _ in range(self.config['num_classes'])]
 
         for _, label, _ in dataset:
-            class_counts[label] += 1
-
-        classes, counts = zip(*class_counts.items())
+            class_counts[label.item()] += 1
 
         plt.figure(figsize=(8, 5))
-        plt.bar(classes, counts, color='skyblue')
+        plt.bar(range(len(class_counts)), class_counts, color='skyblue')
         plt.xlabel('Class')
         plt.ylabel('Count')
         plt.title('Class Distribution (Natural Order)')
         plt.savefig(os.path.join(self.figure_save_dir, 'resampled_dataset.pdf'))
 
         # Plot class distribution in sorted order
-        sorted_classes_counts = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
-        sorted_classes, sorted_counts = zip(*sorted_classes_counts)
+        ordering = np.argsort(class_counts)
 
         plt.figure(figsize=(8, 5))
-        plt.bar(sorted_classes, sorted_counts, color='orange')
+        plt.bar(list(range(len(ordering))), [class_counts[i] for i in ordering], color='skyblue')
         plt.xlabel('Class')
         plt.ylabel('Count')
         plt.title('Class Distribution (Sorted Order)')
@@ -166,6 +162,7 @@ class Experiment3:
             print(f"  Class {class_id}: {count}")
 
         print(len(resampled_dataset))
+        print(len(123))
         model_save_dir = f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_size_hardness"
         trainer = ModelTrainer(len(resampled_dataset), resampled_loader, test_loader, self.dataset_name, model_save_dir,
                                False, hardness='objective', clean_data=self.remove_noise == 'clean')
