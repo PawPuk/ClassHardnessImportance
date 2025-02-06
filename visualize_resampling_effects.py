@@ -6,8 +6,6 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torchvision.transforms as transforms
-from torchvision.datasets import CIFAR10, CIFAR100
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -149,38 +147,60 @@ def obtain_results(result_dir: str, models: Dict[Tuple[str, str, str], List[dict
     return results
 
 
-def get_class_order(results, base_strategy):
+def get_class_order(results, base_strategy, base_metric):
     """Determine class order based on average accuracies for the specified base strategy."""
-    accuracies = results['Average Model Accuracy'][base_strategy]
+    accuracies = results[base_metric][base_strategy]
     sorted_classes = sorted(accuracies.keys(), key=lambda k: accuracies[k])
     return sorted_classes
 
 
-def plot_all_accuracies_sorted(results, class_order, save_path=None):
-    """
-    Plot the average accuracies for all strategies with classes sorted by a specific order.
+def plot_lsvc_accuracies(accuracy_dict, custom_order):
+    mean_accuracies = []
 
-    :param results: The results dictionary containing accuracy values.
-    :param class_order: List specifying the order of classes for plotting.
-    :param save_path: Path to save the plot. If None, the plot will be shown.
-    """
+    for class_id in accuracy_dict.keys():
+        accuracies = [acc[1] for acc in accuracy_dict[class_id]]
+        mean_accuracies.append(np.mean(accuracies))
+
+    # Ensure custom order is applied correctly
+    sorted_means = np.array(mean_accuracies)[custom_order]
+
+    # Sequential x-axis for sorted plot
+    x_sorted = np.arange(len(sorted_means))
+
+    # Plot results
+    plt.figure(figsize=(7, 5))
+    plt.plot(x_sorted, sorted_means, linestyle='-')
+    plt.xlabel("Sorted Class Index (Based on ResNet performance)")
+    plt.ylabel("Accuracy")
+    plt.title("Class-wise Accuracies of LSVCs")
+    plt.grid()
+    plt.savefig(os.path.join(figure_save_dir, 'resampling_effects.pdf'))
+
+
+def plot_all_accuracies_sorted(results, LSVCs_accuracies, class_order, base_metric, dataset_name):
 
     # Plot for all strategies using line segments
     plt.figure(figsize=(12, 8))
 
-    color_palette = plt.cm.tab10(np.linspace(0, 1, len(results['Recall'])))
+    color_palette = plt.cm.tab10(np.linspace(0, 1, len(results[base_metric])))
+    base_strategy, value_changes = ('none', 'none', 'unclean'), {}
 
-    for idx, (strategy, accuracies) in enumerate(results['Recall'].items()):
-        avg_accuracies = {class_id: np.mean([block[class_id] for block in accuracies]) for class_id in
-                          range(num_classes)}
+    # We plot the results for the base strategies using black solid line for clarity
+    reordered_base_values = [results[base_metric][base_strategy][class_id] for class_id in class_order]
+    plt.plot(range(len(class_order)), [v for v in reordered_base_values],
+             color='black', linestyle='-', linewidth=2, label="none-none-unclean")
 
-        reordered_accuracies = [avg_accuracies[class_id] for class_id in class_order]
+    for idx, (strategy, values) in enumerate(results[base_metric].items()):
+        if strategy == base_strategy:
+            continue
+        reordered_values = [values[class_id] for class_id in class_order]
+        value_changes[strategy] = [values[class_id] - results[base_metric][base_strategy][class_id]
+                                   for class_id in class_order]
 
-        for reordered_idx, avg_accuracy in enumerate(reordered_accuracies):
-            x_start = reordered_idx - 0.4 + (idx / len(results['Recall'])) * 0.8
-            x_end = reordered_idx + 0.4 - (idx / len(results['Recall'])) * 0.8
-            plt.plot([x_start, x_end], [avg_accuracy * 100, avg_accuracy * 100],
-                     color=color_palette[idx], lw=2)
+        for reordered_idx, avg_value in enumerate(reordered_values):
+            x_start = reordered_idx - 0.4 + (idx / len(results[base_metric])) * 0.8
+            x_end = reordered_idx + 0.4 - (idx / len(results[base_metric])) * 0.8
+            plt.plot([x_start, x_end], [avg_value, avg_value], color=color_palette[idx], lw=2)
 
         plt.plot([], [], color=color_palette[idx], lw=2, label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}")
 
@@ -190,78 +210,46 @@ def plot_all_accuracies_sorted(results, class_order, save_path=None):
     plt.title("Average Accuracy by Class for All Strategies (Sorted by Base Strategy)", fontsize=14)
     plt.legend(fontsize=10, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
     plt.grid(True, linestyle='--', alpha=0.6)
+    plt.savefig(os.path.join(figure_save_dir, 'resampling_effects.pdf'), bbox_inches='tight')
 
-    if save_path:
-        plt.savefig(save_path, bbox_inches='tight')
-        print(f"Plot saved to {save_path}")
-    else:
-        plt.show()
-    plt.close()
+    # Producing next Figure (highlighting value changes)
+    fig, axs = plt.subplots(2, 2, figsize=(14, 12))
+    sorting_orders = [
+        ('random', 'easy', 'unclean'),
+        ('hard', 'easy', 'unclean'),
+        ('easy', 'easy', 'unclean'),
+        ('SMOTE', 'easy', 'unclean')
+    ]
 
-    # Create a new plot for specific strategies using classical function-like visual style
-    filtered_keys = [('random', 'easy', 'clean'), ('hard', 'easy', 'clean'), ('easy', 'easy', 'clean'),
-                     ('SMOTE', 'easy', 'clean'), ('none', 'none', 'clean'), ('none', 'none', 'unclean')]
-    filtered_results = {key: results['Recall'][key] for key in filtered_keys if key in results['Recall']}
+    for ax, sorting_order in zip(axs.ravel(), sorting_orders):
 
-    plt.figure(figsize=(12, 8))
-    for idx, (strategy, accuracies) in enumerate(filtered_results.items()):
-        avg_accuracies = {class_id: np.mean([block[class_id] for block in accuracies]) for class_id in
-                          range(len(class_order))}
-        if strategy == ('none', 'none', 'unclean'):
-            avg_base_accuracies = avg_accuracies
-        reordered_accuracies = [avg_accuracies[class_id] for class_id in class_order]
-        plt.plot(range(len(class_order)), [acc * 100 for acc in reordered_accuracies],
-                 label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}", lw=1)
+        sorted_idx = np.argsort(value_changes[sorting_order])
+        for idx, (strategy, changes) in enumerate(value_changes.items()):
+            sorted_changes = np.array(changes)[sorted_idx]
 
-    plt.xlabel("Class (Sorted by the Accuracy of Base Strategy)", fontsize=12)
-    plt.xticks([])
-    plt.ylabel("Accuracy (%)", fontsize=12)
-    plt.title("Average Accuracy by Class for Filtered Strategies", fontsize=14)
-    plt.legend(fontsize=10, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
-    plt.grid(True, linestyle='--', alpha=0.6)
+            ax.plot(range(len(sorted_changes)), sorted_changes, color=color_palette[idx], lw=2,
+                    label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}")
 
-    if save_path:
-        filtered_save_path = save_path.replace('.pdf', '_filtered.pdf')
-        plt.savefig(filtered_save_path, bbox_inches='tight')
-        print(f"Filtered plot saved to {filtered_save_path}")
-    else:
-        plt.show()
+            dataset_level_change = np.mean(changes)
+            ax.axhline(y=dataset_level_change, color=color_palette[idx], linestyle="--", linewidth=2)
 
-    # Create a new plot for respective performance of each resampling strategy (in respect to no resampling)
-    filtered_keys = [('random', 'easy', 'clean'), ('hard', 'easy', 'clean'), ('easy', 'easy', 'clean'),
-                     ('SMOTE', 'easy', 'clean'), ('none', 'none', 'clean')]
-    filtered_results = {key: results['Recall'][key] for key in filtered_keys if key in results['Recall']}
+        if dataset_name == 'CIFAR100':
+            # Reorder LSVC accuracies and plot
+            sorted_LSVCs_accuracies = np.array(LSVCs_accuracies)[sorted_idx]
+            ax.plot(range(len(sorted_LSVCs_accuracies)), sorted_LSVCs_accuracies, color='black', linestyle='-',
+                    linewidth=2, label="LSVCS Accuracies")
 
-    plt.figure(figsize=(12, 8))
+        # Formatting for each subplot
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=1)  # Reference line at 0
+        ax.set_xlabel("Class", fontsize=10)
+        ax.set_ylabel("Accuracy Change (%)", fontsize=10)
+        ax.set_title(f"Accuracy Change Relative to Base Strategy ({' - '.join(sorting_order)})", fontsize=12)
+        ax.legend(fontsize=8, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
+        ax.grid(True, linestyle='--', alpha=0.6)
 
-    for idx, (strategy, accuracies) in enumerate(filtered_results.items()):
-        avg_accuracies = {class_id: np.mean([block[class_id] for block in accuracies]) - avg_base_accuracies[class_id]
-                          for class_id in range(len(class_order))}
-
-        sorted_items = sorted(avg_accuracies.items(), key=lambda x: x[1])
-        sorted_class_order, sorted_accuracies = zip(*sorted_items)
-
-        reordered_accuracies = [avg_accuracies[class_id] for class_id in sorted_class_order]
-        mean_avg_accuracy = np.mean(reordered_accuracies)
-
-        plt.plot(range(len(class_order)), [acc * 100 for acc in reordered_accuracies],
-                 label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}", lw=1)
-        plt.axhline(mean_avg_accuracy * 100, color=plt.gca().lines[-1].get_color(), linestyle='--',
-                    label=f"Dataset-level accuracy ({strategy[0]}-{strategy[1]}-{strategy[2]})")
-
-    plt.xlabel("Class (Sorted by Respective Accuracy Boost)", fontsize=12)
-    plt.xticks([])
-    plt.ylabel("Accuracy (%)", fontsize=12)
-    plt.title("Average Accuracy by Class for Filtered Strategies", fontsize=14)
-    plt.legend(fontsize=10, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
-    plt.grid(True, linestyle='--', alpha=0.6)
-
-    if save_path:
-        filtered_save_path = save_path.replace('.pdf', '_filtered_respective.pdf')
-        plt.savefig(filtered_save_path, bbox_inches='tight')
-        print(f"Filtered plot saved to {filtered_save_path}")
-    else:
-        plt.show()
+    # Adjust layout for the subplots
+    plt.tight_layout()
+    plt.savefig(os.path.join(figure_save_dir, 'value_changes_due_to_resampling.pdf'))
 
 
 def main(dataset_name):
@@ -297,8 +285,16 @@ def main(dataset_name):
                 results[metric_name][strategies][class_id] = metric_results
 
     base_strategy = ('none', 'none', 'unclean')
-    class_order = get_class_order(results, base_strategy)
-    plot_all_accuracies_sorted(results, class_order, os.path.join(figure_save_dir, 'resampling_effects.pdf'))
+    base_metric = 'Recall'
+    class_order = get_class_order(results, base_strategy, base_metric)
+
+    class_overlap_estimates = np.load('ovo_accuracies.npy', allow_pickle=True).item()
+    mean_accuracies = []
+    for class_id in class_overlap_estimates.keys():
+        accuracies = [acc[1] for acc in class_overlap_estimates[class_id]]
+        mean_accuracies.append(np.mean(accuracies))
+    plot_lsvc_accuracies(class_overlap_estimates, class_order)
+    plot_all_accuracies_sorted(results, mean_accuracies, class_order, base_metric, dataset_name)
 
 
 if __name__ == "__main__":
