@@ -52,26 +52,33 @@ class NoiseRemover:
 
     def plot_cumulative_distribution(self, data):
         sorted_data = np.sort(data)
-        cumulative_percentage = np.arange(1, len(sorted_data) + 1) / len(sorted_data) * 100
+        cumulative_sum = np.cumsum(sorted_data)
+        total_sum = cumulative_sum[-1]
+        cumulative_percentage = (cumulative_sum / total_sum) * 100
 
         # Plot the cumulative distribution
         plt.figure(figsize=(10, 6))
         plt.plot(sorted_data, cumulative_percentage, label="Cumulative Distribution")
-        plt.xlabel("Sample Value (Sorted)")
-        plt.ylabel("Cumulative Percentage (%)")
-        plt.title("Cumulative Distribution with Elbow")
+        plt.xlabel("Instance-level Hardness Estimate (AUM)")
+        plt.ylabel("Cumulative Percentage")
         plt.grid(alpha=0.5)
 
-        # This value is chosen manually, so that there should be some hyper-tuning, but I'll leave that for later.
-        x_value = 1.5
-        y_value = np.interp(x_value, sorted_data, cumulative_percentage)
-        elbow_index = np.searchsorted(sorted_data, x_value, side='left')
-        plt.axhline(y=y_value, color='red', linestyle='--', label=f'Value at x = {x_value}')
-        plt.scatter([x_value], [y_value], color='red', zorder=5)  # Label the point for clarity
+        # Red dot: Predefined threshold (elbow method)
+        num_to_remove = 552
+        x_value = sorted_data[num_to_remove]
+        y_value = cumulative_percentage[num_to_remove]
+        plt.scatter([x_value], [y_value], color='red', zorder=5, label=f'Our Threshold')
+
+        # Grey dot: Alternative threshold at 12% cumulative percentage
+        num_to_remove = int(0.12 * len(sorted_data))  # 12% of total data
+        x_threshold = sorted_data[num_to_remove]  # x-value at this index
+        y_threshold = cumulative_percentage[num_to_remove]  # Corresponding cumulative percentage
+        plt.scatter([x_threshold], [y_threshold], color='grey', zorder=5, label=f"Pleiss et al.'s Threshold")
+
         plt.legend()
         plt.savefig(os.path.join(self.figure_save_dir, 'AUM_distribution.pdf'))
 
-        return elbow_index
+        return num_to_remove
 
     def plot_removed_samples_distribution(self, removed_indices):
         removed_labels = [self.dataset[idx][1] for idx in removed_indices]
@@ -83,8 +90,8 @@ class NoiseRemover:
         class_names = self.config['class_names']
         x = np.arange(self.config['num_classes'])
 
-        plt.figure(figsize=(15, 6))
-        plt.bar(x, percentage_class_counts, color='skyblue', edgecolor='black')
+        plt.figure(figsize=(8, 5))
+        plt.bar(x, percentage_class_counts, color='skyblue')
         plt.xticks(x, class_names, rotation=90)
         plt.xlabel("Class")
         plt.ylabel("Proportion of Removed Samples")
@@ -97,12 +104,15 @@ class NoiseRemover:
         sorted_percentages = percentage_class_counts[sorted_indices]
         sorted_class_names = [class_names[i] for i in sorted_indices]
 
-        plt.figure(figsize=(15, 6))
-        plt.bar(range(len(sorted_percentages)), sorted_percentages, color='skyblue', edgecolor='black')
-        plt.xticks(range(len(sorted_percentages)), sorted_class_names, rotation=90)
-        plt.xlabel("Class (Sorted)")
-        plt.ylabel("Proportion of Removed Samples")
-        plt.title("Sorted Distribution of Removed Samples by Class")
+        plt.figure(figsize=(8, 5))
+        plt.bar(range(len(sorted_percentages)), sorted_percentages, color='skyblue')
+        plt.tick_params(
+            axis='x',  # changes apply to the x-axis
+            which='both',  # both major and minor ticks are affected
+            bottom=False,  # ticks along the bottom edge are off
+            top=False,  # ticks along the top edge are off
+            labelbottom=False)
+        plt.ylabel("Percentage of Removed Samples")
         plt.tight_layout()
         plt.savefig(os.path.join(self.figure_save_dir, "sorted_removed_samples_distribution_by_class.pdf"))
         plt.close()
