@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, Subset
 
 from config import get_config
-from data import AugmentedSubset, IndexedDataset
+from data import load_dataset, AugmentedSubset, IndexedDataset
 from neural_networks import ResNet18LowRes
 
 
@@ -304,41 +304,21 @@ class DataResampling:
 
 
 class DataPruning:
-    def __init__(self, instance_hardness: List[List[float]], class_hardness: Dict[int, List[List[float]]],
-                 labels: List[int], prune_percentage: int, dataset_name: str, protect_prototypes: bool):
+    def __init__(self, instance_hardness: List[List[float]], prune_percentage: int, dataset_name: str):
         """
         Initialize the DataPruning class.
 
         :param instance_hardness: List of lists of instance-level hardness scores.
-        :param class_hardness: Dictionary where each key is a class and the value is a list of lists of class-level
-        hardness scores.
-        :param labels: List of class labels corresponding to each instance.
         :param prune_percentage: Percentage of the data to prune (default is 50%).
-        :param dataset_name: Name of the dataset we are working on (used for saving),
-        :param protect_prototypes: If set to true, the pruning will omit the 1% of the easiest data samples
+        :param dataset_name: Name of the dataset we are working on (used for saving).
         """
         # Compute the average instance-level hardness for each sample across all models
-        self.instance_hardness = np.mean(np.array(instance_hardness), axis=1)
-        self.labels = np.array(labels)
+        self.instance_hardness = np.mean(np.array(instance_hardness), axis=0)
         self.prune_percentage = prune_percentage / 100
         self.dataset_name = dataset_name
-        self.protect_prototypes = protect_prototypes
         self.fig_save_dir = 'Figures/'
         self.res_save_dir = 'Results/'
         self.num_classes = get_config(dataset_name)['num_classes']
-
-        # Compute the average class-level hardness for each sample in specific class across all models
-        if self.protect_prototypes:
-            self.class_hardness = {}
-            for class_id, class_scores in class_hardness.items():
-                # Prototypes should not be taken under consideration when measuring hardness, as they are not pruned.
-                one_percent = int(0.01 * len(class_scores))
-                self.class_hardness[class_id] = np.mean(np.array(class_scores)[one_percent:], axis=1)
-        else:
-            self.class_hardness = {
-                class_id: np.mean(np.array(class_scores), axis=1)
-                for class_id, class_scores in class_hardness.items()
-            }
 
         # Load or initialize class_level_sample_counts
         try:
@@ -347,25 +327,17 @@ class DataPruning:
         except (FileNotFoundError, EOFError):
             self.class_level_sample_counts = {}
 
-    def get_prune_indices(self, hardness_scores, retain_count):
+    @staticmethod
+    def get_prune_indices(hardness_scores, retain_count):
         sorted_indices = np.argsort(hardness_scores)
+        return sorted_indices[-retain_count:]
 
-        if self.protect_prototypes:
-            # Protect the easiest 1% samples
-            one_percent = int(0.01 * len(hardness_scores))
-            hardest_samples_count = retain_count - one_percent
-            easiest_indices = sorted_indices[:one_percent]
-            hardest_indices = sorted_indices[-hardest_samples_count:]
-            return np.concatenate((easiest_indices, hardest_indices))
-        else:
-            return sorted_indices[-retain_count:]
-
-    def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str):
+    def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str, labels):
         os.makedirs(self.fig_save_dir, exist_ok=True)
         os.makedirs(self.res_save_dir, exist_ok=True)
 
         # Count the number of remaining samples for each class
-        remaining_labels = self.labels[remaining_indices]
+        remaining_labels = labels[remaining_indices]
         unique_classes, class_counts = np.unique(remaining_labels, return_counts=True)
 
         # Create dictionary for current pruning type if it doesn't exist
@@ -379,8 +351,7 @@ class DataPruning:
         ]
 
         # Save the updated class_level_sample_counts to a pickle file
-        with open(os.path.join(self.res_save_dir, f"{['unprotected', 'protected'][self.protect_prototypes]}"
-                                                    f"_class_level_sample_counts.pkl"), "wb") as file:
+        with open(os.path.join(self.res_save_dir, "class_level_sample_counts.pkl"), "wb") as file:
             pickle.dump(self.class_level_sample_counts, file)
 
         # Plot the original class distribution
@@ -389,8 +360,7 @@ class DataPruning:
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
         plt.xticks([])
-        plt.savefig(os.path.join(self.fig_save_dir, f"{['unprotected', 'protected'][self.protect_prototypes]}"
-                                                    f"_class_level_sample_distribution.pdf"))
+        plt.savefig(os.path.join(self.fig_save_dir, "class_level_sample_distribution.pdf"))
         plt.close()
 
         # Sort classes by class_counts for imbalance visualization
@@ -404,11 +374,10 @@ class DataPruning:
         plt.ylabel('Number of Remaining Samples')
         plt.title(f'Sorted Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
         plt.xticks([])
-        plt.savefig(os.path.join(self.fig_save_dir, f"{['unprotected', 'protected'][self.protect_prototypes]}"
-                                                    f"_sorted_class_level_sample_distribution.pdf"))
+        plt.savefig(os.path.join(self.fig_save_dir, "sorted_class_level_sample_distribution.pdf"))
         plt.close()
 
-    def dataset_level_pruning(self):
+    def dataset_level_pruning(self, labels):
         """
         Remove the specified percentage of samples with the lowest instance-level hardness.
         This method returns the indices of the remaining data after pruning.
@@ -422,11 +391,11 @@ class DataPruning:
                                          self.dataset_name)
         self.res_save_dir = os.path.join(self.res_save_dir, 'dlp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices.tolist(), pruning_key='dlp')
+        self.plot_class_level_sample_distribution(remaining_indices.tolist(), 'dlp', labels)
 
         return remaining_indices.tolist()
 
-    def fixed_class_level_pruning(self):
+    def fixed_class_level_pruning(self, labels):
         """
         Remove the specified percentage of samples from each class.
         Ensures that the class distribution remains balanced.
@@ -435,116 +404,22 @@ class DataPruning:
         """
         remaining_indices = []
 
-        for class_id, class_scores in self.class_hardness.items():
+        class_level_hardness = {class_id: [] for class_id in range(self.num_classes)}
+
+        _, training_dataset, _, _ = load_dataset(self.dataset_name, False, False, True)
+        for i, (_, label, _) in enumerate(training_dataset):
+            class_level_hardness[label.item()].append(self.instance_hardness[i])
+
+        for class_id, class_scores in class_level_hardness.items():
             retain_count = int((1 - self.prune_percentage) * len(class_scores))
             class_remaining_indices = self.get_prune_indices(class_scores, retain_count)
-            global_indices = np.where(self.labels == class_id)[0]
+            global_indices = np.where(labels == class_id)[0]
             remaining_indices.extend(global_indices[class_remaining_indices])
 
         self.fig_save_dir = os.path.join(self.fig_save_dir, 'fclp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
         self.res_save_dir = os.path.join(self.res_save_dir, 'fclp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices, pruning_key='fclp')
-
-        return remaining_indices
-
-    def adaptive_class_level_pruning(self, scaling_type="linear", alpha=3):
-        """
-        Perform adaptive class-level pruning based on the average hardness of each class.
-        Harder classes will lose fewer samples, while easier classes will lose more.
-        Scaling type can be 'linear', 'exponential', or 'inverted_exponential'.
-
-        :param scaling_type: Type of scaling ('linear', 'exponential', or 'inverted_exponential').
-        :param alpha: Parameter for exponential scaling to control fairness.
-        :return: List of indices of the remaining data samples after adaptive class-level pruning.
-        """
-        remaining_indices, epsilon = [], 1e-6
-
-        # Calculate the mean hardness of each class
-        class_mean_hardness = {class_id: np.mean(class_scores) for class_id, class_scores in
-                               self.class_hardness.items()}
-
-        # Get the min and max class hardness values
-        max_hardness, min_hardness = max(class_mean_hardness.values()), min(class_mean_hardness.values())
-
-        # Normalize hardness values to range from 0 to 1
-        hardness_range = max_hardness - min_hardness
-        if hardness_range == 0:
-            hardness_range = epsilon  # Avoid division by zero
-        normalized_class_mean_hardness = {
-            class_id: (mean_hardness - min_hardness) / hardness_range
-            for class_id, mean_hardness in class_mean_hardness.items()
-        }
-
-        # Iterate over each class in class_hardness
-        for class_id, class_scores in self.class_hardness.items():
-            class_sample_count = len(class_scores)
-            normalized_mean_hardness = normalized_class_mean_hardness[class_id]
-
-            # Calculate scaling factor based on chosen scaling type
-            if scaling_type == "linear":
-                scaling_factor = normalized_mean_hardness
-            elif scaling_type == "exponential":
-                scaling_factor = (np.exp(alpha * normalized_mean_hardness) - 1) / (np.exp(alpha) - 1)
-            elif scaling_type == "inverted_exponential":
-                scaling_factor = (1 - np.exp(-alpha * normalized_mean_hardness)) / (1 - np.exp(-alpha))
-            else:
-                raise ValueError("Unsupported scaling type. Choose 'linear', 'exponential', or 'inverted_exponential'.")
-
-            # Calculate class pruning percentage
-            class_prune_percentage = self.prune_percentage * (1 - scaling_factor)
-            retain_count = int((1 - class_prune_percentage) * class_sample_count)
-
-            # Get adjusted prune indices considering protect_prototypes
-            class_remaining_indices = self.get_prune_indices(class_scores, retain_count)
-
-            # Find global indices that belong to this class using the labels
-            global_indices = np.where(self.labels == class_id)[0]
-            remaining_indices.extend(global_indices[class_remaining_indices])
-
-        pruning_key = f"{scaling_type}_aclp"
-        self.fig_save_dir = os.path.join(self.fig_save_dir, f'{pruning_key}{int(self.prune_percentage * 100)}',
-                                         self.dataset_name)
-        self.res_save_dir = os.path.join(self.res_save_dir, f'{pruning_key}{int(self.prune_percentage * 100)}',
-                                         self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices, pruning_key=pruning_key)
-
-        return remaining_indices
-
-    def leave_one_out_pruning(self):
-        """
-        Perform leave-one-out pruning, where all classes are pruned equally based on the prune_percentage,
-        except for the hardest class, which is not pruned.
-
-        :return: List of indices of the remaining data samples after leave-one-out pruning.
-        """
-        remaining_indices = []
-
-        # Calculate the mean hardness of each class
-        class_mean_hardness = {class_id: np.mean(class_scores) for class_id, class_scores in
-                               self.class_hardness.items()}
-
-        # Find the hardest class (with the maximum average hardness)
-        hardest_class_id = max(class_mean_hardness, key=class_mean_hardness.get)
-
-        # Iterate over each class in class_hardness
-        for class_id, class_scores in self.class_hardness.items():
-            class_sample_count = len(class_scores)
-            retain_count = class_sample_count if class_id == hardest_class_id else int(
-                (1 - self.prune_percentage) * class_sample_count)
-
-            # Get adjusted prune indices considering protect_prototypes
-            class_remaining_indices = self.get_prune_indices(class_scores, retain_count)
-
-            # Find global indices that belong to this class using the labels
-            global_indices = np.where(self.labels == class_id)[0]
-            remaining_indices.extend(global_indices[class_remaining_indices])
-
-        self.fig_save_dir = os.path.join(self.fig_save_dir, 'loop' + str(int(self.prune_percentage * 100)),
-                                         self.dataset_name)
-        self.res_save_dir = os.path.join(self.res_save_dir, 'loop' + str(int(self.prune_percentage * 100)),
-                                         self.dataset_name)
-        self.plot_class_level_sample_distribution(remaining_indices, pruning_key='loop')
+        self.plot_class_level_sample_distribution(remaining_indices, 'fclp', labels)
 
         return remaining_indices
