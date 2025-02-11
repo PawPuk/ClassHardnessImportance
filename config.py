@@ -16,7 +16,8 @@ dataset_configs = {
         'num_training_samples': [5000 for _ in range(10)],
         'num_test_samples': [1000 for _ in range(10)],
         'safe_pruning_ratios': [48.8, 74.22, 29.08, 10.64, 45.8, 31.44, 54.92, 58.36, 67.28, 63.66],
-        'robust_ensemble_size': 8
+        'robust_ensemble_size': 8,
+        'class_names': ['plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
     },
     'CIFAR100': {
         'batch_size': 128,

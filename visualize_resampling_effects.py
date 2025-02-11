@@ -12,6 +12,7 @@ from tqdm import tqdm
 from config import get_config
 from data import load_dataset
 from neural_networks import ResNet18LowRes
+from utils import load_results
 
 
 def load_models(dataset_name: str) -> Dict[Tuple[str, str, str], List[dict]]:
@@ -177,85 +178,78 @@ def plot_lsvc_accuracies(accuracy_dict, custom_order):
     plt.savefig(os.path.join(figure_save_dir, 'resampling_effects.pdf'))
 
 
-def plot_all_accuracies_sorted(results, LSVCs_accuracies, class_order, base_metric, dataset_name):
+def plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_samples, target_strategies, title):
+    base_strategy, value_changes = ('none', 'none', 'unclean'), {}
 
     # Plot for all strategies using line segments
     plt.figure(figsize=(12, 8))
-
     color_palette = plt.cm.tab10(np.linspace(0, 1, len(results[base_metric])))
-    base_strategy, value_changes = ('none', 'none', 'unclean'), {}
 
     # We plot the results for the base strategies using black solid line for clarity
     reordered_base_values = [results[base_metric][base_strategy][class_id] for class_id in class_order]
     plt.plot(range(len(class_order)), [v for v in reordered_base_values],
-             color='black', linestyle='-', linewidth=2, label="none-none-unclean")
+             color='black', linestyle='-', linewidth=4, label="none-none-unclean")
 
     for idx, (strategy, values) in enumerate(results[base_metric].items()):
-        if strategy == base_strategy:
+        if strategy not in target_strategies:
             continue
         reordered_values = [values[class_id] for class_id in class_order]
-        value_changes[strategy] = [values[class_id] - results[base_metric][base_strategy][class_id]
-                                   for class_id in class_order]
 
-        for reordered_idx, avg_value in enumerate(reordered_values):
-            x_start = reordered_idx - 0.4 + (idx / len(results[base_metric])) * 0.8
-            x_end = reordered_idx + 0.4 - (idx / len(results[base_metric])) * 0.8
-            plt.plot([x_start, x_end], [avg_value, avg_value], color=color_palette[idx], lw=2)
+        plt.plot(range(len(reordered_values)), reordered_values, color=color_palette[idx], lw=2)
 
-        plt.plot([], [], color=color_palette[idx], lw=2, label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}")
+    plt.axvspan(0, number_of_easy_samples - 0.5, color='green', alpha=0.15)
+    plt.axvline(x=number_of_easy_samples - 0.5, color='blue', linestyle='--', linewidth=2)
+    plt.axvspan(number_of_easy_samples - 0.5, len(class_order), color='red', alpha=0.15)
 
     plt.xlabel("Class (Sorted by Base Strategy)", fontsize=12)
     plt.xticks([])
-    plt.ylabel("Accuracy (%)", fontsize=12)
-    plt.title("Average Accuracy by Class for All Strategies (Sorted by Base Strategy)", fontsize=14)
-    plt.legend(fontsize=10, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
+    plt.ylabel(f"{base_metric} (%)", fontsize=12)
+    plt.title(f"{base_metric} by Class for All Strategies (Sorted by Base Strategy)", fontsize=14)
     plt.grid(True, linestyle='--', alpha=0.6)
-    plt.savefig(os.path.join(figure_save_dir, 'resampling_effects.pdf'), bbox_inches='tight')
+    plt.savefig(os.path.join(figure_save_dir, f'{base_metric}_{title}_effects.pdf'), bbox_inches='tight')
 
-    # Producing next Figure (highlighting value changes)
-    fig, axs = plt.subplots(2, 2, figsize=(14, 12))
-    sorting_orders = [
-        ('random', 'easy', 'unclean'),
-        ('hard', 'easy', 'unclean'),
-        ('easy', 'easy', 'unclean'),
-        ('SMOTE', 'easy', 'unclean')
-    ]
 
-    for ax, sorting_order in zip(axs.ravel(), sorting_orders):
+def plot_metric_changes(results, class_order, base_metric, number_of_easy_samples, target_strategies, title):
+    base_strategy, value_changes = ('none', 'none', 'unclean'), {}
+    for idx, (strategy, values) in enumerate(results[base_metric].items()):
+        if strategy not in target_strategies:
+            continue
+        value_changes[strategy] = [values[class_id] - results[base_metric][base_strategy][class_id]
+                                   for class_id in class_order]
 
-        sorted_idx = np.argsort(value_changes[sorting_order])
-        for idx, (strategy, changes) in enumerate(value_changes.items()):
-            sorted_changes = np.array(changes)[sorted_idx]
+    color_palette = plt.cm.tab10(np.linspace(0, 1, len(results[base_metric])))
+    plt.figure(figsize=(12, 8))
+    for strategy_idx, (strategy, values) in enumerate(value_changes.items()):
+        if strategy == ('easy', 'easy', 'unclean') and base_metric == 'Recall':
+            print(f'\n\n\n{number_of_easy_samples}{values}\n\n\n')
+        print(f'{strategy} - easy mean: {np.mean(value_changes[strategy][:number_of_easy_samples])}'
+              f', hard mean:  {np.mean(value_changes[strategy][number_of_easy_samples:])}, easy std: '
+              f'{np.std(value_changes[strategy][:number_of_easy_samples])}, hard std:'
+              f'{np.std(value_changes[strategy][number_of_easy_samples:])}')
+        plt.axhline(y=0, color='black', linewidth=2)
+        plt.plot(range(len(values)), values, color=color_palette[strategy_idx], linestyle='--', linewidth=2)
 
-            ax.plot(range(len(sorted_changes)), sorted_changes, color=color_palette[idx], lw=2,
-                    label=f"{strategy[0]}-{strategy[1]}-{strategy[2]}")
+    plt.axvspan(0, number_of_easy_samples - 0.5, color='green', alpha=0.15)
+    plt.axvline(x=number_of_easy_samples - 0.5, color='blue', linestyle='--', linewidth=2)
+    plt.axvspan(number_of_easy_samples - 0.5, len(class_order), color='red', alpha=0.15)
 
-            dataset_level_change = np.mean(changes)
-            ax.axhline(y=dataset_level_change, color=color_palette[idx], linestyle="--", linewidth=2)
-
-        if dataset_name == 'CIFAR100':
-            # Reorder LSVC accuracies and plot
-            sorted_LSVCs_accuracies = np.array(LSVCs_accuracies)[sorted_idx]
-            ax.plot(range(len(sorted_LSVCs_accuracies)), sorted_LSVCs_accuracies, color='black', linestyle='-',
-                    linewidth=2, label="LSVCS Accuracies")
-
-        # Formatting for each subplot
-        ax.axhline(y=0, color='black', linestyle='-', linewidth=1)  # Reference line at 0
-        ax.set_xlabel("Class", fontsize=10)
-        ax.set_ylabel("Accuracy Change (%)", fontsize=10)
-        ax.set_title(f"Accuracy Change Relative to Base Strategy ({' - '.join(sorting_order)})", fontsize=12)
-        ax.legend(fontsize=8, title="Strategies", loc='upper left', bbox_to_anchor=(1.05, 1))
-        ax.grid(True, linestyle='--', alpha=0.6)
-
-    # Adjust layout for the subplots
-    plt.tight_layout()
-    plt.savefig(os.path.join(figure_save_dir, 'value_changes_due_to_resampling.pdf'))
+    plt.xlabel("Class (Sorted by Base Strategy)", fontsize=12)
+    plt.ylabel(f"{base_metric} Change (%)", fontsize=12)
+    plt.title(f"{base_metric} Change Relative to Base Strategy (Sorted by Base Strategy)", fontsize=12)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.savefig(os.path.join(figure_save_dir, f'{base_metric}_changes_due_to_{title}.pdf'), bbox_inches='tight')
 
 
 def main(dataset_name):
+    number_of_easy_samples = 6 if dataset_name == 'CIFAR10' else 59
+    hardness_save_dir = f"Results/unclean{dataset_name}/"
+    samples_per_class = load_results(os.path.join(hardness_save_dir, 'samples_per_class.pkl'))
+    samples_per_class = [samples_per_class[idx] for idx in samples_per_class.keys()]
+    class_order = np.argsort(samples_per_class)
+
     results_dir = os.path.join("Results", dataset_name)
     models = load_models(dataset_name)
-    _, _, test_loader, _ = load_dataset(dataset_name, False, False, False)
+    _, training_dataset, test_loader, _ = load_dataset(dataset_name, False, False, False)
 
     # Evaluate ensemble performance
     results = obtain_results(results_dir, models, test_loader)
@@ -284,17 +278,32 @@ def main(dataset_name):
                                                   ('Average Model Accuracy', accuracy), ('Recall', recall)]:
                 results[metric_name][strategies][class_id] = metric_results
 
-    base_strategy = ('none', 'none', 'unclean')
-    base_metric = 'Recall'
-    class_order = get_class_order(results, base_strategy, base_metric)
+    for base_metric in ['F1', 'MCC', 'Tn', 'Average Model Accuracy', 'Precision', 'Recall', 'Tp', 'Fp', 'Fn']:
 
-    class_overlap_estimates = np.load('ovo_accuracies.npy', allow_pickle=True).item()
-    mean_accuracies = []
-    for class_id in class_overlap_estimates.keys():
-        accuracies = [acc[1] for acc in class_overlap_estimates[class_id]]
-        mean_accuracies.append(np.mean(accuracies))
-    plot_lsvc_accuracies(class_overlap_estimates, class_order)
-    plot_all_accuracies_sorted(results, mean_accuracies, class_order, base_metric, dataset_name)
+        """class_overlap_estimates = np.load('ovo_accuracies.npy', allow_pickle=True).item()
+        mean_accuracies = []
+        for class_id in class_overlap_estimates.keys():
+            accuracies = [acc[1] for acc in class_overlap_estimates[class_id]]
+            mean_accuracies.append(np.mean(accuracies))
+        plot_lsvc_accuracies(class_overlap_estimates, class_order)"""
+        plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_samples,
+                                   [('none', 'easy', 'unclean')], 'undersample')
+        plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_samples,
+                                   [('random', 'none', 'unclean'), ('easy', 'none', 'unclean'),
+                                    ('hard', 'none', 'unclean'), ('SMOTE', 'none', 'unclean')], 'oversample')
+        plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_samples,
+                                   [], 'resample')
+
+        print('-'*20, f'\n\tResults of undersampling for {base_metric}:\n', '-'*20)
+        plot_metric_changes(results, class_order, base_metric, number_of_easy_samples,
+                            [('none', 'easy', 'unclean')], 'undersample')
+        print('-'*20, f'\n\tResults of oversampling for {base_metric}:\n', '-'*20)
+        plot_metric_changes(results, class_order, base_metric, number_of_easy_samples,
+                            [('random', 'none', 'unclean'), ('easy', 'none', 'unclean'),
+                             ('hard', 'none', 'unclean'), ('SMOTE', 'none', 'unclean')], 'oversample')
+        print('-'*20, f'\n\tResults of resampling for {base_metric}:\n', '-'*20)
+        plot_metric_changes(results, class_order, base_metric, number_of_easy_samples,
+                            [('easy', 'easy', 'unclean')], 'resample')
 
 
 if __name__ == "__main__":

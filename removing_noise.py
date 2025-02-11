@@ -29,10 +29,9 @@ class NoiseRemover:
             next_average_results = np.mean(results[:num_ensemble_models + 1], axis=0)
             cur_sorted_data = np.sort(cur_average_results)
             next_sorted_data = np.sort(next_average_results)
-            # TODO: Modify the below to compute x like it was done in the paper, rather than hardcoding it
-            prune_fraction = 0.12
-            cur_elbow_index = int(len(cur_sorted_data) * prune_fraction)
-            next_elbow_index = int(len(next_sorted_data) * prune_fraction)
+            x_value = 1.5
+            cur_elbow_index = np.searchsorted(cur_sorted_data, x_value, side='left')
+            next_elbow_index = np.searchsorted(next_sorted_data, x_value, side='left')
             cur_sorted_indices = np.argsort(cur_average_results)
             next_sorted_indices = np.argsort(next_average_results)
             cur_removed_indices = set(cur_sorted_indices[:cur_elbow_index])
@@ -64,11 +63,8 @@ class NoiseRemover:
         plt.grid(alpha=0.5)
 
         # This value is chosen manually, so that there should be some hyper-tuning, but I'll leave that for later.
-        # TODO: Modify the below to compute x like it was done in the paper, rather than hardcoding it
-        prune_fraction = 0.12
-        elbow_index = int(len(sorted_data) * prune_fraction)
-        x_value = sorted_data[elbow_index]
-        y_value = cumulative_percentage[elbow_index]
+        x_value = 1.5
+        y_value = np.interp(x_value, sorted_data, cumulative_percentage)
         elbow_index = np.searchsorted(sorted_data, x_value, side='left')
         plt.axhline(y=y_value, color='red', linestyle='--', label=f'Value at x = {x_value}')
         plt.scatter([x_value], [y_value], color='red', zorder=5)  # Label the point for clarity

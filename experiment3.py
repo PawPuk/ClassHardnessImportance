@@ -1,6 +1,6 @@
 import argparse
-from collections import Counter
 import os
+import pickle
 import random
 from typing import Union
 
@@ -105,28 +105,33 @@ class Experiment3:
         return DataLoader(dataset, batch_size=self.config['batch_size'], shuffle=shuffle,
                           num_workers=2, worker_init_fn=worker_init_fn)
 
-    def visualize_resampling_results(self, dataset):
-        # TODO: This does not work for now!!!
-        class_counts = Counter()
-
+    def visualize_resampling_results(self, dataset, samples_per_class):
+        class_counts = np.zeros(self.config['num_classes'], dtype=int)
         for _, label, _ in dataset:
             class_counts[label] += 1
 
-        classes, counts = zip(*class_counts.items())
+        x = np.arange(self.config['num_classes'])
+        avg_count = np.mean(class_counts)
+        number_of_easy_classes = sum([samples_per_class[i] <= avg_count for i in samples_per_class.keys()])
+        print(number_of_easy_classes)
+        colors = ['red' if count > avg_count else 'green' for count in class_counts]
 
         plt.figure(figsize=(8, 5))
-        plt.bar(classes, counts, color='skyblue')
+        plt.bar(x, class_counts, color=colors)
+        plt.axhline(y=np.mean(class_counts), color='blue', linestyle='--', linewidth=2)
         plt.xlabel('Class')
         plt.ylabel('Count')
         plt.title('Class Distribution (Natural Order)')
         plt.savefig(os.path.join(self.figure_save_dir, 'resampled_dataset.pdf'))
 
         # Plot class distribution in sorted order
-        sorted_classes_counts = sorted(class_counts.items(), key=lambda x: x[1], reverse=True)
-        sorted_classes, sorted_counts = zip(*sorted_classes_counts)
+        sorted_indices = np.argsort(class_counts)
+        sorted_percentages = class_counts[sorted_indices]
+        colors = ['red' if count > avg_count else 'green' for count in sorted_percentages]
 
         plt.figure(figsize=(8, 5))
-        plt.bar(sorted_classes, sorted_counts, color='orange')
+        plt.bar(range(len(sorted_percentages)), sorted_percentages, color=colors)
+        plt.axhline(y=np.mean(class_counts), color='blue', linestyle='--', linewidth=2)
         plt.xlabel('Class')
         plt.ylabel('Count')
         plt.title('Class Distribution (Sorted Order)')
@@ -148,12 +153,14 @@ class Experiment3:
         hardness_scores = self.load_hardness_estimates()
 
         hardnesses_by_class, samples_per_class = self.compute_sample_allocation(hardness_scores, training_dataset)
+        with open(os.path.join(self.hardness_save_dir, 'samples_per_class.pkl'), 'wb') as file:
+            pickle.dump(samples_per_class, file)
 
         resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
                                    self.undersampling_strategy, hardnesses_by_class, self.dataset_name,
                                    self.hardness_estimator != 'AUM')
         resampled_dataset = AugmentedSubset(resampler.resample_data(samples_per_class))
-        self.visualize_resampling_results(resampled_dataset)
+        self.visualize_resampling_results(resampled_dataset, samples_per_class)
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
 
@@ -178,12 +185,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Experiment3 with Data Resampling.")
     parser.add_argument('--dataset_name', type=str, required=True,
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN)")
-    parser.add_argument('--oversampling', type=str, required=True, choices=['random', 'easy', 'hard', 'SMOTE'],
-                        help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, and '
-                             '`SMOTE`)')
-    parser.add_argument('--undersampling', type=str, required=True, choices=['random', 'easy', 'hard', 'extreme'],
+    parser.add_argument('--oversampling', type=str, required=True, choices=['random', 'easy', 'hard', 'SMOTE', 'none'],
+                        help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, '
+                             '`SMOTE`, and `none`)')
+    parser.add_argument('--undersampling', type=str, required=True, choices=['random', 'easy', 'hard', 'extreme',
+                                                                             'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
-                             '`prune_hard`, and `prune_extreme`)')
+                             '`prune_hard`, `prune_extreme`, and `none`)')
     parser.add_argument('--hardness_estimator', type=str, choices=['EL2N', 'AUM', 'Forgetting'], default='AUM',
                         help='Specifies which instance level hardness estimator to use.')
     parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')

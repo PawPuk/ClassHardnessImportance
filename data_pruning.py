@@ -151,6 +151,8 @@ class DataResampling:
             return lambda count, hardness: self.prune_easy(count, hardness)
         elif self.undersampling_strategy == 'hard':
             return lambda count, hardness: self.prune_hard(count, hardness)
+        elif self.undersampling_strategy == 'none':
+            return None
         else:
             raise ValueError(f"Undersampling strategy {self.undersampling_strategy} is not supported.")
 
@@ -166,6 +168,8 @@ class DataResampling:
             return lambda count, hardness, class_id: self.oversample_hard(count, hardness, class_id)
         elif self.oversampling_strategy == 'SMOTE':
             return lambda count, hardness, current_indices, stats: self.SMOTE(count, hardness, current_indices, stats)
+        elif self.oversampling_strategy == 'none':
+            return None
         else:
             raise ValueError(f"Oversampling strategy {self.oversampling_strategy} is not supported.")
 
@@ -254,10 +258,10 @@ class DataResampling:
             desired_count = samples_per_class[class_id]
             current_indices = np.array(class_indices[class_id])
 
-            if len(current_indices) > desired_count:
+            if len(current_indices) > desired_count and self.undersampling_strategy != 'none':
                 class_retain_indices = undersample(desired_count, hardnesses_within_class)
                 resampled_indices.extend(current_indices[class_retain_indices])
-            elif len(current_indices) < desired_count:
+            elif len(current_indices) < desired_count and self.oversampling_strategy != 'none':
                 if self.oversampling_strategy == 'SMOTE':
                     # This if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
                     original_data, original_labels, generated_data = oversample(desired_count, hardnesses_within_class,
