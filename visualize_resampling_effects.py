@@ -220,8 +220,6 @@ def plot_metric_changes(results, class_order, base_metric, number_of_easy_sample
     color_palette = plt.cm.tab10(np.linspace(0, 1, len(results[base_metric])))
     plt.figure(figsize=(12, 8))
     for strategy_idx, (strategy, values) in enumerate(value_changes.items()):
-        if strategy == ('easy', 'easy', 'unclean') and base_metric == 'Recall':
-            print(f'\n\n\n{number_of_easy_samples}{values}\n\n\n')
         print(f'{strategy} - easy mean: {np.mean(value_changes[strategy][:number_of_easy_samples])}'
               f', hard mean:  {np.mean(value_changes[strategy][number_of_easy_samples:])}, easy std: '
               f'{np.std(value_changes[strategy][:number_of_easy_samples])}, hard std:'
@@ -292,18 +290,20 @@ def main(dataset_name):
                                    [('random', 'none', 'unclean'), ('easy', 'none', 'unclean'),
                                     ('hard', 'none', 'unclean'), ('SMOTE', 'none', 'unclean')], 'oversample')
         plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_samples,
-                                   [], 'resample')
+                                   [('random', 'easy', 'unclean'), ('easy', 'easy', 'unclean'),
+                                    ('hard', 'easy', 'unclean'), ('SMOTE', 'easy', 'unclean')], 'resample')
 
         print('-'*20, f'\n\tResults of undersampling for {base_metric}:\n', '-'*20)
         plot_metric_changes(results, class_order, base_metric, number_of_easy_samples,
-                            [('none', 'easy', 'unclean')], 'undersample')
+                            [('none', 'easy', 'clean')], 'undersample')
         print('-'*20, f'\n\tResults of oversampling for {base_metric}:\n', '-'*20)
         plot_metric_changes(results, class_order, base_metric, number_of_easy_samples,
-                            [('random', 'none', 'unclean'), ('easy', 'none', 'unclean'),
-                             ('hard', 'none', 'unclean'), ('SMOTE', 'none', 'unclean')], 'oversample')
+                            [('random', 'none', 'clean'), ('easy', 'none', 'clean'),
+                             ('hard', 'none', 'clean'), ('SMOTE', 'none', 'unclean')], 'oversample')
         print('-'*20, f'\n\tResults of resampling for {base_metric}:\n', '-'*20)
         plot_metric_changes(results, class_order, base_metric, number_of_easy_samples,
-                            [('easy', 'easy', 'unclean')], 'resample')
+                            [('random', 'easy', 'clean'), ('easy', 'easy', 'clean'),
+                             ('hard', 'easy', 'clean'), ('SMOTE', 'easy', 'clean')], 'resample')
 
 
 if __name__ == "__main__":
