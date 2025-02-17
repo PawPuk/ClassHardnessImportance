@@ -34,14 +34,14 @@ class Experiment2:
         pruner = DataPruning(aum_scores, self.pruning_rate, self.dataset_name)
 
         if self.pruning_strategy == 'dlp':
-            pruned_indices = pruner.dataset_level_pruning(labels)
+            remaining_indices = pruner.dataset_level_pruning(labels)
         elif self.pruning_strategy == 'fclp':
-            pruned_indices = pruner.fixed_class_level_pruning(labels)
+            remaining_indices = pruner.fixed_class_level_pruning(labels)
         else:
             raise ValueError('Wrong value of the parameter `pruning_strategy`.')
 
         # Create a new pruned dataset
-        pruned_dataset = torch.utils.data.Subset(training_loader.dataset, pruned_indices)
+        pruned_dataset = torch.utils.data.Subset(training_loader.dataset, remaining_indices)
 
         return pruned_dataset
 
@@ -59,14 +59,14 @@ class Experiment2:
 
         # Train ensemble on pruned data (without saving probe models)
         model_save_dir = f"{self.pruning_strategy}{self.pruning_rate}"
-        trainer = ModelTrainer(len(training_dataset), pruned_training_loader, test_loader, self.dataset_name, model_save_dir,
-                               False)
+        trainer = ModelTrainer(len(training_dataset), pruned_training_loader, test_loader, self.dataset_name,
+                               model_save_dir, False)
         trainer.train_ensemble()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='EL2N Score Calculation and Dataset Pruning')
-    parser.add_argument('--pruning_strategy', type=str, choices=['fclp', 'dlp',],
+    parser.add_argument('--pruning_strategy', type=str, choices=['fclp', 'dlp'],
                         help='Choose pruning strategy: fclp (fixed class level pruning) or dlp (data level pruning)')
     parser.add_argument('--dataset_name', type=str, help='Specify the dataset name (default: CIFAR10)')
     parser.add_argument('--pruning_rate', type=int,

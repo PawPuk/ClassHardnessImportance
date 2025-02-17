@@ -319,18 +319,12 @@ class DataPruning:
         self.fig_save_dir = 'Figures/'
         self.res_save_dir = 'Results/'
         self.num_classes = get_config(dataset_name)['num_classes']
-
-        # Load or initialize class_level_sample_counts
-        try:
-            with open("class_level_sample_counts.pkl", "rb") as file:
-                self.class_level_sample_counts = pickle.load(file)
-        except (FileNotFoundError, EOFError):
-            self.class_level_sample_counts = {}
+        self.class_level_sample_counts = {}
 
     @staticmethod
-    def get_prune_indices(hardness_scores, retain_count):
+    def get_unpruned_indices(hardness_scores, retain_count):
         sorted_indices = np.argsort(hardness_scores)
-        return sorted_indices[-retain_count:]
+        return sorted_indices[:retain_count]
 
     def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str, labels):
         os.makedirs(self.fig_save_dir, exist_ok=True)
@@ -385,7 +379,7 @@ class DataPruning:
         :return: List of indices of the remaining data samples after pruning.
         """
         retain_count = int((1 - self.prune_percentage) * len(self.instance_hardness))
-        remaining_indices = self.get_prune_indices(self.instance_hardness, retain_count)
+        remaining_indices = self.get_unpruned_indices(self.instance_hardness, retain_count)
 
         self.fig_save_dir = os.path.join(self.fig_save_dir, 'dlp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
@@ -412,7 +406,7 @@ class DataPruning:
 
         for class_id, class_scores in class_level_hardness.items():
             retain_count = int((1 - self.prune_percentage) * len(class_scores))
-            class_remaining_indices = self.get_prune_indices(class_scores, retain_count)
+            class_remaining_indices = self.get_unpruned_indices(class_scores, retain_count)
             global_indices = np.where(labels == class_id)[0]
             remaining_indices.extend(global_indices[class_remaining_indices])
 

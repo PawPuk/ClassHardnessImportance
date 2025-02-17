@@ -79,13 +79,15 @@ def load_dataset(dataset_name, remove_noise, shuffle, apply_augmentation):
 
     train_transform, test_transform = get_transform(dataset_name, apply_augmentation, config)
     if dataset_name == 'CIFAR10':
-        training_set = torchvision.datasets.CIFAR10(root='./data', train=True, download=True,
-                                                    transform=train_transform)
-        test_set = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=test_transform)
+        training_set = torchvision.datasets.CIFAR10(root='/mnt/parscratch/users/acq21pp/ClassHardnessImportance/data',
+                                                    train=True, download=True, transform=train_transform)
+        test_set = torchvision.datasets.CIFAR10(root='/mnt/parscratch/users/acq21pp/ClassHardnessImportance/data',
+                                                train=False, download=True, transform=test_transform)
     elif dataset_name == 'CIFAR100':
-        training_set = torchvision.datasets.CIFAR100(root='./data', train=True, download=True,
-                                                     transform=train_transform)
-        test_set = torchvision.datasets.CIFAR100(root='./data', train=False, download=True, transform=test_transform)
+        training_set = torchvision.datasets.CIFAR100(root='/mnt/parscratch/users/acq21pp/ClassHardnessImportance/data',
+                                                     train=True, download=True, transform=train_transform)
+        test_set = torchvision.datasets.CIFAR100(root='/mnt/parscratch/users/acq21pp/ClassHardnessImportance/data',
+                                                 train=False, download=True, transform=test_transform)
     else:
         raise ValueError(f"Dataset {dataset_name} is not supported.")
 
