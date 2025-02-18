@@ -2,18 +2,15 @@ import argparse
 import os
 import pickle
 import random
-from typing import Union
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
-from torchvision import datasets, transforms
+from torchvision import transforms
 from torch.utils.data import DataLoader
 
 from config import get_config
-from data import AugmentedSubset, IndexedDataset, load_dataset
+from data import AugmentedSubset, load_dataset
 from data_pruning import DataResampling
-from removing_noise import NoiseRemover
 from train_ensemble import ModelTrainer
 from utils import set_reproducibility, load_aum_results, load_forgetting_results, load_results
 
@@ -23,7 +20,7 @@ class Experiment3:
         self.dataset_name = dataset_name
         self.oversampling_strategy = oversampling
         self.undersampling_strategy = undersampling
-        self.remove_noise = 'clean' if remove_noise else 'unclean'
+        self.data_cleanliness = 'clean' if remove_noise else 'unclean'
         self.hardness_estimator = hardness_estimator
 
         self.config = get_config(dataset_name)
@@ -31,40 +28,17 @@ class Experiment3:
         self.num_epochs = self.config['num_epochs']
         self.num_samples = sum(self.config['num_training_samples'])
 
-        self.hardness_save_dir = f"Results/{self.remove_noise}{self.dataset_name}/"
+        self.hardness_save_dir = f"/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/" \
+                                 f"{self.data_cleanliness}{self.dataset_name}/"
         self.figure_save_dir = f"Figures/{self.dataset_name}/"
-
-    def load_untransferred_dataset(self, train=True) -> Union[AugmentedSubset, IndexedDataset]:
-        """
-        Load the dataset based on dataset_name. Apply data augmentation only for training.
-        """
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(self.config['mean'], self.config['std']),
-        ])
-
-        if self.dataset_name == 'CIFAR10':
-            dataset = datasets.CIFAR10(root='./data', train=train, download=True, transform=transform)
-        elif self.dataset_name == 'CIFAR100':
-            dataset = datasets.CIFAR100(root='./data', train=train, download=True, transform=transform)
-        elif self.dataset_name == 'SVHN':
-            split = 'train' if train else 'test'
-            dataset = datasets.SVHN(root='./data', split=split, download=True, transform=transform)
-        else:
-            raise ValueError(f"Dataset {self.dataset_name} is not supported.")
-
-        dataset = IndexedDataset(dataset)
-        if self.remove_noise == 'clean' and train:
-            retained_indices = NoiseRemover(self.config, self.dataset_name, dataset).clean()
-            dataset = AugmentedSubset(torch.utils.data.Subset(dataset.dataset.dataset, retained_indices))
-        return dataset
 
     def load_hardness_estimates(self):
         if self.hardness_estimator == 'AUM':
-            hardness_over_models = np.array(load_aum_results(self.hardness_save_dir, self.num_epochs))
+            hardness_over_models = np.array(load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs))
         elif self.hardness_estimator == 'Forgetting':
-            aum_scores = load_aum_results(self.hardness_save_dir, self.num_epochs)
-            hardness_over_models = np.array(load_forgetting_results(self.hardness_save_dir, len(aum_scores[0])))
+            aum_scores = load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs)
+            hardness_over_models = np.array(
+                load_forgetting_results(self.data_cleanliness, self.dataset_name, len(aum_scores[0])))
             del aum_scores
         elif self.hardness_estimator == 'EL2N':
             el2n_path = os.path.join(self.hardness_save_dir, 'el2n_scores.pkl')
@@ -82,7 +56,7 @@ class Experiment3:
         hardnesses_by_class, hardness_of_classes = {class_id: [] for class_id in range(self.num_classes)}, {}
 
         for i, (_, label, _) in enumerate(dataset):
-            hardnesses_by_class[label.item()].append(hardness_scores[i])
+            hardnesses_by_class[label].append(hardness_scores[i])
         for label in range(self.num_classes):
             if self.hardness_estimator == 'AUM':
                 hardness_of_classes[label] = 1 / np.mean(hardnesses_by_class[label])
@@ -137,18 +111,19 @@ class Experiment3:
         plt.title('Class Distribution (Sorted Order)')
         plt.savefig(os.path.join(self.figure_save_dir, 'sorted_resampled_dataset.pdf'))
 
-    @staticmethod
-    def perform_data_augmentation(dataset):
-        # TODO: Modify the below to work for different datasets (some might require different data augmentation)
-        data_augmentation = transforms.Compose([
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomCrop(32, padding=4)
-        ])
+    def perform_data_augmentation(self, dataset):
+        if self.dataset_name in ['CIFAR100', 'CIFAR10']:
+            data_augmentation = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomCrop(32, padding=4)
+            ])
+        else:
+            raise ValueError('Unsupported dataset.')
         return AugmentedSubset(dataset, transform=data_augmentation)
 
     def main(self):
         # The value of the shuffle parameter below does not matter as we don't use the loaders.
-        _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.remove_noise == 'clean', True,
+        _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.data_cleanliness == 'clean', True,
                                                             False)
         hardness_scores = self.load_hardness_estimates()
 
@@ -167,15 +142,13 @@ class Experiment3:
         resampled_loader = self.get_dataloader(augmented_resampled_dataset, shuffle=True)
         test_loader = self.get_dataloader(test_dataset, shuffle=False)
 
-        # Print final sample allocation
         print("Samples per class after resampling in training set:")
         for class_id, count in samples_per_class.items():
             print(f"  Class {class_id}: {count}")
 
-        print(len(resampled_dataset))
         model_save_dir = f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_size_hardness"
         trainer = ModelTrainer(len(resampled_dataset), resampled_loader, test_loader, self.dataset_name, model_save_dir,
-                               False, hardness='objective', clean_data=self.remove_noise == 'clean')
+                               False, clean_data=self.data_cleanliness == 'clean')
         trainer.train_ensemble()
 
 
@@ -188,8 +161,7 @@ if __name__ == "__main__":
     parser.add_argument('--oversampling', type=str, required=True, choices=['random', 'easy', 'hard', 'SMOTE', 'none'],
                         help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, '
                              '`SMOTE`, and `none`)')
-    parser.add_argument('--undersampling', type=str, required=True, choices=['random', 'easy', 'hard', 'extreme',
-                                                                             'none'],
+    parser.add_argument('--undersampling', type=str, required=True, choices=['easy', 'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, `prune_extreme`, and `none`)')
     parser.add_argument('--hardness_estimator', type=str, choices=['EL2N', 'AUM', 'Forgetting'], default='AUM',

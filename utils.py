@@ -36,10 +36,11 @@ def load_results(path):
         return pickle.load(file)
 
 
-def load_aum_results(hardness_save_dir, num_epochs) -> List[List[float]]:
+def load_aum_results(data_cleanliness, dataset_name, num_epochs) -> List[List[float]]:
     """Loading the AUM results and changing their format to match that of other hardness estimators by summing over
     epochs."""
-    aum_path = os.path.join(hardness_save_dir, 'AUM.pkl')
+    aum_path = os.path.join(f'/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/'
+                            f'{data_cleanliness}{dataset_name}', 'AUM.pkl')
     aum_over_epochs_and_models = load_results(aum_path)
 
     # TODO: This is CURRENTLY required as train_ensemble.py wasn't initially working properly with denoised datasets.
@@ -57,8 +58,9 @@ def load_aum_results(hardness_save_dir, num_epochs) -> List[List[float]]:
     return aum_scores
 
 
-def load_forgetting_results(hardness_save_dir, num_samples) -> List[List[float]]:
-    forgetting_path = os.path.join(hardness_save_dir, 'Forgetting.pkl')
+def load_forgetting_results(data_cleanliness, dataset_name, num_samples) -> List[List[float]]:
+    forgetting_path = os.path.join(f'/mnt/parscratch/users/acq21pp/ClassHardnessImportance/'
+                                   f'Results/{data_cleanliness}{dataset_name}', 'Forgetting.pkl')
     forgetting_scores = load_results(forgetting_path)
 
     # TODO: This is CURRENTLY required as train_ensemble.py wasn't initially working properly with denoised datasets.

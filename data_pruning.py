@@ -1,19 +1,16 @@
-from collections import Counter
 import os
 import pickle
 import random
-from typing import Dict, List
+from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 import torch
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset, Subset
+from torch.utils.data import TensorDataset, Subset
 
 from config import get_config
 from data import load_dataset, AugmentedSubset, IndexedDataset
-from neural_networks import ResNet18LowRes
 
 
 class DataResampling:
@@ -26,26 +23,12 @@ class DataResampling:
         self.hardness = hardness
         self.high_is_hard = high_is_hard
 
-        self.fig_save_dir = 'Figures/'
-        self.model_save_dir = f'Models/none/{dataset_name}/'
-
-    @staticmethod
-    def random_undersample(desired_count, hardness_scores):
-        return random.sample(range(len(hardness_scores)), desired_count)
-
     def prune_easy(self, desired_count, hardness_scores):
         sorted_indices = np.argsort(hardness_scores)
         if self.high_is_hard:
             return sorted_indices[-desired_count:]
         else:
             return sorted_indices[:desired_count]
-
-    def prune_hard(self, desired_count, hardness_scores):
-        sorted_indices = np.argsort(hardness_scores)
-        if self.high_is_hard:
-            return sorted_indices[:desired_count]
-        else:
-            return sorted_indices[-desired_count:]
 
     @staticmethod
     def random_oversample(desired_count, hardness_scores):
@@ -55,7 +38,7 @@ class DataResampling:
         additional_indices = random.choices(range(len(hardness_scores)), k=desired_count - len(hardness_scores))
         return list(range(len(hardness_scores))) + additional_indices
 
-    def oversample_easy(self, desired_count, hardness_scores, class_id):
+    def oversample_easy(self, desired_count, hardness_scores):
         """
         Perform oversampling with a higher chance of duplicating easy samples.
         """
@@ -81,7 +64,7 @@ class DataResampling:
 
         return list(range(n)) + additional_indices
 
-    def oversample_hard(self, desired_count, hardness_scores, class_id):
+    def oversample_hard(self, desired_count, hardness_scores):
         """
         Perform oversampling with a higher chance of duplicating hard samples.
         """
@@ -107,7 +90,7 @@ class DataResampling:
 
         return list(range(n)) + additional_indices
 
-    def SMOTE(self, desired_count, hardness_scores, current_indices, hardness_stats, k=5):
+    def SMOTE(self, desired_count, current_indices, k=5):
         """
         Perform oversampling using SMOTE to match the desired count.
         """
@@ -126,15 +109,7 @@ class DataResampling:
             neighbor_idx = torch.randint(1, k + 1, (1,)).item()  # Skip the first neighbor (itself)
 
             sample = data[idx]
-            sample_hardness = hardness_scores[idx]
             neighbor = data[neighbor_indices[idx][neighbor_idx]]
-            neighbor_hardness = hardness_scores[neighbor_indices[idx][neighbor_idx]]
-
-            hardness_stats['avg_pair_hardness'].append(sample_hardness)
-            hardness_stats['avg_pair_hardness'].append(neighbor_hardness)
-            hardness_stats['avg_hardness_diff_within_pair'].append(abs(sample_hardness - neighbor_hardness))
-
-            # Interpolate between the sample and its neighbor
             alpha = torch.rand(1).item()
             synthetic_sample = sample + alpha * (neighbor - sample)
             synthetic_samples.append(synthetic_sample)
@@ -146,12 +121,8 @@ class DataResampling:
         """
         Select the appropriate undersampling method based on the strategy.
         """
-        if self.undersampling_strategy == "random":
-            return lambda count, hardness: self.random_undersample(count, hardness)
-        elif self.undersampling_strategy == "easy":
+        if self.undersampling_strategy == "easy":
             return lambda count, hardness: self.prune_easy(count, hardness)
-        elif self.undersampling_strategy == 'hard':
-            return lambda count, hardness: self.prune_hard(count, hardness)
         elif self.undersampling_strategy == 'none':
             return None
         else:
@@ -162,13 +133,13 @@ class DataResampling:
         Select the appropriate oversampling method based on the strategy.
         """
         if self.oversampling_strategy == "random":
-            return lambda count, hardness, class_id: self.random_oversample(count, hardness)
+            return lambda count, hardness: self.random_oversample(count, hardness)
         elif self.oversampling_strategy == "easy":
-            return lambda count, hardness, class_id: self.oversample_easy(count, hardness, class_id)
+            return lambda count, hardness: self.oversample_easy(count, hardness)
         elif self.oversampling_strategy == "hard":
-            return lambda count, hardness, class_id: self.oversample_hard(count, hardness, class_id)
+            return lambda count, hardness: self.oversample_hard(count, hardness)
         elif self.oversampling_strategy == 'SMOTE':
-            return lambda count, hardness, current_indices, stats: self.SMOTE(count, hardness, current_indices, stats)
+            return lambda count, hardness, current_indices: self.SMOTE(count, hardness, current_indices)
         elif self.oversampling_strategy == 'none':
             return None
         else:
@@ -189,51 +160,13 @@ class DataResampling:
         elif isinstance(self.dataset, (IndexedDataset, AugmentedSubset)):
             # Extract data and labels, ignoring the index
             data = torch.stack([data for data, _, _ in self.dataset])
-            labels = torch.tensor([label.item() for _, label, _ in self.dataset])
+            labels = torch.tensor([label for _, label, _ in self.dataset])
             return data.float(), labels
 
         else:
             raise TypeError(
                 "Unsupported dataset type. Ensure the dataset has `tensors`, `data`, and `targets` attributes or "
                 "is an instance of `IndexedDataset` or `AugmentedSubset`.")
-
-    def load_model_states(self):
-        if os.path.exists(self.model_save_dir):
-            model_states = []
-            for file in os.listdir(self.model_save_dir):
-                if "_epoch_20.pth" in file:
-                    model_path = os.path.join(self.model_save_dir, file)
-                    model_state = torch.load(model_path)
-                    model_states.append(model_state)
-        else:
-            raise Exception
-        return model_states
-
-    def estimate_hardness(self, data, labels, all_stats):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        synthetic_dataset = TensorDataset(data, labels)
-        synthetic_dataloader = DataLoader(synthetic_dataset, batch_size=1000, shuffle=False)
-        model_states = self.load_model_states()
-
-        ensemble_stats = []
-        for model_state in model_states:
-            model = ResNet18LowRes(self.num_classes)
-            model.load_state_dict(model_state)
-            model = model.to(device)
-            model.eval()
-            model_stats = []
-            with torch.no_grad():
-                for images, labels in synthetic_dataloader:
-                    images, labels = images.to(device), labels.to(device)
-                    outputs = model(images)
-
-                    softmax_outputs = F.softmax(outputs, dim=1)
-                    one_hot_labels = F.one_hot(labels, num_classes=self.num_classes).float()
-                    l2_errors = torch.norm(softmax_outputs - one_hot_labels, dim=1)
-                    model_stats.extend(l2_errors.cpu().numpy())
-            ensemble_stats.append(model_stats)
-        averaged_stats = [sum(model_stats) / len(model_stats) for model_stats in zip(*ensemble_stats)]
-        all_stats['avg_synthetic_data_hardness'] = averaged_stats
 
     def resample_data(self, samples_per_class):
         """
@@ -247,12 +180,10 @@ class DataResampling:
         # Organize dataset by class
         class_indices = {i: [] for i in range(self.num_classes)}
         for idx, (_, label, _) in enumerate(self.dataset):
-            class_indices[label.item()].append(idx)
+            class_indices[label].append(idx)
 
         # Perform resampling for each class
         resampled_indices, synthetic_data, synthetic_labels = [], [], []
-        hardness_stats = {'avg_pair_hardness': [], 'avg_hardness_diff_within_pair': [],
-                          'avg_synthetic_data_hardness': [], 'avg_respective_synthetic_data_hardness': []}
         print(f'After resampling the dataset should have {sum(samples_per_class.values())} data samples.')
 
         for class_id, hardnesses_within_class in self.hardness.items():
@@ -263,19 +194,16 @@ class DataResampling:
                 class_retain_indices = undersample(desired_count, hardnesses_within_class)
                 resampled_indices.extend(current_indices[class_retain_indices])
             elif len(current_indices) < desired_count and self.oversampling_strategy != 'none':
+                # Below if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
                 if self.oversampling_strategy == 'SMOTE':
-                    # This if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
                     original_data, original_labels, generated_data = oversample(desired_count, hardnesses_within_class,
-                                                                                current_indices, hardness_stats)
+                                                                                current_indices)
                     generated_labels = torch.full((generated_data.size(0),), class_id)
                     print(f'Generated {len(generated_data)} data samples via SMOTE for class {class_id}.')
-                    if len(generated_data) + len(current_indices) != desired_count:
-                        print(len(generated_data), len(current_indices), desired_count)
-                        raise Exception
                     synthetic_data.append(torch.cat([original_data, generated_data], dim=0))
                     synthetic_labels.append(torch.cat([original_labels, generated_labels], dim=0))
                 else:
-                    class_add_indices = oversample(desired_count, hardnesses_within_class, class_id)
+                    class_add_indices = oversample(desired_count, hardnesses_within_class)
                     resampled_indices.extend(current_indices[class_add_indices])
             else:
                 resampled_indices.extend(current_indices)
@@ -285,11 +213,7 @@ class DataResampling:
             synthetic_data = torch.cat(synthetic_data, dim=0)
             synthetic_labels = torch.cat(synthetic_labels, dim=0)
 
-            # self.estimate_hardness(synthetic_data, synthetic_labels, hardness_stats)
             print(f'Generated {len(synthetic_data)} synthetic data samples.')
-            print(hardness_stats)
-            for key, item in hardness_stats.items():
-                print(f'Key {key} has {len(item)} elements.')
 
             new_data = torch.cat([existing_data, synthetic_data], dim=0)
             new_labels = torch.cat([existing_labels, synthetic_labels], dim=0)
@@ -299,12 +223,12 @@ class DataResampling:
             synthetic_indices = list(range(synthetic_start_idx, len(self.dataset)))
             resampled_indices.extend(synthetic_indices)
 
-        # Create the resampled dataset
         return Subset(self.dataset, resampled_indices)
 
 
 class DataPruning:
-    def __init__(self, instance_hardness: List[List[float]], prune_percentage: int, dataset_name: str):
+    def __init__(self, instance_hardness: List[List[float]], prune_percentage: int, dataset_name: str,
+                 high_is_hard: bool):
         """
         Initialize the DataPruning class.
 
@@ -316,15 +240,20 @@ class DataPruning:
         self.instance_hardness = np.mean(np.array(instance_hardness), axis=0)
         self.prune_percentage = prune_percentage / 100
         self.dataset_name = dataset_name
-        self.fig_save_dir = 'Figures/'
-        self.res_save_dir = 'Results/'
+        self.high_is_hard = high_is_hard
+
+        self.fig_save_dir = '/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Figures/'
+        self.res_save_dir = '/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/'
         self.num_classes = get_config(dataset_name)['num_classes']
         self.class_level_sample_counts = {}
 
-    @staticmethod
-    def get_unpruned_indices(hardness_scores, retain_count):
+    def get_unpruned_indices(self, hardness_scores, retain_count):
         sorted_indices = np.argsort(hardness_scores)
-        return sorted_indices[:retain_count]
+
+        if self.high_is_hard:
+            return sorted_indices[-retain_count:]
+        else:
+            return sorted_indices[:retain_count]
 
     def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str, labels):
         os.makedirs(self.fig_save_dir, exist_ok=True)
@@ -402,7 +331,7 @@ class DataPruning:
 
         _, training_dataset, _, _ = load_dataset(self.dataset_name, False, False, True)
         for i, (_, label, _) in enumerate(training_dataset):
-            class_level_hardness[label.item()].append(self.instance_hardness[i])
+            class_level_hardness[label].append(self.instance_hardness[i])
 
         for class_id, class_scores in class_level_hardness.items():
             retain_count = int((1 - self.prune_percentage) * len(class_scores))

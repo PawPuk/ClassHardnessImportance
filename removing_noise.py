@@ -102,7 +102,6 @@ class NoiseRemover:
 
         sorted_indices = np.argsort(percentage_class_counts)
         sorted_percentages = percentage_class_counts[sorted_indices]
-        sorted_class_names = [class_names[i] for i in sorted_indices]
 
         plt.figure(figsize=(8, 5))
         plt.bar(range(len(sorted_percentages)), sorted_percentages, color='skyblue')
@@ -118,6 +117,8 @@ class NoiseRemover:
         plt.close()
 
     def visualize_lowest_aum_samples(self, indices, aum_values):
+        # TODO: I am unsure if this will work properly with data augmentation being applied to self.dataset...
+
         num_samples_to_visualize = min(30, len(indices))
         fig, axes = plt.subplots(3, 10, figsize=(20, 8))
         fig.suptitle("Samples with Lowest AUM Values", fontsize=16)
@@ -150,8 +151,7 @@ class NoiseRemover:
         plt.savefig(os.path.join(self.figure_save_dir, "lowest_AUM_samples.pdf"))
 
     def clean(self):
-        hardness_save_dir = f"Results/unclean{self.dataset_name}"
-        aum_scores_over_models = load_aum_results(hardness_save_dir, self.NUM_EPOCHS)
+        aum_scores_over_models = load_aum_results('unclean', self.dataset_name, self.NUM_EPOCHS)
         self.compute_and_visualize_stability_of_noise_removal(aum_scores_over_models)
 
         aum_scores = np.mean(np.array(aum_scores_over_models[:self.NUM_MODELS]), axis=0)

@@ -20,20 +20,21 @@ from utils import get_latest_model_index, load_aum_results, load_forgetting_resu
 
 class Visualizer:
     def __init__(self, dataset_name, remove_noise):
-        self.remove_noise = remove_noise
+        self.dataset_name = dataset_name
+        self.data_cleanliness = 'clean' if remove_noise else 'unclean'
+
         config = get_config(dataset_name)
         self.num_classes = config['num_classes']
         self.num_epochs = config['num_epochs']
         self.num_samples = sum(config['num_training_samples'])
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
-        self.data_cleanliness = 'clean' if remove_noise else 'unclean'
         self.optimal_num_models = config['robust_ensemble_size']
 
-        self.results_save_dir = os.path.join('Results/', f"{self.data_cleanliness}{dataset_name}")
+        self.results_save_dir = os.path.join('/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/',
+                                             f"{self.data_cleanliness}{dataset_name}")
         self.figures_save_dir = os.path.join('Figures/', f'{self.data_cleanliness}{dataset_name}')
-        self.hardness_save_dir = f"Results/{self.data_cleanliness}{dataset_name}/"
-        for save_dir in [self.results_save_dir, self.figures_save_dir, self.hardness_save_dir]:
+        for save_dir in [self.results_save_dir, self.figures_save_dir]:
             os.makedirs(save_dir, exist_ok=True)
 
         self.thresholds = np.arange(10, 100, 10)
@@ -314,12 +315,12 @@ class Visualizer:
             plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))
 
     def main(self):
-        training_loader, _, _, _ = load_dataset(args.dataset_name, self.remove_noise, False, False)
+        training_loader, _, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean', False, False)
         training_all_el2n_scores = self.collect_el2n_scores(training_loader)
         self.save_el2n_scores(training_all_el2n_scores)
 
-        aum_scores = load_aum_results(self.hardness_save_dir, self.num_epochs)
-        forgetting_scores = load_forgetting_results(self.hardness_save_dir, len(aum_scores[0]))
+        aum_scores = load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs)
+        forgetting_scores = load_forgetting_results(self.data_cleanliness, self.dataset_name, len(aum_scores[0]))
         # self.visualize_forgetting_results(forgetting_scores)
 
         print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')

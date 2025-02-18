@@ -2,7 +2,7 @@ import random
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms as transforms
 
@@ -12,16 +12,6 @@ from removing_noise import NoiseRemover
 
 class IndexedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset):
-        # To make the training faster we transform the dataset into a TensorDataset
-        if not isinstance(dataset, TensorDataset):
-            data_list, label_list = [], []
-            for i in range(len(dataset)):
-                data, label = dataset[i]
-                data_list.append(data.unsqueeze(0))  # Add a dimension for torch.cat (this is for number of samples)
-                label_list.append(torch.tensor(label)) # Necessary because some datasets return labels as integers
-            data_tensor = torch.cat(data_list, dim=0)
-            label_tensor = torch.tensor(label_list)
-            dataset = TensorDataset(data_tensor, label_tensor)
         self.dataset = dataset
 
     def __len__(self):
@@ -54,7 +44,6 @@ class AugmentedSubset(torch.utils.data.Dataset):
 def get_transform(dataset_name, apply_augmentation, config):
 
     if apply_augmentation and dataset_name in ['CIFAR100', 'CIFAR10']:
-        print('ajuisdhaijukbdhaijudhwijua')
         train_transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.RandomCrop(32, padding=4),

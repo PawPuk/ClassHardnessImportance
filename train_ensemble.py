@@ -15,7 +15,6 @@ from utils import set_reproducibility, get_latest_model_index
 
 
 class ModelTrainer:
-    # TODO: Modify the code in other functions to match the new ModelTrainer
     def __init__(self, training_set_size, training_loader, test_loader, dataset_name, pruning_type='none',
                  save_probe_models=True, hardness='subjective', estimate_hardness=False, clean_data=False):
         """
@@ -160,7 +159,8 @@ class ModelTrainer:
         We want to add more models to the ensemble rather than have to retrain it from scratch.
         """
         if self.estimate_hardness:
-            hardness_save_dir = f"Results/{self.clean_data}{self.dataset_name}/"
+            hardness_save_dir = f"/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/" \
+                                f"{self.clean_data}{self.dataset_name}/"
             os.makedirs(hardness_save_dir, exist_ok=True)
             aum_path = os.path.join(hardness_save_dir, 'AUM.pkl')
             forgetting_path = os.path.join(hardness_save_dir, 'Forgetting.pkl')
