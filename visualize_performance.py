@@ -23,6 +23,7 @@ class PerformanceVisualizer:
         self.num_epochs = config['num_epochs']
         self.num_training_samples = config['num_training_samples']
         self.num_test_samples = config['num_test_samples']
+        self.num_models = config['robust_ensemble_size']
 
         self.figure_save_dir = os.path.join('Figures/', args.dataset_name)
         os.makedirs(self.figure_save_dir, exist_ok=True)
@@ -34,8 +35,8 @@ class PerformanceVisualizer:
         for pruning_strategy in ['fclp', 'dlp']:
             # Walk through each folder in the Models directory
             for root, dirs, files in os.walk(models_dir):
-                # Check if the path matches the specified pruning strategy and dataset name
-                if f"{pruning_strategy}" in root and f"{self.dataset_name}" in root:
+                # Ensure the dataset name matches exactly (avoid partial matches like "cifar10" in "cifar100")
+                if f"{pruning_strategy}" in root and os.path.basename(root) == f'unclean{self.dataset_name}':
                     pruning_rate = int(root.split(pruning_strategy)[1].split("/")[0])
                     models_by_rate[pruning_strategy].setdefault(pruning_rate, [])
                     for file in files:
@@ -53,7 +54,9 @@ class PerformanceVisualizer:
                         model_path = os.path.join(full_dataset_dir, file)
                         model_state = torch.load(model_path)
                         models_by_rate[pruning_strategy][0].append(model_state)
+
             print(f"Models loaded by pruning rate for {pruning_strategy} on {self.dataset_name}")
+
         return models_by_rate
 
     def compute_pruned_percentage(self, models_by_rate: [str, Dict[int, List[dict]]]) -> Dict[str, Dict[
@@ -98,10 +101,11 @@ class PerformanceVisualizer:
     def evaluate_block(self, ensemble: List[dict], test_loader, class_index: int, pruning_rate: int, results,
                        pruning_strategy: str):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # Initialize confusion matrix components
-        total_Tp, total_Fp, total_Fn, total_Tn = 0, 0, 0, 0
 
-        for model_state in ensemble:
+        for model_idx, model_state in enumerate(ensemble):
+            if model_idx == self.num_models:
+                continue
+            Tp, Fp, Fn, Tn = 0, 0, 0, 0
             model = ResNet18LowRes(self.num_classes)
             model.load_state_dict(model_state)
             model = model.to(device)
@@ -116,20 +120,19 @@ class PerformanceVisualizer:
                     for pred, label in zip(predicted, labels):
                         if label == class_index:
                             if pred.item() == class_index:
-                                total_Tp += 1
+                                Tp += 1
                             else:
-                                total_Fn += 1
+                                Fn += 1
                         else:
                             if pred.item() == class_index:
-                                total_Fp += 1
+                                Fp += 1
                             else:
-                                total_Tn += 1
+                                Tn += 1
 
-        # Average over ensemble
-        results[pruning_strategy]['Tp'][pruning_rate][class_index] = total_Tp / len(ensemble)
-        results[pruning_strategy]['Fp'][pruning_rate][class_index] = total_Fp / len(ensemble)
-        results[pruning_strategy]['Fn'][pruning_rate][class_index] = total_Fn / len(ensemble)
-        results[pruning_strategy]['Tn'][pruning_rate][class_index] = total_Tn / len(ensemble)
+            results[pruning_strategy]['Tp'][pruning_rate][class_index][model_idx] = Tp
+            results[pruning_strategy]['Fp'][pruning_rate][class_index][model_idx] = Fp
+            results[pruning_strategy]['Fn'][pruning_rate][class_index][model_idx] = Fn
+            results[pruning_strategy]['Tn'][pruning_rate][class_index][model_idx] = Tn
 
     def evaluate_ensemble(self, models_by_rate: Dict[str, Dict[int, List[dict]]], test_loader: DataLoader,
                           results: Dict[str, Dict[str, Dict]]):
@@ -137,13 +140,13 @@ class PerformanceVisualizer:
             for pruning_rate, ensemble in tqdm(models_by_rate[pruning_strategy].items(),
                                                desc=f'Iterating over pruning rates ({pruning_strategy}).'):
                 for metric_name in ['Tp', 'Fp', 'Fn', 'Tn']:
-                    results[pruning_strategy][metric_name][pruning_rate] = {class_id: 0
+                    results[pruning_strategy][metric_name][pruning_rate] = {class_id: {}
                                                                             for class_id in range(self.num_classes)}
-                for class_index in range(self.num_classes):
+                for class_index in tqdm(range(self.num_classes), desc='Iterating over classes'):
                     self.evaluate_block(ensemble, test_loader, class_index, pruning_rate, results, pruning_strategy)
 
     def plot_class_level_results(self, results, pruned_percentages):
-        pruning_rates = sorted(results['fclp']['Average Model Accuracy'].keys())
+        pruning_rates = sorted(results['fclp']['Accuracy'].keys())
 
         for metric_name in results['fclp'].keys():
             fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
@@ -151,20 +154,39 @@ class PerformanceVisualizer:
             axes = axes.flatten()
 
             for class_id in range(self.num_classes):
-                metric_value_fclp = [results['fclp'][metric_name][p][class_id] for p in pruning_rates]
-                metric_value_dlp = [results['dlp'][metric_name][p][class_id] for p in pruning_rates]
+                avg_metric_values_fclp = [np.mean([results['fclp'][metric_name][p][class_id][model_idx]
+                                                  for model_idx in range(self.num_models)])
+                                          for p in pruning_rates]
+                std_metric_values_fclp = [np.std([results['fclp'][metric_name][p][class_id][model_idx]
+                                                 for model_idx in range(self.num_models)])
+                                          for p in pruning_rates]
+
+                avg_metric_values_dlp = [np.mean([results['dlp'][metric_name][p][class_id][model_idx]
+                                                 for model_idx in range(self.num_models)])
+                                         for p in pruning_rates]
+                std_metric_values_dlp = [np.std([results['dlp'][metric_name][p][class_id][model_idx]
+                                                for model_idx in range(self.num_models)])
+                                         for p in pruning_rates]
+                if metric_name == 'Recall':
+                    print(f'Class {class_id}:\n\t{avg_metric_values_fclp}\n\t{avg_metric_values_dlp}')
 
                 pruning_fclp = [pruned_percentages['fclp'][p][class_id] for p in pruning_rates]
                 pruning_dlp = [pruned_percentages['dlp'][p][class_id] for p in pruning_rates]
 
                 ax = axes[class_id]
-                ax.plot(pruning_fclp, metric_value_fclp, marker='o', linestyle='-', color='blue', label='FCLP')
+                ax.plot(pruning_fclp, avg_metric_values_fclp, marker='o', linestyle='-', color='blue', label='clp')
+                ax.fill_between(pruning_fclp, np.array(avg_metric_values_fclp) - np.array(std_metric_values_fclp),
+                                np.array(avg_metric_values_fclp) + np.array(std_metric_values_fclp),
+                                color='blue', alpha=0.2)
                 ax.set_xlabel("Pruning % (clp)", color='blue')
                 ax.set_xlim(0, 100)
                 ax.tick_params(axis='x', labelcolor='blue')
 
                 ax2 = ax.twiny()
-                ax2.plot(pruning_dlp, metric_value_dlp, marker='s', linestyle='--', color='red', label='DLP')
+                ax2.plot(pruning_dlp, avg_metric_values_dlp, marker='s', linestyle='--', color='red', label='dlp')
+                ax.fill_between(pruning_dlp, np.array(avg_metric_values_dlp) - np.array(std_metric_values_dlp),
+                                np.array(avg_metric_values_dlp) + np.array(std_metric_values_dlp),
+                                color='red', alpha=0.2)
                 ax2.set_xlabel("Pruning % (dlp)", color='red')
                 ax2.set_xlim(0, 100)  # Fix x-axis range for DLP
                 ax2.tick_params(axis='x', labelcolor='red')
@@ -178,24 +200,36 @@ class PerformanceVisualizer:
             plt.close()
 
     def compare_fclp_with_dlp(self, results):
-        pruning_rates = sorted(results['fclp']['Average Model Accuracy'].keys())
+        pruning_rates = sorted(results['fclp']['Accuracy'].keys())
 
         for metric_name in results['fclp'].keys():
-            avg_metric_fclp = [np.mean([results['fclp'][metric_name][p][class_id]
-                                        for class_id in range(self.num_classes)]) for p in pruning_rates]
-            std_metric_fclp = [np.std([results['fclp'][metric_name][p][class_id]
-                                       for class_id in range(self.num_classes)]) for p in pruning_rates]
+            avg_metric_fclp = [np.mean([results['fclp'][metric_name][p][class_id][model_idx]
+                                        for model_idx in range(self.num_models)
+                                        for class_id in range(self.num_classes)])
+                               for p in pruning_rates]
+            std_metric_fclp = [np.std([results['fclp'][metric_name][p][class_id][model_idx]
+                                       for model_idx in range(self.num_models)
+                                       for class_id in range(self.num_classes)])
+                               for p in pruning_rates]
 
-            avg_metric_dlp = [np.mean([results['dlp'][metric_name][p][class_id]
-                                       for class_id in range(self.num_classes)]) for p in pruning_rates]
-            std_metric_dlp = [np.std([results['dlp'][metric_name][p][class_id]
-                                      for class_id in range(self.num_classes)]) for p in pruning_rates]
+            avg_metric_dlp = [np.mean([results['dlp'][metric_name][p][class_id][model_idx]
+                                       for model_idx in range(self.num_models)
+                                       for class_id in range(self.num_classes)])
+                              for p in pruning_rates]
+            std_metric_dlp = [np.std([results['dlp'][metric_name][p][class_id][model_idx]
+                                      for model_idx in range(self.num_models)
+                                      for class_id in range(self.num_classes)])
+                              for p in pruning_rates]
+
+            if metric_name == 'Recall':
+                print(avg_metric_fclp)
+                print(avg_metric_dlp)
 
             # Create a figure
             plt.figure(figsize=(8, 6))
 
             # Plot FCLP (Blue Line)
-            plt.plot(pruning_rates, avg_metric_fclp, marker='o', linestyle='-', color='blue', label='fclp')
+            plt.plot(pruning_rates, avg_metric_fclp, marker='o', linestyle='-', color='blue', label='clp')
             plt.fill_between(pruning_rates,
                              np.array(avg_metric_fclp) - np.array(std_metric_fclp),
                              np.array(avg_metric_fclp) + np.array(std_metric_fclp),
@@ -249,33 +283,38 @@ class PerformanceVisualizer:
             self.evaluate_ensemble(models, test_loader, results)
             self.save_file(result_dir, "ensemble_results.pkl", results)
 
+        print(results['fclp']['Tp'].keys())
+
         for pruning_strategy in ['fclp', 'dlp']:
-            for metric_name in ['F1', 'MCC', 'Tn', 'Average Model Accuracy', 'Precision', 'Recall']:
+            for metric_name in ['F1', 'MCC', 'Tn', 'Accuracy', 'Precision', 'Recall']:
                 results[pruning_strategy][metric_name] = {}
             for pruning_rate in results['fclp']['Tp'].keys():
-                for metric_name in ['F1', 'MCC', 'Tn', 'Average Model Accuracy', 'Precision', 'Recall']:
+                for metric_name in ['F1', 'MCC', 'Tn', 'Accuracy', 'Precision', 'Recall']:
                     results[pruning_strategy][metric_name][pruning_rate] = {}
                 for class_id in range(self.num_classes):
-                    Tp = results[pruning_strategy]['Tp'][pruning_rate][class_id]
-                    Fp = results[pruning_strategy]['Fp'][pruning_rate][class_id]
-                    Fn = results[pruning_strategy]['Fn'][pruning_rate][class_id]
-                    Tn = sum(self.num_test_samples) / (Tp + Fp + Fn)
+                    for metric_name in ['F1', 'MCC', 'Tn', 'Accuracy', 'Precision', 'Recall']:
+                        results[pruning_strategy][metric_name][pruning_rate][class_id] = {}
+                    for model_idx in range(self.num_models):
+                        Tp = results[pruning_strategy]['Tp'][pruning_rate][class_id][model_idx]
+                        Fp = results[pruning_strategy]['Fp'][pruning_rate][class_id][model_idx]
+                        Fn = results[pruning_strategy]['Fn'][pruning_rate][class_id][model_idx]
+                        Tn = sum(self.num_test_samples) / (Tp + Fp + Fn)
 
-                    precision = Tp / (Tp + Fp) if (Tp + Fp) > 0 else 0.0
-                    recall = Tp / (Tp + Fn) if (Tp + Fn) > 0 else 0.0
-                    accuracy = Tp + Tn / sum(self.num_test_samples)
-                    F1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+                        precision = Tp / (Tp + Fp) if (Tp + Fp) > 0 else 0.0
+                        recall = Tp / (Tp + Fn) if (Tp + Fn) > 0 else 0.0
+                        accuracy = Tp + Tn / sum(self.num_test_samples)
+                        F1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
-                    MCC_numerator = Tp * Tn - Fp * Fn
-                    MCC_denominator = ((Tp + Fp) * (Tp + Fn) * (Tn + Fp) * (Tn + Fn)) ** 0.5
-                    MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
+                        MCC_numerator = Tp * Tn - Fp * Fn
+                        MCC_denominator = ((Tp + Fp) * (Tp + Fn) * (Tn + Fp) * (Tn + Fn)) ** 0.5
+                        MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
 
-                    results[pruning_strategy]['F1'][pruning_rate][class_id] = F1
-                    results[pruning_strategy]['MCC'][pruning_rate][class_id] = MCC
-                    results[pruning_strategy]['Tn'][pruning_rate][class_id] = Tn
-                    results[pruning_strategy]['Average Model Accuracy'][pruning_rate][class_id] = accuracy
-                    results[pruning_strategy]['Precision'][pruning_rate][class_id] = precision
-                    results[pruning_strategy]['Recall'][pruning_rate][class_id] = recall
+                        results[pruning_strategy]['F1'][pruning_rate][class_id][model_idx] = F1
+                        results[pruning_strategy]['MCC'][pruning_rate][class_id][model_idx] = MCC
+                        results[pruning_strategy]['Tn'][pruning_rate][class_id][model_idx] = Tn
+                        results[pruning_strategy]['Accuracy'][pruning_rate][class_id][model_idx] = accuracy
+                        results[pruning_strategy]['Precision'][pruning_rate][class_id][model_idx] = precision
+                        results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx] = recall
 
         if self.num_classes == 10:
             self.plot_class_level_results(results, pruned_percentages)

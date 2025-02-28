@@ -130,6 +130,7 @@ class Visualizer:
 
     def compute_and_visualize_stability_of_pruning(self, results):
         metric_names = list(results.keys())
+        vmin, vmax = 0, 62  # Ensure all heatmaps share the same scale
 
         for metric_name in tqdm(metric_names, desc='Computing and visualizing stability of pruning across metrics'):
             metric_results = results[metric_name]
@@ -161,7 +162,7 @@ class Visualizer:
             # Create figure and plot the heatmap
             plt.figure(figsize=(10, 6))
             sns.heatmap(stability_results, annot=True, fmt='.2f', cmap='coolwarm',
-                        cbar_kws={'label': 'Jaccard Overlap'})
+                        cbar_kws={'label': 'Jaccard Overlap'}, vmin=vmin, vmax=vmax)  # Set color scale
 
             # Adjust annotation format
             for text in plt.gca().texts:
@@ -173,6 +174,7 @@ class Visualizer:
             plt.xticks(np.arange(num_models - 1) + 0.5, np.arange(1, num_models))
             plt.yticks(np.arange(num_thresholds) + 0.5, np.arange(10, 100, 10))
             plt.savefig(os.path.join(self.figures_save_dir, f'pruning_stability_based_on_{metric_name}.pdf'))
+            plt.close()
 
     def pruned_indices_vs_hardness_estimator(self, results):
         metric_names = list(results.keys())
@@ -289,6 +291,8 @@ class Visualizer:
         # produce the below Figures to allow for clearer analysis of the results (metrics have different values)
         for metric in metrics:
             max_diffs, min_diffs, avg_diffs = compute_stats(differences[metric])
+            if metric == 'el2n':
+                print(max_diffs, min_diffs, avg_diffs)
             plt.figure(figsize=(10, 6))
             plt.plot(ensemble_sizes[metric], max_diffs, label=f'Max Diff', linestyle='-', marker='o')
             plt.plot(ensemble_sizes[metric], min_diffs, label=f'Min Diff', linestyle='--', marker='x')

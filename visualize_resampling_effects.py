@@ -295,25 +295,25 @@ class ResamplingVisualizer:
                 mean_accuracies.append(np.mean(accuracies))
             plot_lsvc_accuracies(class_overlap_estimates, class_order)"""
             self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes,
-                                            [('none', 'easy', 'unclean')], 'undersample')
-            self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes,
+                                            [('none', 'easy', 'clean')], 'undersample')
+            """self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes,
                                             [('random', 'none', 'unclean'), ('easy', 'none', 'unclean'),
-                                             ('hard', 'none', 'unclean'), ('SMOTE', 'none', 'unclean')], 'oversample')
+                                             ('hard', 'none', 'unclean')], 'oversample')"""
             self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes,
-                                            [('random', 'easy', 'unclean'), ('easy', 'easy', 'unclean'),
-                                             ('hard', 'easy', 'unclean'), ('SMOTE', 'easy', 'unclean')], 'resample')
+                                            [('random', 'easy', 'clean'), ('easy', 'easy', 'clean'),
+                                             ('hard', 'easy', 'clean')], 'resample')
 
             print('-'*20, f'\n\tResults of undersampling for {base_metric}:\n', '-'*20)
             self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes,
                                      [('none', 'easy', 'clean')], 'undersample')
-            print('-'*20, f'\n\tResults of oversampling for {base_metric}:\n', '-'*20)
+            """print('-'*20, f'\n\tResults of oversampling for {base_metric}:\n', '-'*20)
             self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes,
                                      [('random', 'none', 'clean'), ('easy', 'none', 'clean'),
-                                      ('hard', 'none', 'clean'), ('SMOTE', 'none', 'unclean')], 'oversample')
+                                      ('hard', 'none', 'clean'), ('SMOTE', 'none', 'unclean')], 'oversample')"""
             print('-'*20, f'\n\tResults of resampling for {base_metric}:\n', '-'*20)
             self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes,
                                      [('random', 'easy', 'clean'), ('easy', 'easy', 'clean'),
-                                      ('hard', 'easy', 'clean'), ('SMOTE', 'easy', 'clean')], 'resample')
+                                      ('hard', 'easy', 'clean')], 'resample')
 
 
 if __name__ == "__main__":

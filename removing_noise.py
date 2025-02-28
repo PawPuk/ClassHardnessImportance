@@ -63,17 +63,17 @@ class NoiseRemover:
         plt.ylabel("Cumulative Percentage")
         plt.grid(alpha=0.5)
 
-        # Red dot: Predefined threshold (elbow method)
-        num_to_remove = 552
-        x_value = sorted_data[num_to_remove]
-        y_value = cumulative_percentage[num_to_remove]
-        plt.scatter([x_value], [y_value], color='red', zorder=5, label=f'Our Threshold')
-
         # Grey dot: Alternative threshold at 12% cumulative percentage
         num_to_remove = int(0.12 * len(sorted_data))  # 12% of total data
         x_threshold = sorted_data[num_to_remove]  # x-value at this index
         y_threshold = cumulative_percentage[num_to_remove]  # Corresponding cumulative percentage
         plt.scatter([x_threshold], [y_threshold], color='grey', zorder=5, label=f"Pleiss et al.'s Threshold")
+
+        # Red dot: Predefined threshold (elbow method)
+        num_to_remove = 552
+        x_value = sorted_data[num_to_remove]
+        y_value = cumulative_percentage[num_to_remove]
+        plt.scatter([x_value], [y_value], color='red', zorder=5, label=f'Our Threshold')
 
         plt.legend()
         plt.savefig(os.path.join(self.figure_save_dir, 'AUM_distribution.pdf'))
