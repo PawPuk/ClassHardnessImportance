@@ -16,12 +16,13 @@ from utils import set_reproducibility, load_aum_results, load_forgetting_results
 
 
 class Experiment3:
-    def __init__(self, dataset_name, oversampling, undersampling, hardness_estimator, remove_noise):
+    def __init__(self, dataset_name, oversampling, undersampling, hardness_estimator, remove_noise, alpha):
         self.dataset_name = dataset_name
         self.oversampling_strategy = oversampling
         self.undersampling_strategy = undersampling
         self.data_cleanliness = 'clean' if remove_noise else 'unclean'
         self.hardness_estimator = hardness_estimator
+        self.alpha = alpha
 
         self.config = get_config(dataset_name)
         self.num_classes = self.config['num_classes']
@@ -30,7 +31,10 @@ class Experiment3:
 
         self.hardness_save_dir = f"/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/" \
                                  f"{self.data_cleanliness}{self.dataset_name}/"
-        self.figure_save_dir = f"Figures/{self.dataset_name}/"
+        self.figure_save_dir = f"Figures/{self.dataset_name}_alpha{self.alpha}/"
+        for save_dir in [self.figure_save_dir, os.path.join(self.hardness_save_dir, f'alpha_{self.alpha}')]:
+            os.makedirs(save_dir, exist_ok=True)
+
 
     def load_hardness_estimates(self):
         if self.hardness_estimator == 'AUM':
@@ -56,7 +60,8 @@ class Experiment3:
         hardnesses_by_class, hardness_of_classes = {class_id: [] for class_id in range(self.num_classes)}, {}
 
         for i, (_, label, _) in enumerate(dataset):
-            hardnesses_by_class[label].append(hardness_scores[i])
+            hardnesses_by_class[label.item()].append(hardness_scores[i])
+
         for label in range(self.num_classes):
             if self.hardness_estimator == 'AUM':
                 hardness_of_classes[label] = 1 / np.mean(hardnesses_by_class[label])
@@ -66,6 +71,15 @@ class Experiment3:
         ratios = {class_id: class_hardness / sum(hardness_of_classes.values())
                   for class_id, class_hardness in hardness_of_classes.items()}
         samples_per_class = {class_id: int(round(ratio * self.num_samples)) for class_id, ratio in ratios.items()}
+
+        average_sample_count = int(np.mean(list(samples_per_class.values())))
+        for class_id in samples_per_class.keys():
+            absolute_difference = abs(samples_per_class[class_id] - average_sample_count)
+            if samples_per_class[class_id] > average_sample_count:
+                samples_per_class[class_id] = average_sample_count + int(self.alpha * absolute_difference)
+            else:
+                samples_per_class[class_id] = average_sample_count - int(self.alpha * absolute_difference)
+
         return hardnesses_by_class, samples_per_class
 
     def get_dataloader(self, dataset, shuffle=True):
@@ -78,38 +92,6 @@ class Experiment3:
 
         return DataLoader(dataset, batch_size=self.config['batch_size'], shuffle=shuffle,
                           num_workers=2, worker_init_fn=worker_init_fn)
-
-    def visualize_resampling_results(self, dataset, samples_per_class):
-        class_counts = np.zeros(self.config['num_classes'], dtype=int)
-        for _, label, _ in dataset:
-            class_counts[label] += 1
-
-        x = np.arange(self.config['num_classes'])
-        avg_count = np.mean(class_counts)
-        number_of_easy_classes = sum([samples_per_class[i] <= avg_count for i in samples_per_class.keys()])
-        print(number_of_easy_classes)
-        colors = ['red' if count > avg_count else 'green' for count in class_counts]
-
-        plt.figure(figsize=(8, 5))
-        plt.bar(x, class_counts, color=colors)
-        plt.axhline(y=np.mean(class_counts), color='blue', linestyle='--', linewidth=2)
-        plt.xlabel('Class')
-        plt.ylabel('Count')
-        plt.title('Class Distribution (Natural Order)')
-        plt.savefig(os.path.join(self.figure_save_dir, 'resampled_dataset.pdf'))
-
-        # Plot class distribution in sorted order
-        sorted_indices = np.argsort(class_counts)
-        sorted_percentages = class_counts[sorted_indices]
-        colors = ['red' if count > avg_count else 'green' for count in sorted_percentages]
-
-        plt.figure(figsize=(8, 5))
-        plt.bar(range(len(sorted_percentages)), sorted_percentages, color=colors)
-        plt.axhline(y=np.mean(class_counts), color='blue', linestyle='--', linewidth=2)
-        plt.xlabel('Class')
-        plt.ylabel('Count')
-        plt.title('Class Distribution (Sorted Order)')
-        plt.savefig(os.path.join(self.figure_save_dir, 'sorted_resampled_dataset.pdf'))
 
     def perform_data_augmentation(self, dataset):
         if self.dataset_name in ['CIFAR100', 'CIFAR10']:
@@ -128,14 +110,12 @@ class Experiment3:
         hardness_scores = self.load_hardness_estimates()
 
         hardnesses_by_class, samples_per_class = self.compute_sample_allocation(hardness_scores, training_dataset)
-        with open(os.path.join(self.hardness_save_dir, 'samples_per_class.pkl'), 'wb') as file:
+        with open(os.path.join(self.hardness_save_dir, f'alpha_{self.alpha}', 'samples_per_class.pkl'), 'wb') as file:
             pickle.dump(samples_per_class, file)
 
         resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
-                                   self.undersampling_strategy, hardnesses_by_class, self.dataset_name,
-                                   self.hardness_estimator != 'AUM')
+                                   self.undersampling_strategy, hardnesses_by_class, self.hardness_estimator != 'AUM')
         resampled_dataset = AugmentedSubset(resampler.resample_data(samples_per_class))
-        self.visualize_resampling_results(resampled_dataset, samples_per_class)
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
 
@@ -146,7 +126,8 @@ class Experiment3:
         for class_id, count in samples_per_class.items():
             print(f"  Class {class_id}: {count}")
 
-        model_save_dir = f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_size_hardness"
+        model_save_dir = (f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_alpha_{self.alpha}_"
+                          f"hardness_{self.hardness_estimator}")
         trainer = ModelTrainer(len(resampled_dataset), resampled_loader, test_loader, self.dataset_name, model_save_dir,
                                False, clean_data=self.data_cleanliness == 'clean')
         trainer.train_ensemble()
@@ -167,6 +148,7 @@ if __name__ == "__main__":
     parser.add_argument('--hardness_estimator', type=str, choices=['EL2N', 'AUM', 'Forgetting'], default='AUM',
                         help='Specifies which instance level hardness estimator to use.')
     parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
+    parser.add_argument('--alpha', type=int, default=1, help='Used to control the degree of introduced imbalance.')
     args = parser.parse_args()
 
     experiment = Experiment3(**vars(args))

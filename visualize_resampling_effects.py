@@ -1,8 +1,10 @@
 import argparse
+from collections import defaultdict
+import dill as pickle
 import os
-import pickle
 from typing import Dict, List, Tuple
 
+import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -27,9 +29,13 @@ class ResamplingVisualizer:
         self.num_epochs = config['num_epochs']
 
         self.figure_save_dir = os.path.join('Figures/', dataset_name)
-        os.makedirs(self.figure_save_dir, exist_ok=True)
+        self.hardness_save_dir = (f"/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/unclean"
+                                  f"{self.dataset_name}/")
 
-    def load_models(self) -> Dict[Tuple[str, str, str], List[dict]]:
+        for save_dir in self.figure_save_dir, self.hardness_save_dir:
+            os.makedirs(save_dir, exist_ok=True)
+
+    def load_models(self) -> Dict[Tuple[str, str, str], Dict[float, List[dict]]]:
         """
         Load all models for the specified dataset, organizing by oversampling and undersampling strategies,
         and differentiating between cleaned and uncleaned datasets.
@@ -37,9 +43,12 @@ class ResamplingVisualizer:
         :return: Dictionary where keys are tuples (oversampling_strategy, undersampling_strategy, dataset_type)
                  and values are lists of model state dictionaries.
         """
-        models_dir, models_by_strategy = "Models", {}
+        models_dir = "/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Models"
+        models_by_strategy = defaultdict(lambda: defaultdict(list))
 
         for root, dirs, files in os.walk(models_dir):
+            if 'modelsWithFixedDataAugmentation' in root or 'fclp' in root or 'dlp' in root:
+                continue
             if 'CIFAR100' in root and self.dataset_name != 'CIFAR100':
                 continue  # This is required as 'CIFAR10' string is also contained in 'CIFAR100'...
             elif f"unclean{self.dataset_name}" in root and 'over_' in root and '_under_' in root:
@@ -51,9 +60,9 @@ class ResamplingVisualizer:
 
             try:
                 oversampling_strategy = root.split("over_")[1].split("_under_")[0]
-                undersampling_strategy = root.split("_under_")[1].split("_size_")[0]
+                undersampling_strategy = root.split("_under_")[1].split("_alpha_")[0]
+                alpha = root.split("_alpha_")[1].split("_hardness_")[0]
                 key = (oversampling_strategy, undersampling_strategy, dataset_type)
-                models_by_strategy.setdefault(key, [])
 
                 for file in files:
                     if file.endswith(".pth") and "_epoch_200" in file:
@@ -65,13 +74,13 @@ class ResamplingVisualizer:
 
                             model_path = os.path.join(root, file)
                             model_state = torch.load(model_path)
-                            models_by_strategy[key].append(model_state)
+                            models_by_strategy[key][alpha].append(model_state)
 
                         # Skip directories or files that don't match the expected pattern
                         except (IndexError, ValueError):
                             continue
-                if len(models_by_strategy[key]) > 0:
-                    print(f"Loaded {len(models_by_strategy[key])} models for strategies {key}.")
+                if len(models_by_strategy[key][alpha]) > 0:
+                    print(f"Loaded {len(models_by_strategy[key][alpha])} models for strategies {key} & alpha {alpha}.")
             except (IndexError, ValueError):
                 continue
 
@@ -80,7 +89,7 @@ class ResamplingVisualizer:
             full_dataset_dir = os.path.join(models_dir, "none", f"{dataset_type}{self.dataset_name}")
             if os.path.exists(full_dataset_dir):
                 key = ('none', 'none', dataset_type)
-                models_by_strategy[key] = []
+                models_by_strategy[key][1] = []
                 for file in os.listdir(full_dataset_dir):
                     if file.endswith(".pth") and "_epoch_200" in file:
                         try:
@@ -90,7 +99,7 @@ class ResamplingVisualizer:
 
                             model_path = os.path.join(full_dataset_dir, file)
                             model_state = torch.load(model_path)
-                            models_by_strategy[key].append(model_state)
+                            models_by_strategy[key][1].append(model_state)
                             print(f"Loaded model for full dataset ({dataset_type}): {model_path}")
 
                         except (IndexError, ValueError):
@@ -101,7 +110,7 @@ class ResamplingVisualizer:
         return models_by_strategy
 
     def evaluate_ensemble(self, ensemble: List[dict], test_loader, class_index: int, strategies: Tuple[str, str, str],
-                          results):
+                          alpha: float, results):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         total_Tp, total_Fp, total_Fn, total_Tn = 0, 0, 0, 0
 
@@ -130,10 +139,10 @@ class ResamplingVisualizer:
                                 total_Tn += 1
 
         # Average over ensemble
-        results['Tp'][strategies][class_index] = total_Tp / len(ensemble)
-        results['Fp'][strategies][class_index] = total_Fp / len(ensemble)
-        results['Fn'][strategies][class_index] = total_Fn / len(ensemble)
-        results['Tn'][strategies][class_index] = total_Tn / len(ensemble)
+        results['Tp'][strategies][alpha][class_index] = total_Tp / len(ensemble)
+        results['Fp'][strategies][alpha][class_index] = total_Fp / len(ensemble)
+        results['Fn'][strategies][alpha][class_index] = total_Fn / len(ensemble)
+        results['Tn'][strategies][alpha][class_index] = total_Tn / len(ensemble)
 
     @staticmethod
     def save_file(save_dir, filename, data):
@@ -142,178 +151,210 @@ class ResamplingVisualizer:
         with open(save_location, "wb") as file:
             pickle.dump(data, file)
 
-    def obtain_results(self, result_dir: str, models: Dict[Tuple[str, str, str], List[dict]], test_loader: DataLoader):
+    @staticmethod
+    def clean_results(results):
+        def clean_recursive(d):
+            if isinstance(d, defaultdict):
+                keys_to_remove = []
+                for key in list(d.keys()):
+                    # Check if key is a float and its int version exists
+                    if isinstance(key, float) and int(key) in d and not d[key]:
+                        keys_to_remove.append(key)
+
+                    # Recursively clean deeper levels
+                    d[key] = clean_recursive(d[key])
+
+                # Remove unwanted float keys
+                for key in keys_to_remove:
+                    del d[key]
+            return d
+
+        return clean_recursive(results)
+
+    def obtain_results(self, result_dir: str, models: Dict[Tuple[str, str, str], Dict[float, List[dict]]],
+                       test_loader: DataLoader, results):
         if os.path.exists(os.path.join(result_dir, "resampling_results.pkl")):
             with open(os.path.join(result_dir, "resampling_results.pkl"), 'rb') as f:
                 results = pickle.load(f)
+                results = self.clean_results(results)
         else:
-            results = {'Tp': {}, 'Fn': {}, 'Fp': {}, 'Tn': {}}
-
             for class_index in tqdm(range(self.num_classes), desc='Iterating through classes'):
-                for (over, under, cleanliness), ensemble in models.items():
-                    if class_index == 0:
-                        for metric in ['Tp', 'Fp', 'Fn', 'Tn']:
-                            results[metric][(over, under, cleanliness)] = {class_id: 0
-                                                                           for class_id in range(self.num_classes)}
-                    self.evaluate_ensemble(ensemble, test_loader, class_index, (over, under, cleanliness), results)
+                for (over, under, cleanliness), ensembles in models.items():
+                    for alpha, ensemble in ensembles.items():
+                        self.evaluate_ensemble(ensemble, test_loader, class_index, (over, under, cleanliness),
+                                               alpha, results)
             self.save_file(result_dir, "resampling_results.pkl", results)
         return results
 
-    @staticmethod
-    def get_class_order(results, base_strategy, base_metric):
-        """Determine class order based on average accuracies for the specified base strategy."""
-        accuracies = results[base_metric][base_strategy]
-        sorted_classes = sorted(accuracies.keys(), key=lambda k: accuracies[k])
-        return sorted_classes
-
-    def plot_lsvc_accuracies(self, accuracy_dict, custom_order):
-        mean_accuracies = []
-
-        for class_id in accuracy_dict.keys():
-            accuracies = [acc[1] for acc in accuracy_dict[class_id]]
-            mean_accuracies.append(np.mean(accuracies))
-
-        # Ensure custom order is applied correctly
-        sorted_means = np.array(mean_accuracies)[custom_order]
-
-        # Sequential x-axis for sorted plot
-        x_sorted = np.arange(len(sorted_means))
-
-        # Plot results
-        plt.figure(figsize=(7, 5))
-        plt.plot(x_sorted, sorted_means, linestyle='-')
-        plt.xlabel("Sorted Class Index (Based on ResNet performance)")
-        plt.ylabel("Accuracy")
-        plt.title("Class-wise Accuracies of LSVCs")
-        plt.grid()
-        plt.savefig(os.path.join(self.figure_save_dir, 'resampling_effects.pdf'))
-
-    def plot_all_accuracies_sorted(self, results, class_order, base_metric, number_of_easy_samples, target_strategies,
-                                   title):
-        base_strategy, value_changes = ('none', 'none', 'unclean'), {}
-
-        # Plot for all strategies using line segments
-        plt.figure(figsize=(12, 8))
-        color_palette = plt.cm.tab10(np.linspace(0, 1, len(results[base_metric])))
-
-        # We plot the results for the base strategies using black solid line for clarity
-        reordered_base_values = [results[base_metric][base_strategy][class_id] for class_id in class_order]
-        plt.plot(range(len(class_order)), [v for v in reordered_base_values],
-                 color='black', linestyle='-', linewidth=4, label="none-none-unclean")
-
-        for idx, (strategy, values) in enumerate(results[base_metric].items()):
-            if strategy not in target_strategies:
+    def load_class_distributions(self) -> Dict[float, Dict[int, int]]:
+        class_distributions = {}
+        for root, dirs, files in os.walk(self.hardness_save_dir):
+            if 'CIFAR100' in root and self.dataset_name != 'CIFAR100':
+                continue  # This is required as 'CIFAR10' string is also contained in 'CIFAR100'...
+            if f"unclean{self.dataset_name}" not in root or 'alpha_' not in root:
                 continue
-            reordered_values = [values[class_id] for class_id in class_order]
 
-            plt.plot(range(len(reordered_values)), reordered_values, color=color_palette[idx], lw=2)
+            alpha = int(root.split('alpha_')[-1])
+            for file in files:
+                file_path = os.path.join(root, file)
+                class_distributions[alpha] = load_results(file_path)
+        print(f'Loaded class distribution files:\n\t{class_distributions}')
+        return class_distributions
 
-        plt.axvspan(0, number_of_easy_samples - 0.5, color='green', alpha=0.15)
-        plt.axvline(x=number_of_easy_samples - 0.5, color='blue', linestyle='--', linewidth=2)
-        plt.axvspan(number_of_easy_samples - 0.5, len(class_order), color='red', alpha=0.15)
+    def visualize_resampling_results(self, samples_per_class):
+        fig1, ax1 = plt.subplots(figsize=(8, 5))
+        fig2, ax2 = plt.subplots(figsize=(8, 5))
+
+        alpha_values = sorted(map(int, samples_per_class.keys()))
+        print('alpha values - ', alpha_values, samples_per_class.keys())
+        norm = plt.Normalize(min(alpha_values), max(alpha_values))
+
+        avg_count = np.mean(list(samples_per_class[alpha_values[0]].values()))
+        min_count = min(min(samples.values()) for samples in samples_per_class.values())
+        max_count = max(max(samples.values()) for samples in samples_per_class.values())
+
+        ax1.axhspan(min_count, avg_count - 0.5, color='green', alpha=0.15)
+        ax1.axhline(y=avg_count, color='blue', linestyle='--', linewidth=2, label='α=0')
+        ax1.axhspan(avg_count - 0.5, max_count, color='red', alpha=0.15)
+
+        ax2.axhspan(min_count, avg_count - 0.5, color='green', alpha=0.15)
+        ax2.axhline(y=avg_count, color='blue', linestyle='--', linewidth=2, label='α=0')
+        ax2.axhspan(avg_count - 0.5, max_count, color='red', alpha=0.15)
+
+        for alpha in samples_per_class.keys():
+            class_counts = list(samples_per_class[alpha].values())
+
+            x = np.arange(self.num_classes)
+
+            grey_shade = cm.Greys(0.5 + 0.5 * norm(alpha))  # Scale to [0.5, 1] for visual clarity
+            ax1.plot(x, class_counts, color=grey_shade, label=f'α={alpha}', linewidth=2)
+
+            # Plot class distribution in sorted order
+            sorted_indices = np.argsort(class_counts)
+            sorted_counts = np.array(class_counts)[sorted_indices]
+            ax2.plot(range(len(sorted_counts)), sorted_counts, color=grey_shade, label=f'α={alpha}', linewidth=2)
+
+        ax1.set_xlabel('Class')
+        ax1.set_ylabel('Count')
+        ax1.set_title('Class Distribution (Natural Order)')
+        ax1.legend()
+        fig1.savefig(os.path.join(self.figure_save_dir, 'resampled_dataset.pdf'))
+
+        ax2.set_xlabel('Class')
+        ax2.set_ylabel('Count')
+        ax2.set_title('Class Distribution (Sorted Order)')
+        ax2.legend()
+        fig2.savefig(os.path.join(self.figure_save_dir, 'sorted_resampled_dataset.pdf'))
+
+        number_of_easy_classes = sum([samples_per_class[alpha_values[0]][i] <= avg_count
+                                      for i in samples_per_class[alpha_values[0]].keys()])
+        print(f'Finished plotting and computing the numbers of easy classes for each alpha: {number_of_easy_classes}')
+        return number_of_easy_classes, alpha_values
+
+    def plot_all_accuracies_sorted(self, results, class_order, base_metric, number_of_easy_classes, strategy,
+                                   alpha_values):
+        base_strategy, base_alpha, value_changes = ('none', 'none', 'unclean'), 1, {}
+
+        plt.figure(figsize=(12, 8))
+        reordered_base_values = [results[base_metric][base_strategy][base_alpha][class_id] for class_id in class_order]
+        plt.plot(range(len(class_order)), [v for v in reordered_base_values], color='black', linestyle='-',
+                 linewidth=4, label="α=1")
+
+        norm = plt.Normalize(min(alpha_values), max(alpha_values))
+        for alpha in alpha_values:
+            if alpha > 0:
+                grey_shade = cm.Greys(0.5 + 0.5 * norm(alpha))
+                reordered_values = [results[base_metric][strategy][str(alpha)][class_id] for class_id in class_order]
+                plt.plot(range(len(reordered_values)), reordered_values, color=grey_shade, lw=2, linestyle = '--',
+                         label=f'"α={alpha}"')
+
+        plt.axvspan(0, number_of_easy_classes - 0.5, color='green', alpha=0.15)
+        plt.axvspan(number_of_easy_classes - 0.5, len(class_order), color='red', alpha=0.15)
 
         plt.xlabel("Class (Sorted by Base Strategy)", fontsize=12)
         plt.xticks([])
         plt.ylabel(f"{base_metric} (%)", fontsize=12)
         plt.title(f"{base_metric} by Class for All Strategies (Sorted by Base Strategy)", fontsize=14)
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(self.figure_save_dir, f'{base_metric}_{title}_effects.pdf'), bbox_inches='tight')
+        plt.grid(True, alpha=0.6)
+        plt.legend()
+        plt.savefig(os.path.join(self.figure_save_dir, f'{base_metric}_{strategy}_effects.pdf'),
+                    bbox_inches='tight')
 
-    def plot_metric_changes(self, results, class_order, base_metric, number_of_easy_samples, target_strategies, title):
-        base_strategy, value_changes = ('none', 'none', 'unclean'), {}
-        for idx, (strategy, values) in enumerate(results[base_metric].items()):
-            if strategy not in target_strategies:
-                continue
-            value_changes[strategy] = [values[class_id] - results[base_metric][base_strategy][class_id]
-                                       for class_id in class_order]
+    def plot_metric_changes(self, results, class_order, base_metric, number_of_easy_classes, strategy, alpha_values):
+        base_strategy, base_alpha, value_changes = ('none', 'none', 'unclean'), 1, defaultdict(lambda: defaultdict(list))
 
-        color_palette = plt.cm.tab10(np.linspace(0, 1, len(results[base_metric])))
         plt.figure(figsize=(12, 8))
-        for strategy_idx, (strategy, values) in enumerate(value_changes.items()):
-            print(f'{strategy} - easy mean: {np.mean(value_changes[strategy][:number_of_easy_samples])}'
-                  f', hard mean:  {np.mean(value_changes[strategy][number_of_easy_samples:])}, easy std: '
-                  f'{np.std(value_changes[strategy][:number_of_easy_samples])}, hard std:'
-                  f'{np.std(value_changes[strategy][number_of_easy_samples:])}')
-            plt.axhline(y=0, color='black', linewidth=2)
-            plt.plot(range(len(values)), values, color=color_palette[strategy_idx], linestyle='--', linewidth=2)
+        norm = plt.Normalize(min(alpha_values), max(alpha_values))
 
-        plt.axvspan(0, number_of_easy_samples - 0.5, color='green', alpha=0.15)
-        plt.axvline(x=number_of_easy_samples - 0.5, color='blue', linestyle='--', linewidth=2)
-        plt.axvspan(number_of_easy_samples - 0.5, len(class_order), color='red', alpha=0.15)
+        for alpha, values in results[base_metric][strategy].items():
+            if float(alpha) > 0:
+                value_changes[strategy][alpha] = [values[class_id] -
+                                                  results[base_metric][base_strategy][base_alpha][class_id]
+                                                  for class_id in class_order]
+                grey_shade = cm.Greys(0.1 + 0.9 * norm(float(alpha)))
+                print(f'{alpha}, {strategy} - easy mean: '
+                      f'{np.mean(value_changes[strategy][alpha][:number_of_easy_classes])}'
+                      f', hard mean:  {np.mean(value_changes[strategy][alpha][number_of_easy_classes:])}, easy std: '
+                      f'{np.std(value_changes[strategy][alpha][:number_of_easy_classes])}, hard std:'
+                      f'{np.std(value_changes[strategy][alpha][number_of_easy_classes:])}')
+                plt.axhline(y=0, color='black', linewidth=2)
+                plt.plot(range(len(values)), value_changes[strategy][alpha], color=grey_shade, linestyle='--',
+                         linewidth=2, label=f"α={alpha}")
+
+        plt.axvspan(0, number_of_easy_classes - 0.5, color='green', alpha=0.15)
+        plt.axvspan(number_of_easy_classes - 0.5, len(class_order), color='red', alpha=0.15)
 
         plt.xlabel("Class (Sorted by Base Strategy)", fontsize=12)
         plt.ylabel(f"{base_metric} Change (%)", fontsize=12)
         plt.title(f"{base_metric} Change Relative to Base Strategy (Sorted by Base Strategy)", fontsize=12)
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(self.figure_save_dir, f'{base_metric}_changes_due_to_{title}.pdf'),
+        plt.grid(True, alpha=0.6)
+        plt.legend()
+        plt.savefig(os.path.join(self.figure_save_dir, f'{base_metric}_changes_due_to_{strategy}.pdf'),
                     bbox_inches='tight')
 
     def main(self):
-        number_of_easy_classes = 6 if self.dataset_name == 'CIFAR10' else 59
-        hardness_save_dir = f"/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/unclean{self.dataset_name}/"
-        samples_per_class = load_results(os.path.join(hardness_save_dir, 'samples_per_class.pkl'))
-        samples_per_class = [samples_per_class[idx] for idx in samples_per_class.keys()]
-        class_order = np.argsort(samples_per_class)
-
         results_dir = os.path.join("/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results", self.dataset_name)
         models = self.load_models()
         _, training_dataset, test_loader, _ = load_dataset(self.dataset_name, False, False, False)
-
-        # Evaluate ensemble performance
-        results = self.obtain_results(results_dir, models, test_loader)
-
-        for metric_name in ['F1', 'MCC', 'Tn', 'Average Model Accuracy', 'Precision', 'Recall']:
-            results[metric_name] = {}
+        # results[metric][(over, under, cleanliness)][alpha][class_id] -> int
+        results = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
+        results = self.obtain_results(results_dir, models, test_loader, results)
         for strategies in results['Tp'].keys():
-            for metric_name in ['F1', 'MCC', 'Tn', 'Average Model Accuracy', 'Precision', 'Recall']:
-                results[metric_name][strategies] = {}
-            for class_id in range(self.num_classes):
-                Tp = results['Tp'][strategies][class_id]
-                Fp = results['Fp'][strategies][class_id]
-                Fn = results['Fn'][strategies][class_id]
-                Tn = sum(self.num_test_samples) / (Tp + Fp + Fn)
+            for alpha in results['Tp'][strategies]:
+                for class_id in range(self.num_classes):
+                    Tp = results['Tp'][strategies][alpha][class_id]
+                    Fp = results['Fp'][strategies][alpha][class_id]
+                    Fn = results['Fn'][strategies][alpha][class_id]
+                    Tn = sum(self.num_test_samples) / (Tp + Fp + Fn)
 
-                precision = Tp / (Tp + Fp) if (Tp + Fp) > 0 else 0.0
-                recall = Tp / (Tp + Fn) if (Tp + Fn) > 0 else 0.0
-                accuracy = (Tp + Tn) / sum(self.num_test_samples)
-                F1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+                    precision = Tp / (Tp + Fp) if (Tp + Fp) > 0 else 0.0
+                    recall = Tp / (Tp + Fn) if (Tp + Fn) > 0 else 0.0
+                    accuracy = (Tp + Tn) / sum(self.num_test_samples)
+                    F1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
 
-                MCC_numerator = Tp * Tn - Fp * Fn
-                MCC_denominator = ((Tp + Fp) * (Tp + Fn) * (Tn + Fp) * (Tn + Fn)) ** 0.5
-                MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
+                    MCC_numerator = Tp * Tn - Fp * Fn
+                    MCC_denominator = ((Tp + Fp) * (Tp + Fn) * (Tn + Fp) * (Tn + Fn)) ** 0.5
+                    MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
 
-                for (metric_name, metric_results) in [('F1', F1), ('MCC', MCC), ('Tn', Tn), ('Precision', precision),
-                                                      ('Average Model Accuracy', accuracy), ('Recall', recall)]:
-                    results[metric_name][strategies][class_id] = metric_results
+                    for (metric_name, metric_results) in [('F1', F1), ('MCC', MCC), ('Tn', Tn), ('Precision', precision),
+                                                          ('Average Model Accuracy', accuracy), ('Recall', recall)]:
+                        results[metric_name][strategies][alpha][class_id] = metric_results
 
-        for base_metric in ['F1', 'MCC', 'Tn', 'Average Model Accuracy', 'Precision', 'Recall', 'Tp', 'Fp', 'Fn']:
+        samples_per_class = self.load_class_distributions()
+        number_of_easy_classes, alpha_values = self.visualize_resampling_results(samples_per_class)
 
-            """class_overlap_estimates = np.load('ovo_accuracies.npy', allow_pickle=True).item()
-            mean_accuracies = []
-            for class_id in class_overlap_estimates.keys():
-                accuracies = [acc[1] for acc in class_overlap_estimates[class_id]]
-                mean_accuracies.append(np.mean(accuracies))
-            plot_lsvc_accuracies(class_overlap_estimates, class_order)"""
-            self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes,
-                                            [('none', 'easy', 'clean')], 'undersample')
-            """self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes,
-                                            [('random', 'none', 'unclean'), ('easy', 'none', 'unclean'),
-                                             ('hard', 'none', 'unclean')], 'oversample')"""
-            self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes,
-                                            [('random', 'easy', 'clean'), ('easy', 'easy', 'clean'),
-                                             ('hard', 'easy', 'clean')], 'resample')
+        class_order = np.argsort(list(samples_per_class[1].values()))
 
-            print('-'*20, f'\n\tResults of undersampling for {base_metric}:\n', '-'*20)
-            self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes,
-                                     [('none', 'easy', 'clean')], 'undersample')
-            """print('-'*20, f'\n\tResults of oversampling for {base_metric}:\n', '-'*20)
-            self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes,
-                                     [('random', 'none', 'clean'), ('easy', 'none', 'clean'),
-                                      ('hard', 'none', 'clean'), ('SMOTE', 'none', 'unclean')], 'oversample')"""
-            print('-'*20, f'\n\tResults of resampling for {base_metric}:\n', '-'*20)
-            self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes,
-                                     [('random', 'easy', 'clean'), ('easy', 'easy', 'clean'),
-                                      ('hard', 'easy', 'clean')], 'resample')
+        for base_metric in ['F1', 'MCC', 'Precision', 'Recall']:
+            for strategy in [('none', 'easy', 'unclean'), ('random', 'none', 'unclean'), ('SMOTE', 'none', 'unclean'),
+                             ('easy', 'none', 'unclean'), ('hard', 'none', 'unclean'), ('random', 'easy', 'unclean'),
+                             ('SMOTE', 'easy', 'unclean'), ('easy', 'easy', 'unclean'), ('hard', 'easy', 'unclean')]:
+
+                self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes, strategy,
+                                                alpha_values)
+                print('-'*20, f'\n\tResults of {strategy} for {base_metric}:\n', '-'*20)
+                self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes, strategy,
+                                         alpha_values)
 
 
 if __name__ == "__main__":

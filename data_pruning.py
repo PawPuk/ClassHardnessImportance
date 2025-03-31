@@ -14,8 +14,7 @@ from data import load_dataset, AugmentedSubset, IndexedDataset
 
 
 class DataResampling:
-    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, hardness, dataset_name,
-                 high_is_hard):
+    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, hardness, high_is_hard):
         self.dataset = dataset
         self.num_classes = num_classes
         self.oversampling_strategy = oversampling_strategy
@@ -97,7 +96,7 @@ class DataResampling:
         current_n_samples = len(current_indices)
 
         data = torch.stack([self.dataset[idx][0] for idx in current_indices])
-        labels = torch.tensor([self.dataset[idx][1] for idx in current_indices])
+        labels = torch.stack([self.dataset[idx][1] for idx in current_indices])
         data_flattened = data.view(current_n_samples, -1)
 
         neighbors = NearestNeighbors(n_neighbors=k + 1).fit(data_flattened.numpy())
@@ -139,7 +138,7 @@ class DataResampling:
         elif self.oversampling_strategy == "hard":
             return lambda count, hardness: self.oversample_hard(count, hardness)
         elif self.oversampling_strategy == 'SMOTE':
-            return lambda count, hardness, current_indices: self.SMOTE(count, hardness, current_indices)
+            return lambda count, current_indices: self.SMOTE(count, current_indices)
         elif self.oversampling_strategy == 'none':
             return None
         else:
@@ -154,13 +153,13 @@ class DataResampling:
 
         elif hasattr(self.dataset, "data") and hasattr(self.dataset, "targets"):  # Common for datasets like CIFAR10
             data = torch.stack([img for img, _ in self.dataset])
-            labels = torch.tensor([label for _, label in self.dataset])
+            labels = torch.tensor([label.item() for _, label in self.dataset])
             return data.float(), labels
 
         elif isinstance(self.dataset, (IndexedDataset, AugmentedSubset)):
             # Extract data and labels, ignoring the index
             data = torch.stack([data for data, _, _ in self.dataset])
-            labels = torch.tensor([label for _, label, _ in self.dataset])
+            labels = torch.tensor([label.item() for _, label, _ in self.dataset])
             return data.float(), labels
 
         else:
@@ -180,7 +179,7 @@ class DataResampling:
         # Organize dataset by class
         class_indices = {i: [] for i in range(self.num_classes)}
         for idx, (_, label, _) in enumerate(self.dataset):
-            class_indices[label].append(idx)
+            class_indices[label.item()].append(idx)
 
         # Perform resampling for each class
         resampled_indices, synthetic_data, synthetic_labels = [], [], []
@@ -196,8 +195,7 @@ class DataResampling:
             elif len(current_indices) < desired_count and self.oversampling_strategy != 'none':
                 # Below if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
                 if self.oversampling_strategy == 'SMOTE':
-                    original_data, original_labels, generated_data = oversample(desired_count, hardnesses_within_class,
-                                                                                current_indices)
+                    original_data, original_labels, generated_data = oversample(desired_count, current_indices)
                     generated_labels = torch.full((generated_data.size(0),), class_id)
                     print(f'Generated {len(generated_data)} data samples via SMOTE for class {class_id}.')
                     synthetic_data.append(torch.cat([original_data, generated_data], dim=0))
