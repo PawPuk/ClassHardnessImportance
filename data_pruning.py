@@ -9,7 +9,7 @@ from sklearn.neighbors import NearestNeighbors
 import torch
 from torch.utils.data import TensorDataset, Subset
 
-from config import get_config
+from config import get_config, ROOT
 from data import load_dataset, AugmentedSubset, IndexedDataset
 
 
@@ -240,8 +240,8 @@ class DataPruning:
         self.dataset_name = dataset_name
         self.high_is_hard = high_is_hard
 
-        self.fig_save_dir = '/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Figures/'
-        self.res_save_dir = '/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/'
+        self.fig_save_dir = os.path.join(ROOT, 'Figures/')
+        self.res_save_dir = os.path.join(ROOT, 'Results/')
         self.num_classes = get_config(dataset_name)['num_classes']
         self.class_level_sample_counts = {}
 

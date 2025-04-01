@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from config import ROOT
 from utils import load_aum_results
 
 
@@ -18,7 +19,7 @@ class NoiseRemover:
         self.TOTAL_SAMPLES = sum(self.config['num_training_samples'])
         self.NUM_EPOCHS = self.config['num_epochs']
 
-        self.figure_save_dir = os.path.join('Figures/', f"clean{self.dataset_name}")
+        self.figure_save_dir = os.path.join(ROOT, 'Figures/', f"clean{self.dataset_name}")
         os.makedirs(self.figure_save_dir, exist_ok=True)
 
     def compute_and_visualize_stability_of_noise_removal(self, results):
@@ -117,8 +118,6 @@ class NoiseRemover:
         plt.close()
 
     def visualize_lowest_aum_samples(self, indices, aum_values):
-        # TODO: I am unsure if this will work properly with data augmentation being applied to self.dataset...
-
         num_samples_to_visualize = min(30, len(indices))
         fig, axes = plt.subplots(3, 10, figsize=(20, 8))
         fig.suptitle("Samples with Lowest AUM Values", fontsize=16)

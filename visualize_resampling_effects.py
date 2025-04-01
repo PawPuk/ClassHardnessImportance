@@ -11,7 +11,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import get_config
+from config import get_config, ROOT
 from data import load_dataset
 from neural_networks import ResNet18LowRes
 from utils import load_results
@@ -28,9 +28,8 @@ class ResamplingVisualizer:
         self.num_test_samples = config['num_test_samples']
         self.num_epochs = config['num_epochs']
 
-        self.figure_save_dir = os.path.join('Figures/', dataset_name)
-        self.hardness_save_dir = (f"/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/unclean"
-                                  f"{self.dataset_name}/")
+        self.figure_save_dir = os.path.join(ROOT, 'Figures/', dataset_name)
+        self.hardness_save_dir = (ROOT, f"Results/unclean{self.dataset_name}/")
 
         for save_dir in self.figure_save_dir, self.hardness_save_dir:
             os.makedirs(save_dir, exist_ok=True)
@@ -43,7 +42,7 @@ class ResamplingVisualizer:
         :return: Dictionary where keys are tuples (oversampling_strategy, undersampling_strategy, dataset_type)
                  and values are lists of model state dictionaries.
         """
-        models_dir = "/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Models"
+        models_dir = os.path.join(ROOT, "Models")
         models_by_strategy = defaultdict(lambda: defaultdict(list))
 
         for root, dirs, files in os.walk(models_dir):
@@ -151,32 +150,11 @@ class ResamplingVisualizer:
         with open(save_location, "wb") as file:
             pickle.dump(data, file)
 
-    @staticmethod
-    def clean_results(results):
-        def clean_recursive(d):
-            if isinstance(d, defaultdict):
-                keys_to_remove = []
-                for key in list(d.keys()):
-                    # Check if key is a float and its int version exists
-                    if isinstance(key, float) and int(key) in d and not d[key]:
-                        keys_to_remove.append(key)
-
-                    # Recursively clean deeper levels
-                    d[key] = clean_recursive(d[key])
-
-                # Remove unwanted float keys
-                for key in keys_to_remove:
-                    del d[key]
-            return d
-
-        return clean_recursive(results)
-
     def obtain_results(self, result_dir: str, models: Dict[Tuple[str, str, str], Dict[float, List[dict]]],
                        test_loader: DataLoader, results):
         if os.path.exists(os.path.join(result_dir, "resampling_results.pkl")):
             with open(os.path.join(result_dir, "resampling_results.pkl"), 'rb') as f:
                 results = pickle.load(f)
-                results = self.clean_results(results)
         else:
             for class_index in tqdm(range(self.num_classes), desc='Iterating through classes'):
                 for (over, under, cleanliness), ensembles in models.items():
@@ -313,7 +291,7 @@ class ResamplingVisualizer:
                     bbox_inches='tight')
 
     def main(self):
-        results_dir = os.path.join("/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results", self.dataset_name)
+        results_dir = os.path.join(ROOT, "Results", self.dataset_name)
         models = self.load_models()
         _, training_dataset, test_loader, _ = load_dataset(self.dataset_name, False, False, False)
         # results[metric][(over, under, cleanliness)][alpha][class_id] -> int

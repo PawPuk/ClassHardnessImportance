@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import get_config
+from config import get_config, ROOT
 from data import load_dataset
 from neural_networks import ResNet18LowRes
 from utils import get_latest_model_index, load_aum_results, load_forgetting_results
@@ -31,9 +31,8 @@ class Visualizer:
         self.save_epoch = config['save_epoch']
         self.optimal_num_models = config['robust_ensemble_size']
 
-        self.results_save_dir = os.path.join('/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/',
-                                             f"{self.data_cleanliness}{dataset_name}")
-        self.figures_save_dir = os.path.join('Figures/', f'{self.data_cleanliness}{dataset_name}')
+        self.results_save_dir = os.path.join(ROOT, 'Results/', f"{self.data_cleanliness}{dataset_name}")
+        self.figures_save_dir = os.path.join(ROOT, 'Figures/', f'{self.data_cleanliness}{dataset_name}')
         for save_dir in [self.results_save_dir, self.figures_save_dir]:
             os.makedirs(save_dir, exist_ok=True)
 

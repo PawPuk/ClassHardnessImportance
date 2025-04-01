@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 from neural_networks import ResNet18LowRes
 from data import load_dataset
-from config import get_config
+from config import get_config, ROOT
 
 
 class PerformanceVisualizer:
@@ -25,11 +25,11 @@ class PerformanceVisualizer:
         self.num_test_samples = config['num_test_samples']
         self.num_models = config['robust_ensemble_size']
 
-        self.figure_save_dir = os.path.join('Figures/', args.dataset_name)
+        self.figure_save_dir = os.path.join(ROOT, 'Figures/', args.dataset_name)
         os.makedirs(self.figure_save_dir, exist_ok=True)
 
     def load_models(self) -> Dict[str, Dict[int, List[dict]]]:
-        models_dir = "/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Models"
+        models_dir = os.path.join(ROOT, "Models/")
         models_by_rate = {'fclp': {}, 'dlp': {}}
 
         for pruning_strategy in ['fclp', 'dlp']:
@@ -69,8 +69,7 @@ class PerformanceVisualizer:
             # Iterate over each pruning rate in models_by_rate
             for pruning_rate in pruning_rates:
                 if pruning_rate != 0:
-                    pkl_path = os.path.join("/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results",
-                                            pruning_strategy + str(pruning_rate), self.dataset_name,
+                    pkl_path = os.path.join(ROOT, "Results", pruning_strategy + str(pruning_rate), self.dataset_name,
                                             f"class_level_sample_counts.pkl")
                     with open(pkl_path, "rb") as file:
                         class_level_sample_counts = pickle.load(file)
@@ -259,7 +258,7 @@ class PerformanceVisualizer:
             pickle.dump(data, file)
 
     def main(self):
-        result_dir = os.path.join("/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/", self.dataset_name)
+        result_dir = os.path.join(ROOT, "Results/", self.dataset_name)
         models = self.load_models()
         pruned_percentages = self.compute_pruned_percentage(models)
         if self.num_classes == 10:
@@ -283,7 +282,7 @@ class PerformanceVisualizer:
             self.evaluate_ensemble(models, test_loader, results)
             self.save_file(result_dir, "ensemble_results.pkl", results)
 
-        print(results['fclp']['Tp'].keys())
+        print(results['fclp']['Tp'].keys())  # Sanity check
 
         for pruning_strategy in ['fclp', 'dlp']:
             for metric_name in ['F1', 'MCC', 'Tn', 'Accuracy', 'Precision', 'Recall']:

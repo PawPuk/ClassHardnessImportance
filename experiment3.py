@@ -3,12 +3,11 @@ import os
 import pickle
 import random
 
-import matplotlib.pyplot as plt
 import numpy as np
 from torchvision import transforms
 from torch.utils.data import DataLoader
 
-from config import get_config
+from config import get_config, ROOT
 from data import AugmentedSubset, load_dataset
 from data_pruning import DataResampling
 from train_ensemble import ModelTrainer
@@ -29,9 +28,8 @@ class Experiment3:
         self.num_epochs = self.config['num_epochs']
         self.num_samples = sum(self.config['num_training_samples'])
 
-        self.hardness_save_dir = f"/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/" \
-                                 f"{self.data_cleanliness}{self.dataset_name}/"
-        self.figure_save_dir = f"Figures/{self.dataset_name}_alpha{self.alpha}/"
+        self.hardness_save_dir = os.path.join(ROOT, f"Results/{self.data_cleanliness}{self.dataset_name}/")
+        self.figure_save_dir = os.path.join(ROOT, f"Figures/{self.dataset_name}_alpha{self.alpha}/")
         for save_dir in [self.figure_save_dir, os.path.join(self.hardness_save_dir, f'alpha_{self.alpha}')]:
             os.makedirs(save_dir, exist_ok=True)
 

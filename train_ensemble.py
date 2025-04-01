@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.optim as optim
 from tqdm import tqdm
 
-from config import get_config
+from config import get_config, ROOT
 from neural_networks import ResNet18LowRes
 from utils import set_reproducibility, get_latest_model_index
 
@@ -26,8 +26,7 @@ class ModelTrainer:
         :param dataset_name: Name of the dataset being used.
         :param pruning_type: Type of pruning being applied (default: 'none').
         :param save_probe_models: Whether to save the probe models after a specified epoch (default: True).
-        :param hardness: Whether to use the same seed for measuring hardness (subjective) or different (objective) as
-        for training the probe networks and benchmark ensemble (ensemble trained on unpruned data)
+        :param hardness: Whether to use the same seed for measuring hardness (subjective) or different (objective) as for training the probe networks and benchmark ensemble (ensemble trained on unpruned data)
         """
         self.training_set_size = training_set_size
         self.training_loader = training_loader
@@ -159,8 +158,7 @@ class ModelTrainer:
         We want to add more models to the ensemble rather than have to retrain it from scratch.
         """
         if self.estimate_hardness:
-            hardness_save_dir = f"/mnt/parscratch/users/acq21pp/ClassHardnessImportance/Results/" \
-                                f"{self.clean_data}{self.dataset_name}/"
+            hardness_save_dir = os.path.join(ROOT, f"Results/{self.clean_data}{self.dataset_name}/")
             os.makedirs(hardness_save_dir, exist_ok=True)
             aum_path = os.path.join(hardness_save_dir, 'AUM.pkl')
             forgetting_path = os.path.join(hardness_save_dir, 'Forgetting.pkl')
