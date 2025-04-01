@@ -60,8 +60,8 @@ class NoiseRemover:
         # Plot the cumulative distribution
         plt.figure(figsize=(10, 6))
         plt.plot(sorted_data, cumulative_percentage, label="Cumulative Distribution")
-        plt.xlabel("Instance-level Hardness Estimate (AUM)")
-        plt.ylabel("Cumulative Percentage")
+        plt.xlabel("Instance-level hardness estimated (AUM)")
+        plt.ylabel("Cumulative distribution of AUM")
         plt.grid(alpha=0.5)
 
         # Grey dot: Alternative threshold at 12% cumulative percentage
@@ -94,9 +94,8 @@ class NoiseRemover:
         plt.figure(figsize=(8, 5))
         plt.bar(x, percentage_class_counts, color='skyblue')
         plt.xticks(x, class_names, rotation=90)
-        plt.xlabel("Class")
-        plt.ylabel("Proportion of Removed Samples")
-        plt.title("Distribution of Removed Samples by Class")
+        plt.xlabel("Classes")
+        plt.ylabel("Samples classified as noise (%)")
         plt.tight_layout()
         plt.savefig(os.path.join(os.path.join(self.figure_save_dir, "removed_samples_distribution_by_class.pdf")))
         plt.close()
@@ -112,7 +111,8 @@ class NoiseRemover:
             bottom=False,  # ticks along the bottom edge are off
             top=False,  # ticks along the top edge are off
             labelbottom=False)
-        plt.ylabel("Percentage of Removed Samples")
+        plt.xlabel("Classes sorted by estimated number of label noise")
+        plt.ylabel("Samples classified as noise (%)")
         plt.tight_layout()
         plt.savefig(os.path.join(self.figure_save_dir, "sorted_removed_samples_distribution_by_class.pdf"))
         plt.close()

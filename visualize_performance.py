@@ -91,7 +91,7 @@ class PerformanceVisualizer:
             class_pruning_values = [pruned_percentages[threshold][class_idx] for threshold in pruning_thresholds]
             plt.plot(pruning_thresholds, class_pruning_values, marker='o')
 
-        plt.xlabel("Dataset-Level Pruning Rate (%)")
+        plt.xlabel("Percentage of samples removed from the dataset (DLP rate)")
         plt.ylabel("Class-Level Pruning Percentage (%)")
         plt.grid(True)
 
@@ -228,21 +228,21 @@ class PerformanceVisualizer:
             plt.figure(figsize=(8, 6))
 
             # Plot FCLP (Blue Line)
-            plt.plot(pruning_rates, avg_metric_fclp, marker='o', linestyle='-', color='blue', label='clp')
+            plt.plot(pruning_rates, avg_metric_fclp, marker='o', linestyle='-', color='blue', label='CLP')
             plt.fill_between(pruning_rates,
                              np.array(avg_metric_fclp) - np.array(std_metric_fclp),
                              np.array(avg_metric_fclp) + np.array(std_metric_fclp),
                              color='blue', alpha=0.2)  # Shaded region for std
 
             # Plot DLP (Red Line)
-            plt.plot(pruning_rates, avg_metric_dlp, marker='s', linestyle='--', color='red', label='dlp')
+            plt.plot(pruning_rates, avg_metric_dlp, marker='s', linestyle='--', color='red', label='DLP')
             plt.fill_between(pruning_rates,
                              np.array(avg_metric_dlp) - np.array(std_metric_dlp),
                              np.array(avg_metric_dlp) + np.array(std_metric_dlp),
                              color='red', alpha=0.2)  # Shaded region for std
 
             # Labels & Legend
-            plt.xlabel("Pruning Percentage", fontsize=12)
+            plt.xlabel("Percentage of samples removed from the dataset", fontsize=12)
             plt.ylabel(f"Average {metric_name}", fontsize=12)
             plt.xlim(0, 100)  # Ensure pruning percentage is between 0 and 100
             plt.legend()

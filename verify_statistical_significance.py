@@ -83,25 +83,6 @@ class Visualizer:
         with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
             pickle.dump(el2n_scores, file)
 
-    def visualize_forgetting_results(self, forgetting_events):
-        forgetting_events = np.mean(forgetting_events[:self.optimal_num_models], axis=0)
-        forgetting_counts = Counter(forgetting_events)
-        sorted_counts = sorted(forgetting_counts.items())
-        x_values, y_values = zip(*sorted_counts)
-        print("Number of Forgetting Events | Number of Data Samples")
-        print("----------------------------------------------")
-        for x, y in zip(x_values, y_values):
-            print(f"{x:<26} | {y}")
-
-        plt.figure(figsize=(8, 6))
-        plt.bar(x_values, y_values, color='blue', alpha=0.7)
-        plt.xlabel("Number of Forgetting Events")
-        plt.ylabel("Number of Data Samples")
-        plt.title("Distribution of Forgetting Events")
-        plt.xticks(range(min(x_values), max(x_values) + 1))
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
-        plt.savefig(os.path.join(self.figures_save_dir, f'distribution_of_forgetting_events.pdf'))
-
     def get_pruned_indices(self, el2n_scores: List[List[float]], aum_scores: List[List[float]],
                            forgetting_scores: List[List[float]]) -> Dict[str, List[List[List[int]]]]:
         results = {}
@@ -167,8 +148,8 @@ class Visualizer:
             for text in plt.gca().texts:
                 text.set_text(custom_format(float(text.get_text())))
 
-            plt.title(f'Pruned indices change (%) after adding a model {metric_name.upper()}')
-            plt.xlabel('Number of models in ensemble (j) before adding a model')
+            plt.title(f'Change in Pruned Indices After Increasing Ensemble Size (%) Based on {metric_name.upper()}')
+            plt.xlabel('Number of models in ensemble (j) during hardness estimation')
             plt.ylabel('Pruning threshold (%)')
             plt.xticks(np.arange(num_models - 1) + 0.5, np.arange(1, num_models))
             plt.yticks(np.arange(num_thresholds) + 0.5, np.arange(10, 100, 10))
@@ -194,9 +175,9 @@ class Visualizer:
                 plt.plot(self.thresholds, overlaps, label=f"{metric_names[i]} vs {metric_names[j]}", marker='o')
 
         # Customizing the plot.
-        plt.xlabel("Pruning threshold (%)")
-        plt.ylabel("Overlap percentage (%)")
-        plt.title("Overlap of pruned sets across hardness estimators")
+        plt.xlabel("Pruning rate (% of samples removed)")
+        plt.ylabel("Overlap percentage")
+        plt.title(self.dataset_name)
         plt.legend(title="Metric pairs")
         plt.grid(alpha=0.3)
         plt.tight_layout()
@@ -256,38 +237,6 @@ class Visualizer:
             avg_vals = [np.mean(diff) for diff in diff_list]
             return max_vals, min_vals, avg_vals
 
-        plt.figure(figsize=(15, 8))
-        for metric in metrics:
-            max_diffs, min_diffs, avg_diffs = compute_stats(differences[metric])
-            plt.plot(ensemble_sizes[metric], max_diffs, label=f'{metric.upper()} Max Diff', linestyle='-', marker='o')
-            plt.plot(ensemble_sizes[metric], min_diffs, label=f'{metric.upper()} Min Diff', linestyle='--', marker='x')
-            plt.plot(ensemble_sizes[metric], avg_diffs, label=f'{metric.upper()} Avg Diff', linestyle=':', marker='s')
-        plt.title("Absolute differences across ensemble sizes for hardness estimators")
-        plt.xlabel('Ensemble size')
-        plt.xticks(range(1, 20, 2))
-        plt.ylabel("Absolute difference")
-        plt.legend()
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(self.figures_save_dir, f'absolute_differences_across_ensemble_sizes.pdf'))
-
-        plt.figure(figsize=(15, 8))
-        for metric in metrics:
-            max_rel_diffs, min_rel_diffs, avg_rel_diffs = compute_stats(relative_differences[metric])
-            plt.plot(ensemble_sizes[metric], max_rel_diffs, label=f'{metric.upper()} Max Rel Diff', linestyle='-',
-                     marker='o')
-            plt.plot(ensemble_sizes[metric], min_rel_diffs, label=f'{metric.upper()} Min Rel Diff', linestyle='--',
-                     marker='x')
-            plt.plot(ensemble_sizes[metric], avg_rel_diffs, label=f'{metric.upper()} Avg Rel Diff', linestyle=':',
-                     marker='s')
-        plt.title("Relative differences across ensemble sizes for hardness estimators")
-        plt.xlabel('Ensemble size')
-        plt.xticks(range(1, 20, 2))
-        plt.ylabel("Relative difference")
-        plt.legend()
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_across_ensemble_sizes.pdf'))
-
-        # produce the below Figures to allow for clearer analysis of the results (metrics have different values)
         for metric in metrics:
             max_diffs, min_diffs, avg_diffs = compute_stats(differences[metric])
             if metric == 'el2n':
@@ -296,10 +245,10 @@ class Visualizer:
             plt.plot(ensemble_sizes[metric], max_diffs, label=f'Max Diff', linestyle='-', marker='o')
             plt.plot(ensemble_sizes[metric], min_diffs, label=f'Min Diff', linestyle='--', marker='x')
             plt.plot(ensemble_sizes[metric], avg_diffs, label=f'Avg Diff', linestyle=':', marker='s')
-            plt.title(f"Absolute differences for {metric.upper()}")
-            plt.xlabel('Ensemble size')
+            plt.title(f"Based on {metric.upper()}")
+            plt.xlabel('Number of Models (j) in Ensemble During Hardness Estimation')
             plt.xticks(range(1, 20, 2))
-            plt.ylabel("Absolute difference")
+            plt.ylabel("Absolute Difference in Class-Wise SXample Count for Resampling after Adding a Model")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.savefig(os.path.join(self.figures_save_dir, f'absolute_differences_{metric}.pdf'))
@@ -309,10 +258,10 @@ class Visualizer:
             plt.plot(ensemble_sizes[metric], max_rel_diffs, label=f'Max Rel Diff', linestyle='-', marker='o')
             plt.plot(ensemble_sizes[metric], min_rel_diffs, label=f'Min Rel Diff', linestyle='--', marker='x')
             plt.plot(ensemble_sizes[metric], avg_rel_diffs, label=f'Avg Rel Diff', linestyle=':', marker='s')
-            plt.title(f"Relative differences for {metric.upper()}")
-            plt.xlabel('Ensemble size')
+            plt.title(f"Based on {metric.upper()}")
+            plt.xlabel('Number of Models (j) in Ensemble During Hardness Estimation')
             plt.xticks(range(1, 20, 2))
-            plt.ylabel("Relative difference")
+            plt.ylabel("Relative Difference in Class-Wise SXample Count for Resampling after Adding a Model")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))

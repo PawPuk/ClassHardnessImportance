@@ -29,7 +29,7 @@ class ResamplingVisualizer:
         self.num_epochs = config['num_epochs']
 
         self.figure_save_dir = os.path.join(ROOT, 'Figures/', dataset_name)
-        self.hardness_save_dir = (ROOT, f"Results/unclean{self.dataset_name}/")
+        self.hardness_save_dir = os.path.join(ROOT, f"Results/unclean{self.dataset_name}/")
 
         for save_dir in self.figure_save_dir, self.hardness_save_dir:
             os.makedirs(save_dir, exist_ok=True)
@@ -204,7 +204,7 @@ class ResamplingVisualizer:
 
             x = np.arange(self.num_classes)
 
-            grey_shade = cm.Greys(0.5 + 0.5 * norm(alpha))  # Scale to [0.5, 1] for visual clarity
+            grey_shade = cm.viridis(0.8 * norm(alpha))  # Scale to [0.5, 1] for visual clarity
             ax1.plot(x, class_counts, color=grey_shade, label=f'α={alpha}', linewidth=2)
 
             # Plot class distribution in sorted order
@@ -212,15 +212,19 @@ class ResamplingVisualizer:
             sorted_counts = np.array(class_counts)[sorted_indices]
             ax2.plot(range(len(sorted_counts)), sorted_counts, color=grey_shade, label=f'α={alpha}', linewidth=2)
 
-        ax1.set_xlabel('Class')
-        ax1.set_ylabel('Count')
+        ax1.set_xlabel('Classes')
+        ax1.set_xticklabels([])
+        ax1.set_xticks(np.arange(1, self.num_classes + 1))
+        ax1.set_ylabel('Class-wise sample count after resampling')
         ax1.set_title('Class Distribution (Natural Order)')
-        ax1.legend()
+        ax1.legend(self.dataset_name)
         fig1.savefig(os.path.join(self.figure_save_dir, 'resampled_dataset.pdf'))
 
-        ax2.set_xlabel('Class')
-        ax2.set_ylabel('Count')
-        ax2.set_title('Class Distribution (Sorted Order)')
+        ax2.set_xlabel('Classes sorted based on hardness (hardest to the right)')
+        ax2.set_xticklabels([])
+        ax2.set_xticks(np.arange(1, self.num_classes + 1))
+        ax2.set_ylabel('Class-wise sample count after resampling')
+        ax2.set_title(self.dataset_name)
         ax2.legend()
         fig2.savefig(os.path.join(self.figure_save_dir, 'sorted_resampled_dataset.pdf'))
 
@@ -238,23 +242,23 @@ class ResamplingVisualizer:
         plt.plot(range(len(class_order)), [v for v in reordered_base_values], color='black', linestyle='-',
                  linewidth=4, label="α=1")
 
-        norm = plt.Normalize(min(alpha_values), max(alpha_values))
+        """norm = plt.Normalize(min(alpha_values), max(alpha_values))
         for alpha in alpha_values:
             if alpha > 0:
                 grey_shade = cm.Greys(0.5 + 0.5 * norm(alpha))
                 reordered_values = [results[base_metric][strategy][str(alpha)][class_id] for class_id in class_order]
                 plt.plot(range(len(reordered_values)), reordered_values, color=grey_shade, lw=2, linestyle = '--',
-                         label=f'"α={alpha}"')
+                         label=f'"α={alpha}"')"""
 
         plt.axvspan(0, number_of_easy_classes - 0.5, color='green', alpha=0.15)
         plt.axvspan(number_of_easy_classes - 0.5, len(class_order), color='red', alpha=0.15)
 
-        plt.xlabel("Class (Sorted by Base Strategy)", fontsize=12)
-        plt.xticks([])
-        plt.ylabel(f"{base_metric} (%)", fontsize=12)
-        plt.title(f"{base_metric} by Class for All Strategies (Sorted by Base Strategy)", fontsize=14)
-        plt.grid(True, alpha=0.6)
-        plt.legend()
+        plt.xlabel("Classes sorted based on hardness (hardest to the right)", fontsize=12)
+        plt.xticks(np.arange(0, len(class_order)), labels=[])
+        plt.ylabel(f"Class-wise {base_metric} on balanced dataset", fontsize=12)
+        plt.title(self.dataset_name, fontsize=14)
+        plt.grid(True, alpha=0.6, axis='y')
+        # plt.legend()
         plt.savefig(os.path.join(self.figure_save_dir, f'{base_metric}_{strategy}_effects.pdf'),
                     bbox_inches='tight')
 
@@ -269,23 +273,24 @@ class ResamplingVisualizer:
                 value_changes[strategy][alpha] = [values[class_id] -
                                                   results[base_metric][base_strategy][base_alpha][class_id]
                                                   for class_id in class_order]
-                grey_shade = cm.Greys(0.1 + 0.9 * norm(float(alpha)))
+                grey_shade = cm.viridis(0.8 * norm(float(alpha)))
                 print(f'{alpha}, {strategy} - easy mean: '
                       f'{np.mean(value_changes[strategy][alpha][:number_of_easy_classes])}'
                       f', hard mean:  {np.mean(value_changes[strategy][alpha][number_of_easy_classes:])}, easy std: '
                       f'{np.std(value_changes[strategy][alpha][:number_of_easy_classes])}, hard std:'
                       f'{np.std(value_changes[strategy][alpha][number_of_easy_classes:])}')
                 plt.axhline(y=0, color='black', linewidth=2)
-                plt.plot(range(len(values)), value_changes[strategy][alpha], color=grey_shade, linestyle='--',
+                plt.plot(range(len(values)), value_changes[strategy][alpha], color=grey_shade,
                          linewidth=2, label=f"α={alpha}")
 
         plt.axvspan(0, number_of_easy_classes - 0.5, color='green', alpha=0.15)
         plt.axvspan(number_of_easy_classes - 0.5, len(class_order), color='red', alpha=0.15)
 
-        plt.xlabel("Class (Sorted by Base Strategy)", fontsize=12)
-        plt.ylabel(f"{base_metric} Change (%)", fontsize=12)
-        plt.title(f"{base_metric} Change Relative to Base Strategy (Sorted by Base Strategy)", fontsize=12)
-        plt.grid(True, alpha=0.6)
+        plt.xlabel("Classes sorted based on hardness (hardest to the right)", fontsize=12)
+        plt.xticks(np.arange(0, len(class_order)), labels=[])
+        plt.ylabel(f"Class-wise {base_metric} change after resampling", fontsize=12)
+        plt.title(self.dataset_name, fontsize=12)
+        plt.grid(True, alpha=0.6, axis='y')
         plt.legend()
         plt.savefig(os.path.join(self.figure_save_dir, f'{base_metric}_changes_due_to_{strategy}.pdf'),
                     bbox_inches='tight')

@@ -36,7 +36,13 @@ python3 verify_statistical_significance.py --dataset_name CIFAR10
 ```
 
 This program takes the same parameters as `experiment1.py`. Running it will produce the EL2N hardness estimates, as 
-well as the parts of Fig. 7, and Fig. 8 which correspond to CIFAR-10.
+well as:
+  - parts of Figure 7 corresponding to CIFAR-10 (compute_and_visualize_stability_of_pruning) - percentage change in the 
+pruned indices after adding a model to an ensemble of size $j$ across hardness estimators, and pruning thresholds.
+  - Figure 10 (pruned_indices_vs_hardness_estimator) - overlap between the indices pruned by different hardness 
+estimators.
+  - parts of Figure 8 corresponding to CIFAR-10 (visualize_stability_of_resampling) - *Absolute Differences* as a function
+of the ensemble size during hardness estimation for different hardness estimators.
 
 # Experiment 2
 
@@ -69,10 +75,10 @@ After running `experiment2.py` for different pruning rates and pruning strategy 
 
   - Figure 4 from Supplementary Material (plot_pruned_percentages) - class-level vs dataset-level pruned percentages to 
 show the imbalanced introduced by dataset-level pruning (DLP).
-  - Figure 5 from Supplementary Material (plot_class_level_results) - recall averaged over models of ensembles 
+  - Figure 6 from Supplementary Material (plot_class_level_results) - recall averaged over models of ensembles 
 trained on subsets of datasets obtained via DLP and class-level pruning (CLP). Not implemented for CIFAR-100 due to too 
 many classes.
-  - Figure 12 from the main text and 6 from Supplementary Material (compare_fclp_with_dlp) - recall averaged over 
+  - Figure 12 from the main text and Figure 5 from Supplementary Material (compare_fclp_with_dlp) - recall averaged over 
 classes for ensembles trained on subsets of datasets obtained via DLP and CLP.
 
 ### Important
@@ -109,6 +115,7 @@ Make sure you have run `experiment1.py` before this one to ensure the hardness e
 After running `experiment3.py` for different alphas you cna visualize the results using 
 `visualise_resampling_effects.py`. This program takes only `--dataset_name` as parameter, and creates:
 
+  - Figure 4 (visualize_resampling_results) - sorted distribution of samples across classes after resampling.
   - variant of Figure 9 with results for different alphas (plot_all_accuracies_sorted) - class-level metric values (F1, 
 MCC, Recall, Precision, Accuracy, ...) with classes sorted based on their hardness (computed from `experiment1.py`).
   - Figure 11 (plot_metric_changes) - changes in class-level metric values due to resampling with classes sorted based
