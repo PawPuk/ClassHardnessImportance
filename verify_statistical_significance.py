@@ -31,7 +31,7 @@ class Visualizer:
         self.save_epoch = config['save_epoch']
         self.optimal_num_models = config['robust_ensemble_size']
 
-        self.results_save_dir = os.path.join(ROOT, 'Results/', f"{self.data_cleanliness}{dataset_name}")
+        self.results_save_dir = os.path.join(ROOT, 'Results/', f'{self.data_cleanliness}{dataset_name}')
         self.figures_save_dir = os.path.join(ROOT, 'Figures/', f'{self.data_cleanliness}{dataset_name}')
         for save_dir in [self.results_save_dir, self.figures_save_dir]:
             os.makedirs(save_dir, exist_ok=True)

@@ -12,7 +12,7 @@ dataset_configs = {
         'lr_decay_milestones': [60, 120, 160],
         'save_epoch': 20,
         'save_dir': os.path.join(ROOT, 'Models/'),
-        'timings_dir': os.path.join(ROOT, '/Timings/'),
+        'timings_dir': os.path.join(ROOT, 'Timings/'),
         'num_models': 20,
         'num_classes': 10,
         'mean': (0.4914, 0.4822, 0.4465),
@@ -31,8 +31,8 @@ dataset_configs = {
         'weight_decay': 0.0005,
         'lr_decay_milestones': [60, 120, 160],
         'save_epoch': 20,
-        'save_dir': f'{ROOT}/Models/',
-        'timings_dir': f'{ROOT}/Timings/',
+        'save_dir': os.path.join(ROOT, 'Models/'),
+        'timings_dir': os.path.join(ROOT, 'Timings/'),
         'num_models': 20,
         'num_classes': 100,
         'mean': (0.5071, 0.4867, 0.4408),
@@ -63,8 +63,6 @@ def get_config(dataset_name):
         config = dataset_configs[dataset_name]
         config['probe_base_seed'] = 42
         config['probe_seed_step'] = 42
-        config['new_base_seed'] = 4242
-        config['new_seed_step'] = 42
         return config
     else:
         raise ValueError(f"Configuration for dataset {dataset_name} not found!")
