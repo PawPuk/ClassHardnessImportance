@@ -191,7 +191,7 @@ class ModelTrainer:
         num_models = self.config['robust_ensemble_size'] if \
             self.config['robust_ensemble_size'] < self.config['num_models'] else self.config['num_models']
 
-        print(f"Starting training ensemble of {self.config['num_models']} models on {self.dataset_name}.")
+        print(f"Starting training ensemble of {num_models} models on {self.dataset_name}.")
         print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")
         print(f"Number of samples in the test loader: {len(self.test_loader.dataset)}")
         print('-'*20)

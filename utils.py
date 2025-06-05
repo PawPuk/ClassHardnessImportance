@@ -7,7 +7,7 @@ from typing import List
 import numpy as np
 import torch
 
-from config import ROOT
+from config import ROOT, get_config
 
 
 def set_reproducibility(seed=42):
@@ -59,10 +59,14 @@ def load_aum_results(data_cleanliness, dataset_name, num_epochs) -> List[List[fl
     return aum_scores
 
 
-def load_forgetting_results(data_cleanliness, dataset_name, num_samples) -> List[List[float]]:
+def load_forgetting_results(data_cleanliness, dataset_name) -> List[List[float]]:
     forgetting_path = os.path.join(ROOT, f'Results/{data_cleanliness}{dataset_name}', 'Forgetting.pkl')
     forgetting_scores = load_results(forgetting_path)
 
-    # TODO: This is CURRENTLY required as train_ensemble.py wasn't initially working properly with denoised datasets.
-    forgetting_scores = [model_list[:num_samples] for model_list in forgetting_scores]
+    for model_scores in forgetting_scores:  # just checking if the estimates were correctly saved
+        if data_cleanliness == 'clean':
+            assert len(model_scores) == sum(get_config(dataset_name)['num_training_samples'])
+        else:
+            assert len(model_scores) < sum(get_config(dataset_name)['num_training_samples'])
+
     return forgetting_scores

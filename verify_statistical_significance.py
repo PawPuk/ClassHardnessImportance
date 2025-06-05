@@ -36,7 +36,7 @@ class Visualizer:
         for save_dir in [self.results_save_dir, self.figures_save_dir]:
             os.makedirs(save_dir, exist_ok=True)
 
-        self.thresholds = np.arange(10, 100, 10)
+        self.pruning_thresholds = np.arange(10, 100, 10)
         model_save_dir = os.path.join(config['save_dir'], 'none', f'{self.data_cleanliness}{dataset_name}')
         self.num_models = get_latest_model_index(model_save_dir, self.num_epochs) + 1
 
@@ -85,6 +85,11 @@ class Visualizer:
 
     def get_pruned_indices(self, el2n_scores: List[List[float]], aum_scores: List[List[float]],
                            forgetting_scores: List[List[float]]) -> Dict[str, List[List[List[int]]]]:
+        """Extract the indices of data samples that would have been pruned if a threshold (from self.pruning_thresholds)
+        was applied to EL2N, AUM, and Forgetting hardness estimates computed using ensembles of various sizes. This
+        allows us to measure the reliability of those hardness estimates (e.g., how many models in the ensemble they
+        need to output consistent pruning indices).
+        """
         results = {}
 
         for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
@@ -92,13 +97,14 @@ class Visualizer:
             metric_scores = np.array(metric_scores)
             results[metric_name] = []
 
-            for thresh in self.thresholds:
+            for thresh in self.pruning_thresholds:
                 prune_count = int((thresh / 100) * self.num_samples)
                 metric_results = []
 
                 for num_ensemble_models in range(1, self.num_models + 1):
+                    # Compute the average hardness score of each sample as a function of the ensemble size
                     avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
-                    # For AUM hard samples have lower values. For EL2N and forgetting the opposite is the case.
+                    # For AUM, hard samples have lower values. For EL2N and forgetting the opposite is the case.
                     if metric_name == 'aum':
                         sorted_indices = np.argsort(-avg_hardness_scores)
                     else:
@@ -110,15 +116,16 @@ class Visualizer:
 
     def compute_and_visualize_stability_of_pruning(self, results):
         metric_names = list(results.keys())
+        # TODO: Modify the below so that it's not hardcoded.
         vmin, vmax = 0, 62  # Ensure all heatmaps share the same scale
 
         for metric_name in tqdm(metric_names, desc='Computing and visualizing stability of pruning across metrics'):
             metric_results = results[metric_name]
-            num_thresholds = len(metric_results)
+            num_pruning_thresholds = len(metric_results)
             num_models = len(metric_results[0])
-            stability_results = np.zeros((num_thresholds, num_models - 1))
+            stability_results = np.zeros((num_pruning_thresholds, num_models - 1))
 
-            for i in range(num_thresholds):
+            for i in range(num_pruning_thresholds):
                 for j in range(num_models - 1):
                     set1 = set(metric_results[i][j])  # Pruned indices for ensemble with j models
                     set2 = set(metric_results[i][j + 1])  # Pruned indices for ensemble with j+1 models
@@ -144,7 +151,7 @@ class Visualizer:
             sns.heatmap(stability_results, annot=True, fmt='.2f', cmap='coolwarm',
                         cbar_kws={'label': 'Jaccard Overlap'}, vmin=vmin, vmax=vmax)  # Set color scale
 
-            # Adjust annotation format
+            # Adjust the annotation format
             for text in plt.gca().texts:
                 text.set_text(custom_format(float(text.get_text())))
 
@@ -152,11 +159,11 @@ class Visualizer:
             plt.xlabel('Number of models in ensemble (j) during hardness estimation')
             plt.ylabel('Pruning threshold (%)')
             plt.xticks(np.arange(num_models - 1) + 0.5, np.arange(1, num_models))
-            plt.yticks(np.arange(num_thresholds) + 0.5, np.arange(10, 100, 10))
+            plt.yticks(np.arange(num_pruning_thresholds) + 0.5, np.arange(10, 100, 10))
             plt.savefig(os.path.join(self.figures_save_dir, f'pruning_stability_based_on_{metric_name}.pdf'))
             plt.close()
 
-    def pruned_indices_vs_hardness_estimator(self, results):
+    def compute_overlap_of_pruned_indices_across_hardness_estimators(self, results):
         metric_names = list(results.keys())
         num_metrics = len(metric_names)
 
@@ -164,7 +171,7 @@ class Visualizer:
         for i in tqdm(range(num_metrics), desc='Comparing pruned indices across hardness estimators'):
             for j in range(i + 1, num_metrics):  # Only compute unique pairs.
                 overlaps = []
-                for thresh_idx, thresh in enumerate(self.thresholds):
+                for thresh_idx, thresh in enumerate(self.pruning_thresholds):
                     set1 = set(results[metric_names[i]][thresh_idx][-1])  # Using the full ensemble.
                     set2 = set(results[metric_names[j]][thresh_idx][-1])
                     intersection = len(set1 & set2)
@@ -172,7 +179,8 @@ class Visualizer:
                     overlap = intersection / union if union > 0 else 0.0
                     overlaps.append(overlap)
 
-                plt.plot(self.thresholds, overlaps, label=f"{metric_names[i]} vs {metric_names[j]}", marker='o')
+                plt.plot(self.pruning_thresholds, overlaps, label=f"{metric_names[i]} vs {metric_names[j]}",
+                         marker='o')
 
         # Customizing the plot.
         plt.xlabel("Pruning rate (% of samples removed)")
@@ -201,7 +209,7 @@ class Visualizer:
                     curr_class_results[label].append(curr_avg_hardness_scores[i])
                     next_class_results[label].append(next_avg_hardness_scores[i])
                 for label in range(self.num_classes):
-                    # For AUM high values indicate easier samples so inversion is necessary
+                    # For AUM, high values indicate easier samples so inversion is necessary
                     if metric_name == 'aum':
                         curr_class_hardness[label] = 1 / np.mean(curr_class_results[label])
                         next_class_hardness[label] = 1 / np.mean(next_class_results[label])
@@ -272,8 +280,7 @@ class Visualizer:
         self.save_el2n_scores(training_all_el2n_scores)
 
         aum_scores = load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs)
-        forgetting_scores = load_forgetting_results(self.data_cleanliness, self.dataset_name, len(aum_scores[0]))
-        # self.visualize_forgetting_results(forgetting_scores)
+        forgetting_scores = load_forgetting_results(self.data_cleanliness, self.dataset_name)
 
         print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')
         print(f'Shape of hardness estimated via AUM: {len(aum_scores)}, {len(aum_scores[0])}')
@@ -282,9 +289,10 @@ class Visualizer:
               f'{len(training_all_el2n_scores[0])}')
         print()
 
+        # pruned_indices[metric_name][pruning_threshold][num_ensemble_models][pruned_indices]
         pruned_indices = self.get_pruned_indices(training_all_el2n_scores, aum_scores, forgetting_scores)
         self.compute_and_visualize_stability_of_pruning(pruned_indices)
-        self.pruned_indices_vs_hardness_estimator(pruned_indices)
+        self.compute_overlap_of_pruned_indices_across_hardness_estimators(pruned_indices)
 
         differences = self.compute_effect_of_ensemble_size_on_resampling(
             training_all_el2n_scores, aum_scores, forgetting_scores, training_loader.dataset)

@@ -3,11 +3,14 @@ import pickle
 import random
 from typing import List
 
+from diffusers import DDPMPipeline
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 import torch
 from torch.utils.data import TensorDataset, Subset
+import torchvision
+from tqdm import tqdm
 
 from config import get_config, ROOT
 from data import load_dataset, AugmentedSubset, IndexedDataset
@@ -96,7 +99,6 @@ class DataResampling:
         current_n_samples = len(current_indices)
 
         data = torch.stack([self.dataset[idx][0] for idx in current_indices])
-        labels = torch.stack([self.dataset[idx][1] for idx in current_indices])
         data_flattened = data.view(current_n_samples, -1)
 
         neighbors = NearestNeighbors(n_neighbors=k + 1).fit(data_flattened.numpy())
@@ -114,7 +116,34 @@ class DataResampling:
             synthetic_samples.append(synthetic_sample)
 
         synthetic_samples = torch.stack(synthetic_samples, dim=0)
-        return data, labels, synthetic_samples
+        return data, synthetic_samples
+
+    def DDPM(self, desired_count, class_id, current_indices):
+        # This only works with CIFAR-10 so we can hardcode the transformation
+        data = torch.stack([self.dataset[idx][0] for idx in current_indices])
+
+        ddpm = DDPMPipeline.from_pretrained("google/ddpm-cifar10-32").cuda()
+        resnet = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar10_resnet32", pretrained=True).cuda()
+        transform = torchvision.transforms.Compose([
+            torchvision.transforms.Resize((32, 32)),
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010)),
+        ])
+
+        class_images = []
+        while len(class_images) < desired_count:
+            for _ in tqdm(desired_count // 50):
+                images = ddpm(batch_size=200).images
+                batch = torch.stack([transform(img) for img in images]).cuda()
+                with torch.no_grad():
+                    outputs = resnet(batch)
+                    probs = torch.softmax(outputs, dim=1)
+                    confidences, labels = torch.max(probs, dim=1)
+                    class_synthetic_indices = labels == class_id
+                    class_synthetic_images = images[class_synthetic_indices]
+                    class_images.extend(class_synthetic_images)
+        class_images = torch.stack([transform(img) for img in class_images])
+        return data, class_images[:desired_count]
 
     def select_undersampling_method(self):
         """
@@ -139,6 +168,8 @@ class DataResampling:
             return lambda count, hardness: self.oversample_hard(count, hardness)
         elif self.oversampling_strategy == 'SMOTE':
             return lambda count, current_indices: self.SMOTE(count, current_indices)
+        elif self.oversampling_strategy == 'DDPM':
+            return lambda count, class_id, current_indices: self.DDPM(count, class_id, current_indices)
         elif self.oversampling_strategy == 'none':
             return None
         else:
@@ -182,7 +213,7 @@ class DataResampling:
             class_indices[label.item()].append(idx)
 
         # Perform resampling for each class
-        resampled_indices, synthetic_data, synthetic_labels = [], [], []
+        resampled_indices, hard_classes_data, hard_classes_labels = [], [], []
         print(f'After resampling the dataset should have {sum(samples_per_class.values())} data samples.')
 
         for class_id, hardnesses_within_class in self.hardness.items():
@@ -194,34 +225,37 @@ class DataResampling:
                 resampled_indices.extend(current_indices[class_retain_indices])
             elif len(current_indices) < desired_count and self.oversampling_strategy != 'none':
                 # Below if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
-                if self.oversampling_strategy == 'SMOTE':
-                    original_data, original_labels, generated_data = oversample(desired_count, current_indices)
-                    generated_labels = torch.full((generated_data.size(0),), class_id)
+                if self.oversampling_strategy in ['SMOTE', 'DDPM']:
+                    if self.oversampling_strategy == 'SMOTE':
+                        original_data, generated_data = oversample(desired_count, current_indices)
+                    else:
+                        original_data, generated_data = oversample(desired_count, class_id,
+                                                                                    current_indices)
                     print(f'Generated {len(generated_data)} data samples via SMOTE for class {class_id}.')
-                    synthetic_data.append(torch.cat([original_data, generated_data], dim=0))
-                    synthetic_labels.append(torch.cat([original_labels, generated_labels], dim=0))
+                    hard_classes_data.append(torch.cat([original_data, generated_data], dim=0))
+                    hard_classes_labels = torch.full((desired_count,), class_id)
                 else:
                     class_add_indices = oversample(desired_count, hardnesses_within_class)
                     resampled_indices.extend(current_indices[class_add_indices])
             else:
                 resampled_indices.extend(current_indices)
 
-        if synthetic_data:
+        if self.oversampling_strategy in ['SMOTE', 'DDPM']:
             existing_data, existing_labels = self.extract_data_labels()
-            synthetic_data = torch.cat(synthetic_data, dim=0)
-            synthetic_labels = torch.cat(synthetic_labels, dim=0)
+            hard_classes_data = torch.cat(hard_classes_data, dim=0)
+            hard_classes_labels = torch.cat(hard_classes_labels, dim=0)
 
-            print(f'Generated {len(synthetic_data)} synthetic data samples.')
+            print(f'Proceeding with {len(hard_classes_data)} data samples from hard classes (real + synthetic data).')
 
-            new_data = torch.cat([existing_data, synthetic_data], dim=0)
-            new_labels = torch.cat([existing_labels, synthetic_labels], dim=0)
+            new_data = torch.cat([existing_data, hard_classes_data], dim=0)
+            new_labels = torch.cat([existing_labels, hard_classes_labels], dim=0)
             self.dataset = IndexedDataset(TensorDataset(new_data, new_labels))
 
-            synthetic_start_idx = len(self.dataset) - synthetic_data.size(0)
-            synthetic_indices = list(range(synthetic_start_idx, len(self.dataset)))
+            hard_classes_start_idx = len(self.dataset) - hard_classes_data.size(0)
+            synthetic_indices = list(range(hard_classes_start_idx, len(self.dataset)))
             resampled_indices.extend(synthetic_indices)
 
-        return Subset(self.dataset, resampled_indices)
+        return AugmentedSubset(Subset(self.dataset, resampled_indices))
 
 
 class DataPruning:

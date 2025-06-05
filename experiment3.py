@@ -38,10 +38,7 @@ class Experiment3:
         if self.hardness_estimator == 'AUM':
             hardness_over_models = np.array(load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs))
         elif self.hardness_estimator == 'Forgetting':
-            aum_scores = load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs)
-            hardness_over_models = np.array(
-                load_forgetting_results(self.data_cleanliness, self.dataset_name, len(aum_scores[0])))
-            del aum_scores
+            hardness_over_models = np.array(load_forgetting_results(self.data_cleanliness, self.dataset_name))
         elif self.hardness_estimator == 'EL2N':
             el2n_path = os.path.join(self.hardness_save_dir, 'el2n_scores.pkl')
             hardness_over_models = np.array(load_results(el2n_path))
@@ -91,7 +88,8 @@ class Experiment3:
         return DataLoader(dataset, batch_size=self.config['batch_size'], shuffle=shuffle,
                           num_workers=2, worker_init_fn=worker_init_fn)
 
-    def perform_data_augmentation(self, dataset):
+    def perform_data_augmentation(self, resampled_dataset: AugmentedSubset) -> AugmentedSubset:
+        # The resampled_dataset has already been normalized by load_dataset so no need for ToTensor() and Normalize().
         if self.dataset_name in ['CIFAR100', 'CIFAR10']:
             data_augmentation = transforms.Compose([
                 transforms.RandomHorizontalFlip(),
@@ -99,7 +97,7 @@ class Experiment3:
             ])
         else:
             raise ValueError('Unsupported dataset.')
-        return AugmentedSubset(dataset, transform=data_augmentation)
+        return AugmentedSubset(resampled_dataset, transform=data_augmentation)
 
     def main(self):
         # The value of the shuffle parameter below does not matter as we don't use the loaders.
@@ -113,7 +111,7 @@ class Experiment3:
 
         resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
                                    self.undersampling_strategy, hardnesses_by_class, self.hardness_estimator != 'AUM')
-        resampled_dataset = AugmentedSubset(resampler.resample_data(samples_per_class))
+        resampled_dataset = resampler.resample_data(samples_per_class)
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
 
@@ -137,9 +135,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Experiment3 with Data Resampling.")
     parser.add_argument('--dataset_name', type=str, required=True,
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN)")
-    parser.add_argument('--oversampling', type=str, required=True, choices=['random', 'easy', 'hard', 'SMOTE', 'none'],
+    parser.add_argument('--oversampling', type=str, required=True,
+                        choices=['random', 'easy', 'hard', 'SMOTE', 'DDPM', 'none'],
                         help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, '
-                             '`SMOTE`, and `none`)')
+                             '`SMOTE`, `DDPM`, and `none`)')
     parser.add_argument('--undersampling', type=str, required=True, choices=['easy', 'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, `prune_extreme`, and `none`)')
@@ -148,6 +147,8 @@ if __name__ == "__main__":
     parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
     parser.add_argument('--alpha', type=int, default=1, help='Used to control the degree of introduced imbalance.')
     args = parser.parse_args()
+    if args.oversampling == 'DDPM' and args.dataset_name != 'CIFAR10':
+        raise Exception('DDPM can only be used with CIFAR10.')
 
     experiment = Experiment3(**vars(args))
     experiment.main()

@@ -13,7 +13,7 @@ from removing_noise import NoiseRemover
 
 class IndexedDataset(torch.utils.data.Dataset):
     def __init__(self, dataset, is_test=False):
-        # To make the training faster we transform the dataset into a TensorDataset
+        # To improve speed, we transform the dataset into a TensorDataset (only viable if no augmentation is applied)
         if not isinstance(dataset, TensorDataset) and is_test:
             data_list, label_list = [], []
             for i in range(len(dataset)):

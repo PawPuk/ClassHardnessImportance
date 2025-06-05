@@ -52,9 +52,7 @@ class Experiment2:
             aum_scores = load_aum_results('unclean', self.dataset_name, self.NUM_EPOCHS)
             pruned_dataset = self.prune_dataset(aum_scores, labels, training_loader, False)
         elif self.hardness_estimator == 'Forgetting':
-            aum_scores = load_aum_results('unclean', self.dataset_name, self.NUM_EPOCHS)
-            forgetting_scores = load_forgetting_results('unclean', self.dataset_name, len(aum_scores))
-            del aum_scores
+            forgetting_scores = load_forgetting_results('unclean', self.dataset_name)
             pruned_dataset = self.prune_dataset(forgetting_scores, labels, training_loader, True)
         elif self.hardness_estimator == 'EL2N':
             el2n_path = os.path.join(ROOT, f'Results/unclean{self.dataset_name}/el2n_scores.pkl')
