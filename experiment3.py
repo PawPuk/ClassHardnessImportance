@@ -33,7 +33,6 @@ class Experiment3:
         for save_dir in [self.figure_save_dir, os.path.join(self.hardness_save_dir, f'alpha_{self.alpha}')]:
             os.makedirs(save_dir, exist_ok=True)
 
-
     def load_hardness_estimates(self):
         if self.hardness_estimator == 'AUM':
             hardness_over_models = np.array(load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs))
@@ -92,8 +91,11 @@ class Experiment3:
         # The resampled_dataset has already been normalized by load_dataset so no need for ToTensor() and Normalize().
         if self.dataset_name in ['CIFAR100', 'CIFAR10']:
             data_augmentation = transforms.Compose([
+                transforms.ToPILImage(),
                 transforms.RandomHorizontalFlip(),
-                transforms.RandomCrop(32, padding=4)
+                transforms.RandomCrop(32, padding=4),
+                transforms.ToTensor(),
+                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
             ])
         else:
             raise ValueError('Unsupported dataset.')
@@ -101,7 +103,7 @@ class Experiment3:
 
     def main(self):
         # The value of the shuffle parameter below does not matter as we don't use the loaders.
-        _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.data_cleanliness == 'clean', True,
+        _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.data_cleanliness == 'clean', False,
                                                             False)
         hardness_scores = self.load_hardness_estimates()
 
@@ -124,7 +126,7 @@ class Experiment3:
 
         model_save_dir = (f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_alpha_{self.alpha}_"
                           f"hardness_{self.hardness_estimator}")
-        trainer = ModelTrainer(len(resampled_dataset), resampled_loader, test_loader, self.dataset_name, model_save_dir,
+        trainer = ModelTrainer(len(training_dataset), resampled_loader, test_loader, self.dataset_name, model_save_dir,
                                False, clean_data=self.data_cleanliness == 'clean')
         trainer.train_ensemble()
 

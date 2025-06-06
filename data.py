@@ -12,7 +12,7 @@ from removing_noise import NoiseRemover
 
 
 class IndexedDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, is_test=False):
+    def __init__(self, dataset, is_test=False, transform=None):
         # To improve speed, we transform the dataset into a TensorDataset (only viable if no augmentation is applied)
         if not isinstance(dataset, TensorDataset) and is_test:
             data_list, label_list = [], []
@@ -25,12 +25,15 @@ class IndexedDataset(torch.utils.data.Dataset):
             dataset = TensorDataset(data_tensor, label_tensor)
 
         self.dataset = dataset
+        self.transform = transform
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx):
         data, label = self.dataset[idx]
+        if self.transform:
+            data = self.transform(data)
         return data, label, idx
 
 
@@ -62,10 +65,7 @@ def get_transform(dataset_name, apply_augmentation, config):
             transforms.Normalize(config['mean'], config['std']),
         ])
     else:
-        train_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(config['mean'], config['std']),
-        ])
+        train_transform = transforms.ToTensor()
 
     test_transform = transforms.Compose([
         transforms.ToTensor(),

@@ -125,25 +125,23 @@ class DataResampling:
 
         ddpm = DDPMPipeline.from_pretrained("google/ddpm-cifar10-32").to("cuda")
         resnet = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar10_resnet32", pretrained=True).cuda()
-        transform = torchvision.transforms.Compose([
-            torchvision.transforms.Resize((32, 32)),
-            torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010)),
-        ])
+        normalize = torchvision.transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010))
+        to_tensor = torchvision.transforms.ToTensor()
 
         class_images = []
         while len(class_images) < desired_count:
             for _ in tqdm(range(desired_count // 50)):
                 images = ddpm(batch_size=200).images
-                batch = torch.stack([transform(img) for img in images]).cuda()
+                batch = torch.stack([normalize(to_tensor(img)) for img in images]).cuda()
                 with torch.no_grad():
                     outputs = resnet(batch)
                     probs = torch.softmax(outputs, dim=1)
                     confidences, labels = torch.max(probs, dim=1)
-                    class_synthetic_indices = labels == class_id
-                    class_synthetic_images = images[class_synthetic_indices]
+                    class_synthetic_indices = torch.tensor(labels == class_id)
+                    indices = torch.where(class_synthetic_indices)[0]
+                    class_synthetic_images = [images[i] for i in indices]
                     class_images.extend(class_synthetic_images)
-        class_images = torch.stack([transform(img) for img in class_images])
+        class_images = torch.stack([to_tensor(img) for img in class_images])
         return data, class_images[:desired_count]
 
     def select_undersampling_method(self):
@@ -230,8 +228,7 @@ class DataResampling:
                     if self.oversampling_strategy == 'SMOTE':
                         original_data, generated_data = oversample(desired_count, current_indices)
                     else:
-                        original_data, generated_data = oversample(desired_count, class_id,
-                                                                                    current_indices)
+                        original_data, generated_data = oversample(desired_count, class_id, current_indices)
                     print(f'Generated {len(generated_data)} data samples via SMOTE for class {class_id}.')
                     hard_classes_data.append(torch.cat([original_data, generated_data], dim=0))
                     hard_classes_labels.append(torch.full((desired_count,), class_id))

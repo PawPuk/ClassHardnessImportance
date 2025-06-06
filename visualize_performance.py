@@ -263,7 +263,7 @@ class PerformanceVisualizer:
         pruned_percentages = self.compute_pruned_percentage(models)
         if self.num_classes == 10:
             self.plot_pruned_percentages(pruned_percentages['dlp'])
-        _, _, test_loader, _ = load_dataset(self.dataset_name, False, False, False)
+        _, _, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
 
         # Evaluate ensemble performance
         if os.path.exists(os.path.join(result_dir, "ensemble_results.pkl")):

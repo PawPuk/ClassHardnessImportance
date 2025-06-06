@@ -275,7 +275,7 @@ class Visualizer:
             plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))
 
     def main(self):
-        training_loader, _, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean', False, False)
+        training_loader, _, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean', False, True)
         training_all_el2n_scores = self.collect_el2n_scores(training_loader)
         self.save_el2n_scores(training_all_el2n_scores)
 

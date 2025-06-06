@@ -298,7 +298,7 @@ class ResamplingVisualizer:
     def main(self):
         results_dir = os.path.join(ROOT, "Results", self.dataset_name)
         models = self.load_models()
-        _, training_dataset, test_loader, _ = load_dataset(self.dataset_name, False, False, False)
+        _, _, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
         # results[metric][(over, under, cleanliness)][alpha][class_id] -> int
         results = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
         results = self.obtain_results(results_dir, models, test_loader, results)
