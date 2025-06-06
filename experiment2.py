@@ -1,7 +1,9 @@
 import argparse
 import os
+from typing import List, Union
 
 import numpy as np
+from numpy.typing import NDArray
 import torch
 from torch.utils.data import DataLoader
 
@@ -13,7 +15,7 @@ from utils import load_aum_results, load_forgetting_results, load_results, set_r
 
 
 class Experiment2:
-    def __init__(self, pruning_strategy, dataset_name, pruning_rate, hardness_estimator):
+    def __init__(self, pruning_strategy: str, dataset_name: str, pruning_rate: int, hardness_estimator: str):
         set_reproducibility()
 
         self.dataset_name = dataset_name
@@ -29,8 +31,9 @@ class Experiment2:
         self.NUM_CLASSES = config['num_classes']
         self.NUM_EPOCHS = config['num_epochs']
 
-    def prune_dataset(self, aum_scores, labels, training_loader, high_is_hard):
-        pruner = DataPruning(aum_scores, self.pruning_rate, self.dataset_name, high_is_hard)
+    def prune_dataset(self, hardness_estimates: List[List[Union[float, int]]], labels: NDArray[int],
+                      training_loader: DataLoader, high_is_hard: bool) -> torch.utils.data.Subset:
+        pruner = DataPruning(hardness_estimates, self.pruning_rate, self.dataset_name, high_is_hard)
 
         if self.pruning_strategy == 'dlp':
             remaining_indices = pruner.dataset_level_pruning(labels)
@@ -64,9 +67,9 @@ class Experiment2:
         # This is required to shuffle the data.
         pruned_training_loader = DataLoader(pruned_dataset, batch_size=self.BATCH_SIZE, shuffle=True, num_workers=2)
 
-        model_save_dir = f"{self.pruning_strategy}{self.pruning_rate}"
+        pruning_type = f"{self.pruning_strategy}{self.pruning_rate}"
         trainer = ModelTrainer(len(training_dataset), pruned_training_loader, test_loader, self.dataset_name,
-                               model_save_dir, False)
+                               pruning_type, False)
         trainer.train_ensemble()
 
 

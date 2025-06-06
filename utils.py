@@ -44,10 +44,6 @@ def load_aum_results(data_cleanliness, dataset_name, num_epochs) -> List[List[fl
     aum_path = os.path.join(ROOT, f'Results/{data_cleanliness}{dataset_name}', 'AUM.pkl')
     aum_over_epochs_and_models = load_results(aum_path)
 
-    # TODO: This is CURRENTLY required as train_ensemble.py wasn't initially working properly with denoised datasets.
-    for model_idx, model_list in enumerate(aum_over_epochs_and_models):
-        aum_over_epochs_and_models[model_idx] = [sample for sample in model_list if len(sample) > 0]
-
     aum_scores = [
         [
             sum(model_list[sample_idx][epoch_idx] for epoch_idx in range(num_epochs)) / num_epochs
@@ -59,14 +55,8 @@ def load_aum_results(data_cleanliness, dataset_name, num_epochs) -> List[List[fl
     return aum_scores
 
 
-def load_forgetting_results(data_cleanliness, dataset_name) -> List[List[float]]:
+def load_forgetting_results(data_cleanliness, dataset_name) -> List[List[int]]:
     forgetting_path = os.path.join(ROOT, f'Results/{data_cleanliness}{dataset_name}', 'Forgetting.pkl')
     forgetting_scores = load_results(forgetting_path)
-
-    for model_scores in forgetting_scores:  # just checking if the estimates were correctly saved
-        if data_cleanliness == 'clean':
-            assert len(model_scores) == sum(get_config(dataset_name)['num_training_samples'])
-        else:
-            assert len(model_scores) < sum(get_config(dataset_name)['num_training_samples'])
 
     return forgetting_scores

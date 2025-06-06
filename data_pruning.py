@@ -1,11 +1,12 @@
 import os
 import pickle
 import random
-from typing import List
+from typing import List, Union
 
 from diffusers import DDPMPipeline
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy.typing import NDArray
 from sklearn.neighbors import NearestNeighbors
 import torch
 from torch.utils.data import TensorDataset, Subset
@@ -122,7 +123,7 @@ class DataResampling:
         # This only works with CIFAR-10 so we can hardcode the transformation
         data = torch.stack([self.dataset[idx][0] for idx in current_indices])
 
-        ddpm = DDPMPipeline.from_pretrained("google/ddpm-cifar10-32").cuda()
+        ddpm = DDPMPipeline.from_pretrained("google/ddpm-cifar10-32").to("cuda")
         resnet = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar10_resnet32", pretrained=True).cuda()
         transform = torchvision.transforms.Compose([
             torchvision.transforms.Resize((32, 32)),
@@ -132,7 +133,7 @@ class DataResampling:
 
         class_images = []
         while len(class_images) < desired_count:
-            for _ in tqdm(desired_count // 50):
+            for _ in tqdm(range(desired_count // 50)):
                 images = ddpm(batch_size=200).images
                 batch = torch.stack([transform(img) for img in images]).cuda()
                 with torch.no_grad():
@@ -233,7 +234,7 @@ class DataResampling:
                                                                                     current_indices)
                     print(f'Generated {len(generated_data)} data samples via SMOTE for class {class_id}.')
                     hard_classes_data.append(torch.cat([original_data, generated_data], dim=0))
-                    hard_classes_labels = torch.full((desired_count,), class_id)
+                    hard_classes_labels.append(torch.full((desired_count,), class_id))
                 else:
                     class_add_indices = oversample(desired_count, hardnesses_within_class)
                     resampled_indices.extend(current_indices[class_add_indices])
@@ -259,7 +260,7 @@ class DataResampling:
 
 
 class DataPruning:
-    def __init__(self, instance_hardness: List[List[float]], prune_percentage: int, dataset_name: str,
+    def __init__(self, instance_hardness: List[List[Union[int, float]]], prune_percentage: int, dataset_name: str,
                  high_is_hard: bool):
         """
         Initialize the DataPruning class.
@@ -279,7 +280,7 @@ class DataPruning:
         self.num_classes = get_config(dataset_name)['num_classes']
         self.class_level_sample_counts = {}
 
-    def get_unpruned_indices(self, hardness_scores, retain_count):
+    def get_unpruned_indices(self, hardness_scores: NDArray[Union[int, float]], retain_count: int) -> NDArray[np.int_]:
         sorted_indices = np.argsort(hardness_scores)
 
         if self.high_is_hard:
@@ -287,7 +288,7 @@ class DataPruning:
         else:
             return sorted_indices[:retain_count]
 
-    def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str, labels):
+    def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str, labels: NDArray[int]):
         os.makedirs(self.fig_save_dir, exist_ok=True)
         os.makedirs(self.res_save_dir, exist_ok=True)
 
@@ -295,7 +296,7 @@ class DataPruning:
         remaining_labels = labels[remaining_indices]
         unique_classes, class_counts = np.unique(remaining_labels, return_counts=True)
 
-        # Create dictionary for current pruning type if it doesn't exist
+        # Create a dictionary for current pruning type if it doesn't exist
         if pruning_key not in self.class_level_sample_counts:
             self.class_level_sample_counts[pruning_key] = {}
 
@@ -332,7 +333,7 @@ class DataPruning:
         plt.savefig(os.path.join(self.fig_save_dir, "sorted_class_level_sample_distribution.pdf"))
         plt.close()
 
-    def dataset_level_pruning(self, labels):
+    def dataset_level_pruning(self, labels: NDArray[int]) -> list[int]:
         """
         Remove the specified percentage of samples with the lowest instance-level hardness.
         This method returns the indices of the remaining data after pruning.
@@ -350,7 +351,7 @@ class DataPruning:
 
         return remaining_indices.tolist()
 
-    def fixed_class_level_pruning(self, labels):
+    def fixed_class_level_pruning(self, labels: NDArray[int]) -> list[int]:
         """
         Remove the specified percentage of samples from each class.
         Ensures that the class distribution remains balanced.
@@ -358,12 +359,11 @@ class DataPruning:
         :return: List of indices of the remaining data samples after class-level pruning.
         """
         remaining_indices = []
-
-        class_level_hardness = {class_id: [] for class_id in range(self.num_classes)}
+        class_level_hardness = {class_id: np.array([]) for class_id in range(self.num_classes)}
 
         _, training_dataset, _, _ = load_dataset(self.dataset_name, False, False, True)
         for i, (_, label, _) in enumerate(training_dataset):
-            class_level_hardness[label].append(self.instance_hardness[i])
+            np.append(class_level_hardness[label], self.instance_hardness[i])
 
         for class_id, class_scores in class_level_hardness.items():
             retain_count = int((1 - self.prune_percentage) * len(class_scores))
