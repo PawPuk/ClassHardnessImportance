@@ -26,13 +26,15 @@ class PerformanceVisualizer:
         self.num_models = config['robust_ensemble_size']
 
         self.figure_save_dir = os.path.join(ROOT, 'Figures/', args.dataset_name)
+        self.results_dir = os.path.join(ROOT, "Results/", args.dataset_name)
         os.makedirs(self.figure_save_dir, exist_ok=True)
+        os.makedirs(self.results_dir, exist_ok=True)
 
     def load_models(self) -> Dict[str, Dict[int, List[dict]]]:
         models_dir = os.path.join(ROOT, "Models/")
-        models_by_rate = {'fclp': {}, 'dlp': {}}
+        models_by_rate = {'clp': {}, 'dlp': {}}
 
-        for pruning_strategy in ['fclp', 'dlp']:
+        for pruning_strategy in ['clp', 'dlp']:
             # Walk through each folder in the Models directory
             for root, dirs, files in os.walk(models_dir):
                 # Ensure the dataset name matches exactly (avoid partial matches like "cifar10" in "cifar100")
@@ -59,10 +61,12 @@ class PerformanceVisualizer:
 
         return models_by_rate
 
-    def compute_pruned_percentage(self, models_by_rate: [str, Dict[int, List[dict]]]) -> Dict[str, Dict[
+    def compute_pruned_percentages(self, models_by_rate: Dict[str, Dict[int, List[dict]]]) -> Dict[str, Dict[
                                                                                               int, List[float]]]:
+        """Computes the percentage of samples that were pruned per class for each of the pruning rate and pruning
+        strategy."""
         pruned_percentages = {}
-        for pruning_strategy in ['fclp', 'dlp']:
+        for pruning_strategy in ['clp', 'dlp']:
             pruning_rates = models_by_rate[pruning_strategy].keys()
             pruned_percentages[pruning_strategy] = {pruning_rate: [] for pruning_rate in pruning_rates}
 
@@ -86,19 +90,18 @@ class PerformanceVisualizer:
     def plot_pruned_percentages(self, pruned_percentages: Dict[int, List[float]]):
         plt.figure(figsize=(10, 6))
 
-        pruning_thresholds = sorted(pruned_percentages.keys())
+        pruning_rates = sorted(pruned_percentages.keys())
         for class_idx in range(self.num_classes):
-            class_pruning_values = [pruned_percentages[threshold][class_idx] for threshold in pruning_thresholds]
-            plt.plot(pruning_thresholds, class_pruning_values, marker='o')
+            class_pruning_percentages = [pruned_percentages[pruning_rate][class_idx] for pruning_rate in pruning_rates]
+            plt.plot(pruning_rates, class_pruning_percentages, marker='o')
 
         plt.xlabel("Percentage of samples removed from the dataset (DLP rate)")
         plt.ylabel("Class-Level Pruning Percentage (%)")
         plt.grid(True)
-
         plt.savefig(os.path.join(self.figure_save_dir, f'class_vs_dataset_pruning_values.pdf'))
 
-    def evaluate_block(self, ensemble: List[dict], test_loader, class_index: int, pruning_rate: int, results,
-                       pruning_strategy: str):
+    def evaluate_block(self, ensemble: List[dict], test_loader: DataLoader, class_index: int, pruning_rate: int,
+                       results: Dict[str, Dict[str, Dict[int, Dict[int, Dict]]]], pruning_strategy: str):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         for model_idx, model_state in enumerate(ensemble):
@@ -135,7 +138,7 @@ class PerformanceVisualizer:
 
     def evaluate_ensemble(self, models_by_rate: Dict[str, Dict[int, List[dict]]], test_loader: DataLoader,
                           results: Dict[str, Dict[str, Dict]]):
-        for pruning_strategy in ['fclp', 'dlp']:
+        for pruning_strategy in ['clp', 'dlp']:
             for pruning_rate, ensemble in tqdm(models_by_rate[pruning_strategy].items(),
                                                desc=f'Iterating over pruning rates ({pruning_strategy}).'):
                 for metric_name in ['Tp', 'Fp', 'Fn', 'Tn']:
@@ -144,48 +147,54 @@ class PerformanceVisualizer:
                 for class_index in tqdm(range(self.num_classes), desc='Iterating over classes'):
                     self.evaluate_block(ensemble, test_loader, class_index, pruning_rate, results, pruning_strategy)
 
-    def plot_class_level_results(self, results, pruned_percentages):
-        pruning_rates = sorted(results['fclp']['Accuracy'].keys())
+    def save_file(self, filename: str, data: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]]):
+        save_location = os.path.join(self.results_dir, filename)
+        with open(save_location, "wb") as file:
+            pickle.dump(data, file)
 
-        for metric_name in results['fclp'].keys():
-            fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey=True)
-            fig.suptitle(f"Class-Level  {metric_name} Across Pruning Rates", fontsize=16)
+    def plot_class_level_results(self, results: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]],
+                                 pruned_percentages: Dict[str, Dict[int, List[float]]]):
+        pruning_rates = sorted(results['clp']['Accuracy'].keys())
+
+        for metric_name in results['clp'].keys():
+            fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey='all')
+            fig.suptitle(f"Class-Level {metric_name} Across Pruning Rates", fontsize=16)
             axes = axes.flatten()
 
             for class_id in range(self.num_classes):
-                avg_metric_values_fclp = [np.mean([results['fclp'][metric_name][p][class_id][model_idx]
-                                                  for model_idx in range(self.num_models)])
-                                          for p in pruning_rates]
-                std_metric_values_fclp = [np.std([results['fclp'][metric_name][p][class_id][model_idx]
-                                                 for model_idx in range(self.num_models)])
-                                          for p in pruning_rates]
+                avg_metric_values_clp = np.array([np.mean([results['clp'][metric_name][p][class_id][model_idx]
+                                                           for model_idx in range(self.num_models)])
+                                                  for p in pruning_rates])
+                std_metric_values_clp = np.array([np.std([results['clp'][metric_name][p][class_id][model_idx]
+                                                          for model_idx in range(self.num_models)])
+                                                  for p in pruning_rates])
 
-                avg_metric_values_dlp = [np.mean([results['dlp'][metric_name][p][class_id][model_idx]
-                                                 for model_idx in range(self.num_models)])
-                                         for p in pruning_rates]
-                std_metric_values_dlp = [np.std([results['dlp'][metric_name][p][class_id][model_idx]
-                                                for model_idx in range(self.num_models)])
-                                         for p in pruning_rates]
+                avg_metric_values_dlp = np.array([np.mean([results['dlp'][metric_name][p][class_id][model_idx]
+                                                           for model_idx in range(self.num_models)])
+                                                  for p in pruning_rates])
+                std_metric_values_dlp = np.array([np.std([results['dlp'][metric_name][p][class_id][model_idx]
+                                                          for model_idx in range(self.num_models)])
+                                                  for p in pruning_rates])
                 if metric_name == 'Recall':
-                    print(f'Class {class_id}:\n\t{avg_metric_values_fclp}\n\t{avg_metric_values_dlp}')
+                    print(f'Class {class_id}:\n\t{avg_metric_values_clp}\n\t{avg_metric_values_dlp}')
 
-                pruning_fclp = [pruned_percentages['fclp'][p][class_id] for p in pruning_rates]
+                pruning_clp = [pruned_percentages['clp'][p][class_id] for p in pruning_rates]
                 pruning_dlp = [pruned_percentages['dlp'][p][class_id] for p in pruning_rates]
 
+                # Plot CLP (Blue Line)
                 ax = axes[class_id]
-                ax.plot(pruning_fclp, avg_metric_values_fclp, marker='o', linestyle='-', color='blue', label='clp')
-                ax.fill_between(pruning_fclp, np.array(avg_metric_values_fclp) - np.array(std_metric_values_fclp),
-                                np.array(avg_metric_values_fclp) + np.array(std_metric_values_fclp),
-                                color='blue', alpha=0.2)
+                ax.plot(pruning_clp, avg_metric_values_clp, marker='o', linestyle='-', color='blue', label='clp')
+                ax.fill_between(pruning_clp, avg_metric_values_clp - std_metric_values_clp,
+                                avg_metric_values_clp + std_metric_values_clp, color='blue', alpha=0.2)
                 ax.set_xlabel("Pruning % (clp)", color='blue')
                 ax.set_xlim(0, 100)
                 ax.tick_params(axis='x', labelcolor='blue')
 
+                # Plot DLP (Red Line)
                 ax2 = ax.twiny()
                 ax2.plot(pruning_dlp, avg_metric_values_dlp, marker='s', linestyle='--', color='red', label='dlp')
-                ax.fill_between(pruning_dlp, np.array(avg_metric_values_dlp) - np.array(std_metric_values_dlp),
-                                np.array(avg_metric_values_dlp) + np.array(std_metric_values_dlp),
-                                color='red', alpha=0.2)
+                ax.fill_between(pruning_dlp, avg_metric_values_dlp - std_metric_values_dlp,
+                                avg_metric_values_dlp + std_metric_values_dlp, color='red', alpha=0.2)
                 ax2.set_xlabel("Pruning % (dlp)", color='red')
                 ax2.set_xlim(0, 100)  # Fix x-axis range for DLP
                 ax2.tick_params(axis='x', labelcolor='red')
@@ -198,106 +207,91 @@ class PerformanceVisualizer:
             plt.savefig(os.path.join(self.figure_save_dir, f'Class_Level_{metric_name}.pdf'))
             plt.close()
 
-    def compare_fclp_with_dlp(self, results):
-        pruning_rates = sorted(results['fclp']['Accuracy'].keys())
+    def compare_clp_with_dlp(self, results: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]]):
+        pruning_rates = sorted(results['clp']['Accuracy'].keys())
 
-        for metric_name in results['fclp'].keys():
-            avg_metric_fclp = [np.mean([results['fclp'][metric_name][p][class_id][model_idx]
-                                        for model_idx in range(self.num_models)
-                                        for class_id in range(self.num_classes)])
-                               for p in pruning_rates]
-            std_metric_fclp = [np.std([results['fclp'][metric_name][p][class_id][model_idx]
-                                       for model_idx in range(self.num_models)
-                                       for class_id in range(self.num_classes)])
-                               for p in pruning_rates]
+        for metric_name in results['clp'].keys():
+            avg_metric_clp = np.array([np.mean([results['clp'][metric_name][p][class_id][model_idx]
+                                                for model_idx in range(self.num_models)
+                                                for class_id in range(self.num_classes)])
+                                       for p in pruning_rates])
+            std_metric_clp = np.array([np.std([results['clp'][metric_name][p][class_id][model_idx]
+                                               for model_idx in range(self.num_models)
+                                               for class_id in range(self.num_classes)])
+                                       for p in pruning_rates])
 
-            avg_metric_dlp = [np.mean([results['dlp'][metric_name][p][class_id][model_idx]
-                                       for model_idx in range(self.num_models)
-                                       for class_id in range(self.num_classes)])
-                              for p in pruning_rates]
-            std_metric_dlp = [np.std([results['dlp'][metric_name][p][class_id][model_idx]
-                                      for model_idx in range(self.num_models)
-                                      for class_id in range(self.num_classes)])
-                              for p in pruning_rates]
+            avg_metric_dlp = np.array([np.mean([results['dlp'][metric_name][p][class_id][model_idx]
+                                                for model_idx in range(self.num_models)
+                                                for class_id in range(self.num_classes)])
+                                       for p in pruning_rates])
+            std_metric_dlp = np.array([np.std([results['dlp'][metric_name][p][class_id][model_idx]
+                                               for model_idx in range(self.num_models)
+                                               for class_id in range(self.num_classes)])
+                                       for p in pruning_rates])
 
             if metric_name == 'Recall':
-                print(avg_metric_fclp)
+                print(avg_metric_clp)
                 print(avg_metric_dlp)
 
-            # Create a figure
             plt.figure(figsize=(8, 6))
 
-            # Plot FCLP (Blue Line)
-            plt.plot(pruning_rates, avg_metric_fclp, marker='o', linestyle='-', color='blue', label='CLP')
-            plt.fill_between(pruning_rates,
-                             np.array(avg_metric_fclp) - np.array(std_metric_fclp),
-                             np.array(avg_metric_fclp) + np.array(std_metric_fclp),
-                             color='blue', alpha=0.2)  # Shaded region for std
-
+            # Plot CLP (Blue Line)
+            plt.plot(pruning_rates, avg_metric_clp, marker='o', linestyle='-', color='blue', label='CLP')
+            plt.fill_between(pruning_rates, avg_metric_clp - std_metric_clp, avg_metric_clp + std_metric_clp,
+                             color='blue', alpha=0.2)
             # Plot DLP (Red Line)
             plt.plot(pruning_rates, avg_metric_dlp, marker='s', linestyle='--', color='red', label='DLP')
-            plt.fill_between(pruning_rates,
-                             np.array(avg_metric_dlp) - np.array(std_metric_dlp),
-                             np.array(avg_metric_dlp) + np.array(std_metric_dlp),
+            plt.fill_between(pruning_rates, avg_metric_dlp - std_metric_dlp, avg_metric_dlp + std_metric_dlp,
                              color='red', alpha=0.2)  # Shaded region for std
 
-            # Labels & Legend
             plt.xlabel("Percentage of samples removed from the dataset", fontsize=12)
             plt.ylabel(f"Average {metric_name}", fontsize=12)
             plt.xlim(0, 100)  # Ensure pruning percentage is between 0 and 100
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
 
-            plt.savefig(os.path.join(self.figure_save_dir, f'{metric_name}_fclp_vs_dlp.pdf'))
-
-    @staticmethod
-    def save_file(save_dir, filename, data):
-        os.makedirs(save_dir, exist_ok=True)
-        save_location = os.path.join(save_dir, filename)
-        with open(save_location, "wb") as file:
-            pickle.dump(data, file)
+            plt.savefig(os.path.join(self.figure_save_dir, f'{metric_name}_clp_vs_dlp.pdf'))
 
     def main(self):
-        result_dir = os.path.join(ROOT, "Results/", self.dataset_name)
         models = self.load_models()
-        pruned_percentages = self.compute_pruned_percentage(models)
+        pruned_percentages = self.compute_pruned_percentages(models)
         if self.num_classes == 10:
             self.plot_pruned_percentages(pruned_percentages['dlp'])
+
+        # We only use test_loader so values of remove_noise, shuffle, and apply_augmentation doesn't matter below.
         _, _, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
 
         # Evaluate ensemble performance
-        if os.path.exists(os.path.join(result_dir, "ensemble_results.pkl")):
+        if os.path.exists(os.path.join(self.results_dir, "ensemble_results.pkl")):
             print('Loading pre-computed ensemble results.')
-            with open(os.path.join(result_dir, "ensemble_results.pkl"), 'rb') as f:
+            with open(os.path.join(self.results_dir, "ensemble_results.pkl"), 'rb') as f:
                 results = pickle.load(f)
         else:
             print('Evaluating performance of ensembles trained on variously pruned dataset.')
 
             results = {}
-            for pruning_strategy in ['fclp', 'dlp']:
+            for pruning_strategy in ['clp', 'dlp']:
                 results[pruning_strategy] = {}
                 for metric_name in ['Tp', 'Fn', 'Fp', 'Tn']:
                     results[pruning_strategy][metric_name] = {}
 
             self.evaluate_ensemble(models, test_loader, results)
-            self.save_file(result_dir, "ensemble_results.pkl", results)
+            self.save_file("ensemble_results.pkl", results)
 
-        print(results['fclp']['Tp'].keys())  # Sanity check
-
-        for pruning_strategy in ['fclp', 'dlp']:
-            for metric_name in ['F1', 'MCC', 'Tn', 'Accuracy', 'Precision', 'Recall']:
+        for pruning_strategy in ['clp', 'dlp']:
+            for metric_name in ['F1', 'MCC', 'Accuracy', 'Precision', 'Recall']:
                 results[pruning_strategy][metric_name] = {}
-            for pruning_rate in results['fclp']['Tp'].keys():
-                for metric_name in ['F1', 'MCC', 'Tn', 'Accuracy', 'Precision', 'Recall']:
+            for pruning_rate in results['clp']['Tp'].keys():
+                for metric_name in ['F1', 'MCC', 'Accuracy', 'Precision', 'Recall']:
                     results[pruning_strategy][metric_name][pruning_rate] = {}
                 for class_id in range(self.num_classes):
-                    for metric_name in ['F1', 'MCC', 'Tn', 'Accuracy', 'Precision', 'Recall']:
+                    for metric_name in ['F1', 'MCC', 'Accuracy', 'Precision', 'Recall']:
                         results[pruning_strategy][metric_name][pruning_rate][class_id] = {}
                     for model_idx in range(self.num_models):
                         Tp = results[pruning_strategy]['Tp'][pruning_rate][class_id][model_idx]
                         Fp = results[pruning_strategy]['Fp'][pruning_rate][class_id][model_idx]
                         Fn = results[pruning_strategy]['Fn'][pruning_rate][class_id][model_idx]
-                        Tn = sum(self.num_test_samples) / (Tp + Fp + Fn)
+                        Tn = results[pruning_strategy]['Tn'][pruning_rate][class_id][model_idx]
 
                         precision = Tp / (Tp + Fp) if (Tp + Fp) > 0 else 0.0
                         recall = Tp / (Tp + Fn) if (Tp + Fn) > 0 else 0.0
@@ -310,14 +304,13 @@ class PerformanceVisualizer:
 
                         results[pruning_strategy]['F1'][pruning_rate][class_id][model_idx] = F1
                         results[pruning_strategy]['MCC'][pruning_rate][class_id][model_idx] = MCC
-                        results[pruning_strategy]['Tn'][pruning_rate][class_id][model_idx] = Tn
                         results[pruning_strategy]['Accuracy'][pruning_rate][class_id][model_idx] = accuracy
                         results[pruning_strategy]['Precision'][pruning_rate][class_id][model_idx] = precision
                         results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx] = recall
 
         if self.num_classes == 10:
             self.plot_class_level_results(results, pruned_percentages)
-        self.compare_fclp_with_dlp(results)
+        self.compare_clp_with_dlp(results)
 
 
 if __name__ == "__main__":

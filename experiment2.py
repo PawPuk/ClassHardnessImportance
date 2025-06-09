@@ -37,8 +37,8 @@ class Experiment2:
 
         if self.pruning_strategy == 'dlp':
             remaining_indices = pruner.dataset_level_pruning(labels)
-        elif self.pruning_strategy == 'fclp':
-            remaining_indices = pruner.fixed_class_level_pruning(labels)
+        elif self.pruning_strategy == 'clp':
+            remaining_indices = pruner.class_level_pruning(labels)
         else:
             raise ValueError('Wrong value of the parameter `pruning_strategy`.')
 
@@ -75,8 +75,8 @@ class Experiment2:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='EL2N Score Calculation and Dataset Pruning')
-    parser.add_argument('--pruning_strategy', type=str, choices=['fclp', 'dlp'],
-                        help='Choose pruning strategy: fclp (fixed class level pruning) or dlp (data level pruning)')
+    parser.add_argument('--pruning_strategy', type=str, choices=['clp', 'dlp'],
+                        help='Choose pruning strategy: clp (fixed class level pruning) or dlp (data level pruning)')
     parser.add_argument('--dataset_name', type=str, choices=['CIFAR10', 'CIFAR100'],
                         help='Specify the dataset name (default: CIFAR10)')
     parser.add_argument('--pruning_rate', type=int,

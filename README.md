@@ -51,7 +51,7 @@ This program is responsible for the data pruning case study (Sec. III-C).
 ### Parameters
 
   - ``dataset_name`` - same as in other programs
-  - ``pruning_strategy`` - specifies the pruning strategy. Choose either `fclp`—fixed class-level pruning, which we call class-level pruning in our paper for simplicity—or `dlp`—dataset-level-pruning.
+  - ``pruning_strategy`` - specifies the pruning strategy. Choose either `clp`—class-level pruning, which we call class-level pruning in our paper for simplicity—or `dlp`—dataset-level-pruning.
   - ``pruning_rate`` - specifies the percentage of data samples that will be removed during data pruning (please use integers). In our paper we used pruning rates of 10, 20, 30, 40, 50, 60, 70 (and 80 for CIFAR-10).
   - ``hardness_estimator`` - allows the used to select the hardness estimator used for pruning. Our experiments were performed for AUM.
 
@@ -78,7 +78,7 @@ show the imbalanced introduced by dataset-level pruning (DLP).
   - Figure 6 from Supplementary Material (plot_class_level_results) - recall averaged over models of ensembles 
 trained on subsets of datasets obtained via DLP and class-level pruning (CLP). Not implemented for CIFAR-100 due to too 
 many classes.
-  - Figure 12 from the main text and Figure 5 from Supplementary Material (compare_fclp_with_dlp) - recall averaged over 
+  - Figure 12 from the main text and Figure 5 from Supplementary Material (compare_clp_with_dlp) - recall averaged over 
 classes for ensembles trained on subsets of datasets obtained via DLP and CLP.
 
 ### Important

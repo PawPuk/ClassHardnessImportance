@@ -15,7 +15,7 @@ class NoiseRemover:
         self.dataset = dataset
 
         self.BATCH_SIZE = self.config['batch_size']
-        self.NUM_MODELS = self.config['num_models']
+        self.NUM_MODELS = self.config['robust_ensemble_size']
         self.TOTAL_SAMPLES = sum(self.config['num_training_samples'])
         self.NUM_EPOCHS = self.config['num_epochs']
 
@@ -71,7 +71,7 @@ class NoiseRemover:
         plt.scatter([x_threshold], [y_threshold], color='grey', zorder=5, label=f"Pleiss et al.'s Threshold")
 
         # Red dot: Predefined threshold (elbow method)
-        num_to_remove = 552
+        num_to_remove = 552  # TODO: This is definitely wrong - needs to be different for different datasets!!!
         x_value = sorted_data[num_to_remove]
         y_value = cumulative_percentage[num_to_remove]
         plt.scatter([x_value], [y_value], color='red', zorder=5, label=f'Our Threshold')

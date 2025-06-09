@@ -46,11 +46,9 @@ class ResamplingVisualizer:
         models_by_strategy = defaultdict(lambda: defaultdict(list))
 
         for root, dirs, files in os.walk(models_dir):
-            if 'modelsWithFixedDataAugmentation' in root or 'fclp' in root or 'dlp' in root:
+            if 'clp' in root or 'dlp' in root:
                 continue
-            if 'CIFAR100' in root and self.dataset_name != 'CIFAR100':
-                continue  # This is required as 'CIFAR10' string is also contained in 'CIFAR100'...
-            elif f"unclean{self.dataset_name}" in root and 'over_' in root and '_under_' in root:
+            if os.path.basename(root) == f"unclean{self.dataset_name}" and 'over_' in root:
                 dataset_type = 'unclean'
             elif f"clean{self.dataset_name}" in root and 'over_' in root and '_under_' in root:
                 dataset_type = 'clean'
