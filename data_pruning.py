@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import pickle
 import random
@@ -119,30 +120,57 @@ class DataResampling:
         synthetic_samples = torch.stack(synthetic_samples, dim=0)
         return data, synthetic_samples
 
-    def DDPM(self, desired_count, class_id, current_indices):
-        # This only works with CIFAR-10 so we can hardcode the transformation
-        data = torch.stack([self.dataset[idx][0] for idx in current_indices])
+    def DDPM(self, desired_counts, current_counts):
+
+        oversample_targets = {
+            class_id: desired_counts[class_id] - current_counts[class_id]
+            for class_id in range(10)
+            if desired_counts[class_id] > current_counts[class_id]
+        }
+        to_tensor = torchvision.transforms.ToTensor()
+        original_data, original_labels = [], []
+        for idx in range(len(self.dataset)):
+            image, label, _ = self.dataset[idx]
+            if label.item() in oversample_targets:
+                original_data.append(image)
+                original_labels.append(label)
+        if not oversample_targets:
+            return original_data, original_labels
 
         ddpm = DDPMPipeline.from_pretrained("google/ddpm-cifar10-32").to("cuda")
         resnet = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar10_resnet32", pretrained=True).cuda()
         normalize = torchvision.transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010))
-        to_tensor = torchvision.transforms.ToTensor()
+        synthetic_per_class = defaultdict(list)
 
-        class_images = []
-        while len(class_images) < desired_count:
-            for _ in tqdm(range(desired_count // 50)):
-                images = ddpm(batch_size=200).images
-                batch = torch.stack([normalize(to_tensor(img)) for img in images]).cuda()
-                with torch.no_grad():
-                    outputs = resnet(batch)
-                    probs = torch.softmax(outputs, dim=1)
-                    confidences, labels = torch.max(probs, dim=1)
-                    class_synthetic_indices = torch.tensor(labels == class_id)
-                    indices = torch.where(class_synthetic_indices)[0]
-                    class_synthetic_images = [images[i] for i in indices]
-                    class_images.extend(class_synthetic_images)
-        class_images = torch.stack([to_tensor(img) for img in class_images])
-        return data, class_images[:desired_count]
+        while any(len(synthetic_per_class[c]) < oversample_targets[c] for c in oversample_targets):
+            images = ddpm(batch_size=1000).images
+            batch = torch.stack([normalize(to_tensor(img)) for img in images]).cuda()
+            with torch.no_grad():
+                outputs = resnet(batch)
+                probs = torch.softmax(outputs, dim=1)
+                _, predicted_labels = torch.max(probs, dim=1)
+            for i, label in enumerate(predicted_labels):
+                label = label.item()
+                if label in oversample_targets and len(synthetic_per_class[label]) < oversample_targets[label]:
+                    synthetic_per_class[label].append(to_tensor(images[i]))
+
+            samples_to_generate = sum(
+                oversample_targets[class_id] - len(synthetic_per_class.get(class_id, []))
+                for class_id in oversample_targets
+            )
+            print(f'\n\n\nStill need to generate {samples_to_generate} data samples.\n\n\n')
+
+        all_synthetic_images, all_synthetic_labels = [], []
+        for class_id in oversample_targets:
+            all_synthetic_images.extend(synthetic_per_class[class_id][:oversample_targets[class_id]])
+            all_synthetic_labels.extend([class_id] * oversample_targets[class_id])
+
+        print(len(original_data), len(all_synthetic_images), len(original_data + all_synthetic_images))
+        all_images = torch.stack(original_data + all_synthetic_images)  # Shape: [N, 3, 32, 32]
+        print(all_images.shape)
+        all_labels = torch.tensor(original_labels + all_synthetic_labels)  # Shape: [N]
+
+        return all_images, all_labels
 
     def select_undersampling_method(self):
         """
@@ -168,7 +196,7 @@ class DataResampling:
         elif self.oversampling_strategy == 'SMOTE':
             return lambda count, current_indices: self.SMOTE(count, current_indices)
         elif self.oversampling_strategy == 'DDPM':
-            return lambda count, class_id, current_indices: self.DDPM(count, class_id, current_indices)
+            return lambda desired_counts, current_counts: self.DDPM(desired_counts, current_counts)
         elif self.oversampling_strategy == 'none':
             return None
         else:
@@ -212,38 +240,40 @@ class DataResampling:
             class_indices[label.item()].append(idx)
 
         # Perform resampling for each class
-        resampled_indices, hard_classes_data, hard_classes_labels = [], [], []
+        resampled_indices, hard_classes_data, hard_classes_labels, desired_counts, current_counts = [], [], [], [], []
         print(f'After resampling the dataset should have {sum(samples_per_class.values())} data samples.')
 
         for class_id, hardnesses_within_class in self.hardness.items():
             desired_count = samples_per_class[class_id]
+            desired_counts.append(desired_count)
             current_indices = np.array(class_indices[class_id])
+            current_counts.append(len(current_indices))
 
             if len(current_indices) > desired_count and self.undersampling_strategy != 'none':
                 class_retain_indices = undersample(desired_count, hardnesses_within_class)
                 resampled_indices.extend(current_indices[class_retain_indices])
             elif len(current_indices) < desired_count and self.oversampling_strategy != 'none':
                 # Below if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
-                if self.oversampling_strategy in ['SMOTE', 'DDPM']:
-                    if self.oversampling_strategy == 'SMOTE':
-                        original_data, generated_data = oversample(desired_count, current_indices)
-                    else:
-                        original_data, generated_data = oversample(desired_count, class_id, current_indices)
+                if self.oversampling_strategy in ['SMOTE']:
+                    original_data, generated_data = oversample(desired_count, current_indices)
                     print(f'Generated {len(generated_data)} data samples via SMOTE for class {class_id}.')
                     hard_classes_data.append(torch.cat([original_data, generated_data], dim=0))
                     hard_classes_labels.append(torch.full((desired_count,), class_id))
-                else:
+                elif self.oversampling_strategy in ['easy', 'hard', 'random']:
                     class_add_indices = oversample(desired_count, hardnesses_within_class)
                     resampled_indices.extend(current_indices[class_add_indices])
             else:
                 resampled_indices.extend(current_indices)
-
-        if self.oversampling_strategy in ['SMOTE', 'DDPM']:
-            existing_data, existing_labels = self.extract_data_labels()
+        if self.oversampling_strategy == 'DDPM':
+            hard_classes_data, hard_classes_labels = oversample(desired_counts, current_counts)
+            print(f'Generated {len(hard_classes_data)} data samples via DDPM.')
+        elif self.oversampling_strategy == 'SMOTE':
             hard_classes_data = torch.cat(hard_classes_data, dim=0)
             hard_classes_labels = torch.cat(hard_classes_labels, dim=0)
 
+        if self.oversampling_strategy in ['SMOTE', 'DDPM']:
             print(f'Proceeding with {len(hard_classes_data)} data samples from hard classes (real + synthetic data).')
+            existing_data, existing_labels = self.extract_data_labels()
 
             new_data = torch.cat([existing_data, hard_classes_data], dim=0)
             new_labels = torch.cat([existing_labels, hard_classes_labels], dim=0)
