@@ -112,7 +112,8 @@ class Experiment3:
             pickle.dump(samples_per_class, file)
 
         resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
-                                   self.undersampling_strategy, hardnesses_by_class, self.hardness_estimator != 'AUM')
+                                   self.undersampling_strategy, hardnesses_by_class, self.hardness_estimator != 'AUM',
+                                   self.dataset_name)
         resampled_dataset = resampler.resample_data(samples_per_class)
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
@@ -136,14 +137,14 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Experiment3 with Data Resampling.")
     parser.add_argument('--dataset_name', type=str, required=True,
-                        help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN)")
+                        help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN).")
     parser.add_argument('--oversampling', type=str, required=True,
-                        choices=['random', 'easy', 'hard', 'SMOTE', 'DDPM', 'none'],
+                        choices=['random', 'easy', 'hard', 'SMOTE', 'DDPM', 'rEDM', 'hEDM', 'none'],
                         help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, '
-                             '`SMOTE`, `DDPM`, and `none`)')
+                             '`SMOTE`, `DDPM`, `rEDM`, `hEDM`, and `none`).')
     parser.add_argument('--undersampling', type=str, required=True, choices=['easy', 'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
-                             '`prune_hard`, `prune_extreme`, and `none`)')
+                             '`prune_hard`, `prune_extreme`, and `none`).')
     parser.add_argument('--hardness_estimator', type=str, choices=['EL2N', 'AUM', 'Forgetting'], default='AUM',
                         help='Specifies which instance level hardness estimator to use.')
     parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')

@@ -46,40 +46,25 @@ class ResamplingVisualizer:
         models_by_strategy = defaultdict(lambda: defaultdict(list))
 
         for root, dirs, files in os.walk(models_dir):
-            if 'clp' in root or 'dlp' in root:
-                continue
-            if os.path.basename(root) == f"unclean{self.dataset_name}" and 'over_' in root:
-                dataset_type = 'unclean'
-            elif f"clean{self.dataset_name}" in root and 'over_' in root and '_under_' in root:
-                dataset_type = 'clean'
-            else:
-                continue
-
-            try:
+            if 'over_' in root and self.dataset_name in os.path.basename(root):
+                dataset_type = 'unclean' if os.path.basename(root) == f"unclean{self.dataset_name}" else 'clean'
                 oversampling_strategy = root.split("over_")[1].split("_under_")[0]
                 undersampling_strategy = root.split("_under_")[1].split("_alpha_")[0]
                 alpha = root.split("_alpha_")[1].split("_hardness_")[0]
                 key = (oversampling_strategy, undersampling_strategy, dataset_type)
 
                 for file in files:
-                    if file.endswith(".pth") and "_epoch_200" in file:
-                        try:
-                            # Below ensures we load only the specified models (below the index threshold)
-                            model_index = int(file.split("_")[1])
-                            if model_index >= self.target_ensemble_size:
-                                continue
-
-                            model_path = os.path.join(root, file)
-                            model_state = torch.load(model_path)
-                            models_by_strategy[key][alpha].append(model_state)
-
-                        # Skip directories or files that don't match the expected pattern
-                        except (IndexError, ValueError):
+                    if file.endswith(".pth") and f"_epoch_{self.num_epochs}" in file:
+                        # For cases where the number of trained models is above robust_ensemble_size
+                        model_index = int(file.split("_")[1])
+                        if model_index >= self.target_ensemble_size:
                             continue
+
+                        model_path = os.path.join(root, file)
+                        model_state = torch.load(model_path)
+                        models_by_strategy[key][alpha].append(model_state)
                 if len(models_by_strategy[key][alpha]) > 0:
                     print(f"Loaded {len(models_by_strategy[key][alpha])} models for strategies {key} & alpha {alpha}.")
-            except (IndexError, ValueError):
-                continue
 
         # Also load models trained on the full dataset (no resampling)
         for dataset_type in ['unclean', 'clean']:

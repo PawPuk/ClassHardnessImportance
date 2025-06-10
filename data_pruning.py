@@ -19,13 +19,15 @@ from data import load_dataset, AugmentedSubset, IndexedDataset
 
 
 class DataResampling:
-    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, hardness, high_is_hard):
+    def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, hardness, high_is_hard,
+                 dataset_name):
         self.dataset = dataset
         self.num_classes = num_classes
         self.oversampling_strategy = oversampling_strategy
         self.undersampling_strategy = undersampling_strategy
         self.hardness = hardness
         self.high_is_hard = high_is_hard
+        self.dataset_name = dataset_name
 
     def prune_easy(self, desired_count, hardness_scores):
         sorted_indices = np.argsort(hardness_scores)
@@ -120,20 +122,18 @@ class DataResampling:
         synthetic_samples = torch.stack(synthetic_samples, dim=0)
         return data, synthetic_samples
 
-    def DDPM(self, desired_counts, current_counts):
-
-        oversample_targets = {
-            class_id: desired_counts[class_id] - current_counts[class_id]
-            for class_id in range(10)
-            if desired_counts[class_id] > current_counts[class_id]
-        }
-        to_tensor = torchvision.transforms.ToTensor()
+    def extract_original_data_and_labels(self, oversample_targets):
         original_data, original_labels = [], []
         for idx in range(len(self.dataset)):
             image, label, _ = self.dataset[idx]
             if label.item() in oversample_targets:
                 original_data.append(image)
                 original_labels.append(label)
+        return original_data, original_labels
+
+    def DDPM(self, oversample_targets):
+        to_tensor = torchvision.transforms.ToTensor()
+        original_data, original_labels = self.extract_original_data_and_labels(oversample_targets)
         if not oversample_targets:
             return original_data, original_labels
 
@@ -165,9 +165,43 @@ class DataResampling:
             all_synthetic_images.extend(synthetic_per_class[class_id][:oversample_targets[class_id]])
             all_synthetic_labels.extend([class_id] * oversample_targets[class_id])
 
-        print(len(original_data), len(all_synthetic_images), len(original_data + all_synthetic_images))
         all_images = torch.stack(original_data + all_synthetic_images)  # Shape: [N, 3, 32, 32]
-        print(all_images.shape)
+        all_labels = torch.tensor(original_labels + all_synthetic_labels)  # Shape: [N]
+
+        return all_images, all_labels
+
+    def EDM(self, oversample_targets, type):
+        # TODO: Mention downloading images in documentation
+
+        synthetic_data = np.load(os.path.join(ROOT, 'GeneratedImages', f'{self.dataset_name}.npz'))
+        synthetic_images = synthetic_data[synthetic_data.files[0]]
+        synthetic_labels = synthetic_data[synthetic_data.files[1]]
+
+        original_data, original_labels = self.extract_original_data_and_labels(oversample_targets)
+        if not oversample_targets:
+            return original_data, original_labels
+
+        synthetic_per_class = defaultdict(list)
+        for i, label in enumerate(synthetic_labels):
+            if label in oversample_targets:
+                synthetic_per_class[label].append(synthetic_images[i])
+
+        all_synthetic_images, all_synthetic_labels = [], []
+        for class_id in oversample_targets:
+            needed_count = oversample_targets[class_id]
+            all_synthetic_labels.extend([class_id] * needed_count)
+
+            if type == 'random':
+                available_images = synthetic_per_class[class_id]
+                selected_images = random.sample(available_images, needed_count)
+                all_synthetic_images.extend(selected_images)
+
+        # Convert synthetic images to tensors to match the DDPM output format
+        to_tensor = torchvision.transforms.ToTensor()
+        all_synthetic_tensors = [to_tensor(img) if not isinstance(img, torch.Tensor) else img
+                                 for img in all_synthetic_images]
+
+        all_images = torch.stack(original_data + all_synthetic_tensors)  # Shape: [N, 3, 32, 32]
         all_labels = torch.tensor(original_labels + all_synthetic_labels)  # Shape: [N]
 
         return all_images, all_labels
@@ -196,7 +230,11 @@ class DataResampling:
         elif self.oversampling_strategy == 'SMOTE':
             return lambda count, current_indices: self.SMOTE(count, current_indices)
         elif self.oversampling_strategy == 'DDPM':
-            return lambda desired_counts, current_counts: self.DDPM(desired_counts, current_counts)
+            return lambda oversample_targets: self.DDPM(oversample_targets)
+        elif self.oversampling_strategy == 'rEDM':
+            return lambda oversample_targets: self.EDM(oversample_targets, 'random')
+        elif self.oversampling_strategy == 'hEDM':
+            return lambda oversample_targets: self.EDM(oversample_targets, 'hard')
         elif self.oversampling_strategy == 'none':
             return None
         else:
@@ -264,14 +302,19 @@ class DataResampling:
                     resampled_indices.extend(current_indices[class_add_indices])
             else:
                 resampled_indices.extend(current_indices)
-        if self.oversampling_strategy == 'DDPM':
-            hard_classes_data, hard_classes_labels = oversample(desired_counts, current_counts)
-            print(f'Generated {len(hard_classes_data)} data samples via DDPM.')
+        if self.oversampling_strategy in ['DDPM', 'EDM']:
+            oversample_targets = {
+                class_id: desired_counts[class_id] - current_counts[class_id]
+                for class_id in range(self.num_classes)
+                if desired_counts[class_id] > current_counts[class_id]
+            }
+            hard_classes_data, hard_classes_labels = oversample(oversample_targets)
+            print(f'Generated {len(hard_classes_data)} data samples via {self.oversampling_strategy}.')
         elif self.oversampling_strategy == 'SMOTE':
             hard_classes_data = torch.cat(hard_classes_data, dim=0)
             hard_classes_labels = torch.cat(hard_classes_labels, dim=0)
 
-        if self.oversampling_strategy in ['SMOTE', 'DDPM']:
+        if self.oversampling_strategy in ['SMOTE', 'DDPM', 'EDM']:
             print(f'Proceeding with {len(hard_classes_data)} data samples from hard classes (real + synthetic data).')
             existing_data, existing_labels = self.extract_data_labels()
 
