@@ -154,7 +154,7 @@ class PerformanceVisualizer:
 
     def plot_class_level_results(self, results: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]],
                                  pruned_percentages: Dict[str, Dict[int, List[float]]]):
-        pruning_rates = sorted(results['clp']['Accuracy'].keys())
+        pruning_rates = sorted(results['clp']['Average Accuracy'].keys())
 
         for metric_name in results['clp'].keys():
             fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey='all')
@@ -208,7 +208,7 @@ class PerformanceVisualizer:
             plt.close()
 
     def compare_clp_with_dlp(self, results: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]]):
-        pruning_rates = sorted(results['clp']['Accuracy'].keys())
+        pruning_rates = sorted(results['clp']['Average Accuracy'].keys())
 
         for metric_name in results['clp'].keys():
             avg_metric_clp = np.array([np.mean([results['clp'][metric_name][p][class_id][model_idx]
@@ -279,13 +279,13 @@ class PerformanceVisualizer:
             self.save_file("ensemble_results.pkl", results)
 
         for pruning_strategy in ['clp', 'dlp']:
-            for metric_name in ['F1', 'MCC', 'Accuracy', 'Precision', 'Recall']:
+            for metric_name in ['F1', 'MCC', 'Average Accuracy', 'Precision', 'Recall']:
                 results[pruning_strategy][metric_name] = {}
             for pruning_rate in results['clp']['Tp'].keys():
-                for metric_name in ['F1', 'MCC', 'Accuracy', 'Precision', 'Recall']:
+                for metric_name in ['F1', 'MCC', 'Average Accuracy', 'Precision', 'Recall']:
                     results[pruning_strategy][metric_name][pruning_rate] = {}
                 for class_id in range(self.num_classes):
-                    for metric_name in ['F1', 'MCC', 'Accuracy', 'Precision', 'Recall']:
+                    for metric_name in ['F1', 'MCC', 'Average Accuracy', 'Precision', 'Recall']:
                         results[pruning_strategy][metric_name][pruning_rate][class_id] = {}
                     for model_idx in range(self.num_models):
                         Tp = results[pruning_strategy]['Tp'][pruning_rate][class_id][model_idx]
@@ -304,7 +304,7 @@ class PerformanceVisualizer:
 
                         results[pruning_strategy]['F1'][pruning_rate][class_id][model_idx] = F1
                         results[pruning_strategy]['MCC'][pruning_rate][class_id][model_idx] = MCC
-                        results[pruning_strategy]['Accuracy'][pruning_rate][class_id][model_idx] = accuracy
+                        results[pruning_strategy]['Average Accuracy'][pruning_rate][class_id][model_idx] = accuracy
                         results[pruning_strategy]['Precision'][pruning_rate][class_id][model_idx] = precision
                         results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx] = recall
 
