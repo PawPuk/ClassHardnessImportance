@@ -2,7 +2,7 @@ import argparse
 from collections import Counter
 import os
 import pickle
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,7 +29,6 @@ class Visualizer:
         self.num_samples = sum(config['num_training_samples'])
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
-        self.optimal_num_models = config['robust_ensemble_size']
 
         self.results_save_dir = os.path.join(ROOT, 'Results/', f'{self.data_cleanliness}{dataset_name}')
         self.figures_save_dir = os.path.join(ROOT, 'Figures/', f'{self.data_cleanliness}{dataset_name}')
@@ -53,9 +52,10 @@ class Visualizer:
 
         return model
 
-    def compute_el2n(self, model: ResNet18LowRes, dataloader: DataLoader) -> List[float]:
+    def compute_el2n_and_confidence(self, model: ResNet18LowRes,
+                                    dataloader: DataLoader) -> Tuple[List[float], List[float]]:
         model.eval()
-        el2n_scores = []
+        el2n_scores, confidences = [], []
 
         with torch.no_grad():
             for inputs, labels, _ in dataloader:
@@ -67,24 +67,29 @@ class Visualizer:
                 l2_errors = torch.norm(softmax_outputs - one_hot_labels, dim=1)
                 el2n_scores.extend(l2_errors.cpu().numpy())
 
-        return el2n_scores
+                max_confidences = torch.max(softmax_outputs, dim=1).values
+                confidences.extend(max_confidences.cpu().numpy())
 
-    def collect_el2n_scores(self, loader):
-        all_el2n_scores = []
+        return el2n_scores, confidences
+
+    def collect_el2n_and_confidence_scores(self, loader):
+        all_el2n_scores, all_confidences = [], []
 
         for model_id in range(self.num_models):
             model = self.load_model(model_id)
-            el2n_scores = self.compute_el2n(model, loader)
+            el2n_scores, confidences = self.compute_el2n_and_confidence(model, loader)
             all_el2n_scores.append(el2n_scores)
+            all_confidences.append(confidences)
 
-        return all_el2n_scores
+        return all_el2n_scores, all_confidences
 
     def save_el2n_scores(self, el2n_scores):
         with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
             pickle.dump(el2n_scores, file)
 
     def get_pruned_indices(self, el2n_scores: List[List[float]], aum_scores: List[List[float]],
-                           forgetting_scores: List[List[float]]) -> Dict[str, List[List[List[int]]]]:
+                           forgetting_scores: List[List[float]],
+                           confidence_scores: List[List[float]]) -> Dict[str, List[List[List[int]]]]:
         """Extract the indices of data samples that would have been pruned if a threshold (from self.pruning_thresholds)
         was applied to EL2N, AUM, and Forgetting hardness estimates computed using ensembles of various sizes. This
         allows us to measure the reliability of those hardness estimates (e.g., how many models in the ensemble they
@@ -93,7 +98,8 @@ class Visualizer:
         results = {}
 
         for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
-                                                ("forgetting", forgetting_scores)], desc='Computing pruned indices.'):
+                                                ("forgetting", forgetting_scores), "confidence", confidence_scores],
+                                               desc='Computing pruned indices.'):
             metric_scores = np.array(metric_scores)
             results[metric_name] = []
 
@@ -104,8 +110,8 @@ class Visualizer:
                 for num_ensemble_models in range(1, self.num_models + 1):
                     # Compute the average hardness score of each sample as a function of the ensemble size
                     avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
-                    # For AUM, hard samples have lower values. For EL2N and forgetting the opposite is the case.
-                    if metric_name == 'aum':
+                    # For AUM and confidence, hard samples have lower values (opposite for EL2N and forgetting).
+                    if metric_name in ['aum', 'confidence']:
                         sorted_indices = np.argsort(-avg_hardness_scores)
                     else:
                         sorted_indices = np.argsort(avg_hardness_scores)
@@ -117,7 +123,7 @@ class Visualizer:
     def compute_and_visualize_stability_of_pruning(self, results):
         metric_names = list(results.keys())
         # TODO: Modify the below so that it's not hardcoded.
-        vmin, vmax = 0, 62  # Ensure all heatmaps share the same scale
+        vmin, vmax = 0, 100  # Ensure all heatmaps share the same scale
 
         for metric_name in tqdm(metric_names, desc='Computing and visualizing stability of pruning across metrics'):
             metric_results = results[metric_name]
@@ -191,11 +197,12 @@ class Visualizer:
         plt.tight_layout()
         plt.savefig(os.path.join(self.figures_save_dir, f'overlap_across_hardness_estimators.pdf'))
 
-    def compute_effect_of_ensemble_size_on_resampling(self, el2n_scores, aum_scores, forgetting_scores, dataset):
+    def compute_effect_of_ensemble_size_on_resampling(self, el2n_scores, aum_scores, forgetting_scores,
+                                                      confidence_scores, dataset):
         results = {}
         for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
-                                                ("forgetting", forgetting_scores)], desc='Computing effect of ensemble '
-                                                                                         'size on resampling.'):
+                                                ("forgetting", forgetting_scores), ("confidences", confidence_scores)],
+                                               desc='Computing effect of ensemble size on resampling.'):
             metric_scores = np.array(metric_scores)
             results[metric_name] = []
             for num_ensemble_models in range(1, self.num_models):
@@ -276,7 +283,7 @@ class Visualizer:
 
     def main(self):
         training_loader, _, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean', False, True)
-        training_all_el2n_scores = self.collect_el2n_scores(training_loader)
+        training_all_el2n_scores, training_all_confidences = self.collect_el2n_and_confidence_scores(training_loader)
         self.save_el2n_scores(training_all_el2n_scores)
 
         aum_scores = load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs)
@@ -290,12 +297,13 @@ class Visualizer:
         print()
 
         # pruned_indices[metric_name][pruning_threshold][num_ensemble_models][pruned_indices]
-        pruned_indices = self.get_pruned_indices(training_all_el2n_scores, aum_scores, forgetting_scores)
+        pruned_indices = self.get_pruned_indices(training_all_el2n_scores, aum_scores, forgetting_scores,
+                                                 training_all_confidences)
         self.compute_and_visualize_stability_of_pruning(pruned_indices)
         self.compute_overlap_of_pruned_indices_across_hardness_estimators(pruned_indices)
 
         differences = self.compute_effect_of_ensemble_size_on_resampling(
-            training_all_el2n_scores, aum_scores, forgetting_scores, training_loader.dataset)
+            training_all_el2n_scores, aum_scores, forgetting_scores, training_all_confidences, training_loader.dataset)
         self.visualize_stability_of_resampling(differences)
 
 
