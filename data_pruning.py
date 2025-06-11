@@ -16,11 +16,12 @@ from tqdm import tqdm
 
 from config import get_config, ROOT
 from data import load_dataset, AugmentedSubset, IndexedDataset
+from neural_networks import ResNet18LowRes
 
 
 class DataResampling:
     def __init__(self, dataset, num_classes, oversampling_strategy, undersampling_strategy, hardness, high_is_hard,
-                 dataset_name):
+                 dataset_name, num_models, mean, std):
         self.dataset = dataset
         self.num_classes = num_classes
         self.oversampling_strategy = oversampling_strategy
@@ -28,6 +29,9 @@ class DataResampling:
         self.hardness = hardness
         self.high_is_hard = high_is_hard
         self.dataset_name = dataset_name
+        self.num_models = num_models
+        self.mean = mean
+        self.std = std
 
     def prune_easy(self, desired_count, hardness_scores):
         sorted_indices = np.argsort(hardness_scores)
@@ -139,7 +143,7 @@ class DataResampling:
 
         ddpm = DDPMPipeline.from_pretrained("google/ddpm-cifar10-32").to("cuda")
         resnet = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar10_resnet32", pretrained=True).cuda()
-        normalize = torchvision.transforms.Normalize(mean=(0.4914, 0.4822, 0.4465), std=(0.2023, 0.1994, 0.2010))
+        normalize = torchvision.transforms.Normalize(mean=self.mean, std=self.std)
         synthetic_per_class = defaultdict(list)
 
         while any(len(synthetic_per_class[c]) < oversample_targets[c] for c in oversample_targets):
@@ -170,7 +174,55 @@ class DataResampling:
 
         return all_images, all_labels
 
-    def EDM(self, oversample_targets, type):
+    def load_model_states(self):
+        models_dir = os.path.join(ROOT, "Models")
+        model_states = []
+        full_dataset_dir = os.path.join(models_dir, "none", f"unclean{self.dataset_name}")
+
+        for file in os.listdir(full_dataset_dir):
+            if file.endswith(".pth") and "_epoch_200" in file:
+                model_path = os.path.join(full_dataset_dir, file)
+                model_state = torch.load(model_path)
+                model_states.append(model_state)
+
+        print(f"Loaded {len(model_states)} models for estimating confidence.")
+        return model_states
+
+
+    def compute_confidences(self, model_states, synthetic_images, class_id, batch_size=1024):
+        """For a given class_id, compute average confidence across models for each synthetic image."""
+        num_samples = len(synthetic_images)
+        avg_confidences = []
+
+        for batch_start in range(0, num_samples, batch_size):
+            batch_end = min(batch_start + batch_size, num_samples)
+            batch_images = synthetic_images[batch_start:batch_end]
+
+            to_tensor = torchvision.transforms.ToTensor()
+            normalize = torchvision.transforms.Normalize(mean=self.mean, std=self.std)
+            img_tensor = [to_tensor(img) if not isinstance(img, torch.Tensor) else img for img in batch_images]
+            normalized_images = [normalize(img) for img in img_tensor]
+            batch_normalized_images = torch.stack(normalized_images).cuda()  # Shape: [B, 3, 32, 32]
+
+            # For each model, compute confidence
+            batch_confidences = torch.zeros(batch_normalized_images.size(0), device='cuda')
+            for model_state in model_states:
+                model = ResNet18LowRes(self.num_classes)
+                model.load_state_dict(model_state)
+                model = model.cuda()
+                model.eval()
+                with torch.no_grad():
+                    logits = model(batch_normalized_images)
+                    probs = torch.nn.functional.softmax(logits, dim=1)
+                    conf = probs[:, class_id]  # confidence for true class
+                    batch_confidences += conf  # accumulate per model
+
+            batch_confidences /= len(model_states)  # average confidence across models
+            avg_confidences.extend(batch_confidences.cpu().tolist())
+
+        return avg_confidences
+
+    def EDM(self, oversample_targets, strategy):
         # TODO: Mention downloading images in documentation
 
         synthetic_data = np.load(os.path.join(ROOT, 'GeneratedImages', f'{self.dataset_name}.npz'))
@@ -190,11 +242,20 @@ class DataResampling:
         for class_id in oversample_targets:
             needed_count = oversample_targets[class_id]
             all_synthetic_labels.extend([class_id] * needed_count)
+            available_images = synthetic_per_class[class_id]
 
-            if type == 'random':
-                available_images = synthetic_per_class[class_id]
+            if strategy == 'random':
                 selected_images = random.sample(available_images, needed_count)
-                all_synthetic_images.extend(selected_images)
+            else:
+                model_states = self.load_model_states()
+                average_confidences = self.compute_confidences(model_states, available_images, class_id)
+                sorted_indices = sorted(range(len(average_confidences)), key=lambda idx: average_confidences[idx])
+                if strategy == 'hard':
+                    selected_indices = sorted_indices[:needed_count]
+                else:
+                    selected_indices = sorted_indices[needed_count:]
+                selected_images = [synthetic_images[i] for i in selected_indices]
+            all_synthetic_images.extend(selected_images)
 
         # Convert synthetic images to tensors to match the DDPM output format
         to_tensor = torchvision.transforms.ToTensor()
@@ -235,6 +296,8 @@ class DataResampling:
             return lambda oversample_targets: self.EDM(oversample_targets, 'random')
         elif self.oversampling_strategy == 'hEDM':
             return lambda oversample_targets: self.EDM(oversample_targets, 'hard')
+        elif self.oversampling_strategy == 'eEDM':
+            return lambda oversample_targets: self.EDM(oversample_targets, 'easy')
         elif self.oversampling_strategy == 'none':
             return None
         else:
@@ -302,7 +365,7 @@ class DataResampling:
                     resampled_indices.extend(current_indices[class_add_indices])
             else:
                 resampled_indices.extend(current_indices)
-        if self.oversampling_strategy in ['DDPM', 'EDM']:
+        if self.oversampling_strategy in ['DDPM', 'rEDM', 'hEDM', 'eEDM']:
             oversample_targets = {
                 class_id: desired_counts[class_id] - current_counts[class_id]
                 for class_id in range(self.num_classes)
@@ -314,7 +377,7 @@ class DataResampling:
             hard_classes_data = torch.cat(hard_classes_data, dim=0)
             hard_classes_labels = torch.cat(hard_classes_labels, dim=0)
 
-        if self.oversampling_strategy in ['SMOTE', 'DDPM', 'EDM']:
+        if self.oversampling_strategy in ['SMOTE', 'DDPM', 'rEDM', 'hEDM', 'eEDM']:
             print(f'Proceeding with {len(hard_classes_data)} data samples from hard classes (real + synthetic data).')
             existing_data, existing_labels = self.extract_data_labels()
 

@@ -27,6 +27,9 @@ class Experiment3:
         self.num_classes = self.config['num_classes']
         self.num_epochs = self.config['num_epochs']
         self.num_samples = sum(self.config['num_training_samples'])
+        self.num_models = self.config['num_models']
+        self.mean = self.config['mean']
+        self.std = self.config['std']
 
         self.hardness_save_dir = os.path.join(ROOT, f"Results/{self.data_cleanliness}{self.dataset_name}/")
         self.figure_save_dir = os.path.join(ROOT, f"Figures/{self.dataset_name}_alpha{self.alpha}/")
@@ -95,7 +98,7 @@ class Experiment3:
                 transforms.RandomHorizontalFlip(),
                 transforms.RandomCrop(32, padding=4),
                 transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+                transforms.Normalize(self.mean, self.std),
             ])
         else:
             raise ValueError('Unsupported dataset.')
@@ -113,7 +116,7 @@ class Experiment3:
 
         resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
                                    self.undersampling_strategy, hardnesses_by_class, self.hardness_estimator != 'AUM',
-                                   self.dataset_name)
+                                   self.dataset_name, self.num_models, self.mean, self.std)
         resampled_dataset = resampler.resample_data(samples_per_class)
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
@@ -139,9 +142,9 @@ if __name__ == "__main__":
     parser.add_argument('--dataset_name', type=str, required=True,
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN).")
     parser.add_argument('--oversampling', type=str, required=True,
-                        choices=['random', 'easy', 'hard', 'SMOTE', 'DDPM', 'rEDM', 'hEDM', 'none'],
+                        choices=['random', 'easy', 'hard', 'SMOTE', 'DDPM', 'rEDM', 'hEDM', 'eEDM', 'none'],
                         help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, '
-                             '`SMOTE`, `DDPM`, `rEDM`, `hEDM`, and `none`).')
+                             '`SMOTE`, `DDPM`, `rEDM`, `hEDM`, `eEDM`, and `none`).')
     parser.add_argument('--undersampling', type=str, required=True, choices=['easy', 'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, `prune_extreme`, and `none`).')
