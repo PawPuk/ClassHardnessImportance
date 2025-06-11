@@ -46,7 +46,8 @@ class ResamplingVisualizer:
         models_by_strategy = defaultdict(lambda: defaultdict(list))
 
         for root, dirs, files in os.walk(models_dir):
-            if 'over_' in root and self.dataset_name in os.path.basename(root):
+            if 'over_' in root and os.path.basename(root) in [f'unclean{self.dataset_name}',
+                                                              f'clean{self.dataset_name}']:
                 # This try enables to run this code even if experiments were run only on unclean data.
                 try:
                     oversampling_strategy = root.split("over_")[1].split("_under_")[0]
@@ -154,7 +155,7 @@ class ResamplingVisualizer:
     def load_class_distributions(self) -> Dict[int, Dict[int, int]]:
         class_distributions = {}
         for root, dirs, files in os.walk(self.hardness_save_dir):
-            if os.path.basename(root) == f"{self.dataset_name}" and 'alpha_' in root:
+            if f"unclean{self.dataset_name}/" in root and 'alpha_' in root:
                 alpha = int(root.split('alpha_')[-1])
                 for file in files:
                     file_path = os.path.join(root, file)
@@ -225,11 +226,11 @@ class ResamplingVisualizer:
         plt.plot(range(len(class_order)), [v for v in reordered_base_values], color='black', linestyle='-',
                  linewidth=4, label="α=1")
 
-        for alpha in alpha_values:
+        for alpha in results[base_metric][strategy].keys():
             norm = plt.Normalize(min(alpha_values), max(alpha_values))
-            grey_shade = cm.Greys(0.5 + 0.5 * norm(alpha))
+            grey_shade = cm.Greys(0.5 + 0.5 * norm(int(alpha)))
             reordered_values = [results[base_metric][strategy][alpha][class_id] for class_id in class_order]
-            plt.plot(range(len(reordered_values)), reordered_values, color=grey_shade, lw=2, linestyle = '--',
+            plt.plot(range(len(class_order)), reordered_values, color=grey_shade, lw=2, linestyle = '--',
                      label=f'"α={alpha}"')
 
         plt.axvspan(0, number_of_easy_classes - 0.5, color='green', alpha=0.15)
@@ -240,7 +241,7 @@ class ResamplingVisualizer:
         plt.ylabel(f"Class-wise {base_metric} on balanced dataset", fontsize=12)
         plt.title(self.dataset_name, fontsize=14)
         plt.grid(True, alpha=0.6, axis='y')
-        # plt.legend()
+        plt.legend()
         plt.savefig(os.path.join(self.figure_save_dir, f'{base_metric}_{strategy}_effects.pdf'),
                     bbox_inches='tight')
 
@@ -250,21 +251,21 @@ class ResamplingVisualizer:
 
         plt.figure(figsize=(12, 8))
 
-        for alpha, values in results[base_metric][strategy].items():
-            if float(alpha) > 0:
-                value_changes[strategy][alpha] = [values[class_id] -
-                                                  results[base_metric][base_strategy][base_alpha][class_id]
-                                                  for class_id in class_order]
-                norm = plt.Normalize(min(alpha_values), max(alpha_values))
-                grey_shade = cm.Greys(0.5 + 0.5 * norm(float(alpha)))
-                print(f'{alpha}, {strategy} - easy mean: '
-                      f'{np.mean(value_changes[strategy][alpha][:number_of_easy_classes])}'
-                      f', hard mean:  {np.mean(value_changes[strategy][alpha][number_of_easy_classes:])}, easy std: '
-                      f'{np.std(value_changes[strategy][alpha][:number_of_easy_classes])}, hard std:'
-                      f'{np.std(value_changes[strategy][alpha][number_of_easy_classes:])}')
-                plt.axhline(y=0, color='black', linewidth=2)  # To accentuate X-axis
-                plt.plot(range(len(values)), value_changes[strategy][alpha], color=grey_shade,
-                         linewidth=2, label=f"α={alpha}")
+        for alpha in results[base_metric][strategy].keys():
+            values = results[base_metric][strategy][alpha]
+            value_changes[strategy][alpha] = [values[class_id] -
+                                              results[base_metric][base_strategy][base_alpha][class_id]
+                                              for class_id in class_order]
+            norm = plt.Normalize(min(alpha_values), max(alpha_values))
+            grey_shade = cm.Greys(0.5 + 0.5 * norm(float(int(alpha))))
+            print(f'{alpha}, {strategy} - easy mean: '
+                  f'{np.mean(value_changes[strategy][alpha][:number_of_easy_classes])}'
+                  f', hard mean:  {np.mean(value_changes[strategy][alpha][number_of_easy_classes:])}, easy std: '
+                  f'{np.std(value_changes[strategy][alpha][:number_of_easy_classes])}, hard std:'
+                  f'{np.std(value_changes[strategy][alpha][number_of_easy_classes:])}')
+            plt.axhline(y=0, color='black', linewidth=2)  # To accentuate X-axis
+            plt.plot(range(len(values)), value_changes[strategy][alpha], color=grey_shade,
+                     linewidth=2, label=f"α={alpha}")
 
         plt.axvspan(0, number_of_easy_classes - 0.5, color='green', alpha=0.15)
         plt.axvspan(number_of_easy_classes - 0.5, len(class_order), color='red', alpha=0.15)
@@ -316,7 +317,7 @@ class ResamplingVisualizer:
             for strategy in results['Tp'].keys():
                 self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes, strategy,
                                                 alpha_values)
-                print('-'*20, f'\n\tResults of {strategy} for {base_metric}:\n', '-'*20)
+                print(f'{"-"*70}\n\tResults of {strategy} for {base_metric}:\n{"-"*70}')
                 self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes, strategy,
                                          alpha_values)
 

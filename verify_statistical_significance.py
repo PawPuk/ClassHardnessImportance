@@ -98,7 +98,7 @@ class Visualizer:
         results = {}
 
         for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
-                                                ("forgetting", forgetting_scores), "confidence", confidence_scores],
+                                                ("forgetting", forgetting_scores), ("confidence", confidence_scores)],
                                                desc='Computing pruned indices.'):
             metric_scores = np.array(metric_scores)
             results[metric_name] = []
