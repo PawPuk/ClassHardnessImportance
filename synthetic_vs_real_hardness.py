@@ -1,7 +1,8 @@
 import argparse
 import os
 
-from numpy import load
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torchvision
 from torch.utils.data import DataLoader, TensorDataset
@@ -64,11 +65,6 @@ def compute_dataset_confidences(dataloader_idx, dataloader, device, model_states
     print(f"Finished dataloader {dataloader_idx}, total samples: {dataset_confidences.shape[0]}")
     return dataset_confidences
 
-
-import matplotlib.pyplot as plt
-import numpy as np
-
-
 def plot_class_confidences(base_indices, results, dataset_name, num_classes):
     for base_idx in base_indices:
         base_conf = results[base_idx][1]
@@ -85,21 +81,20 @@ def plot_class_confidences(base_indices, results, dataset_name, num_classes):
         sort_idx = np.argsort(class_means)
 
         plt.figure(figsize=(12, 6))
-        for idx, (label, confidences, labels_for_data) in enumerate(results):
-            if idx != base_idx:
-                per_class_means, per_class_stds = [], []
-                for c in range(num_classes):
-                    mask = (labels_for_data == c)
-                    conf_vals = confidences[mask].numpy()
-                    per_class_means.append(conf_vals.mean())
-                    per_class_stds.append(conf_vals.std())
+        for label, confidences, labels_for_data in results:
+            per_class_means, per_class_stds = [], []
+            for c in range(num_classes):
+                mask = (labels_for_data == c)
+                conf_vals = confidences[mask].numpy()
+                per_class_means.append(conf_vals.mean())
+                per_class_stds.append(conf_vals.std())
 
-                per_class_means = np.array(per_class_means)[sort_idx]
-                per_class_stds = np.array(per_class_stds)[sort_idx]
-                x = np.arange(len(per_class_means))
+            per_class_means = np.array(per_class_means)[sort_idx]
+            per_class_stds = np.array(per_class_stds)[sort_idx]
+            x = np.arange(len(per_class_means))
 
-                plt.plot(x, per_class_means, label=label)
-                plt.fill_between(x, per_class_means - per_class_stds, per_class_means + per_class_stds, alpha=0.2)
+            plt.plot(x, per_class_means, label=label)
+            plt.fill_between(x, per_class_means - per_class_stds, per_class_means + per_class_stds, alpha=0.2)
 
         plt.title(f"Class-level confidences sorted by {results[base_idx][0]}")
         plt.xlabel("Sorted classes")
@@ -120,7 +115,7 @@ def main(dataset_name:str):
     ])
     training_dataset.dataset.transform = new_training_transform
 
-    synthetic_data = load(os.path.join(ROOT, f'GeneratedImages/{dataset_name}.npz'))
+    synthetic_data = np.load(os.path.join(ROOT, f'GeneratedImages/{dataset_name}.npz'))
     image_key, label_key = synthetic_data.files
     synthetic_images = synthetic_data[image_key]
     synthetic_labels = synthetic_data[label_key]
