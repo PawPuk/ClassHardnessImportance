@@ -1,5 +1,4 @@
 import argparse
-import os
 from typing import List, Union
 
 import numpy as np
@@ -9,9 +8,9 @@ from torch.utils.data import DataLoader
 
 from data_pruning import DataPruning
 from train_ensemble import ModelTrainer
-from config import get_config, ROOT
+from config import get_config
 from data import load_dataset
-from utils import load_aum_results, load_forgetting_results, load_results, set_reproducibility
+from utils import load_hardness_estimates, set_reproducibility
 
 
 class Experiment2:
@@ -51,16 +50,11 @@ class Experiment2:
         training_loader, training_dataset, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
         labels = np.array([label for _, label, _ in training_dataset])
 
-        if self.hardness_estimator == 'AUM':
-            aum_scores = load_aum_results('unclean', self.dataset_name, self.NUM_EPOCHS)
-            pruned_dataset = self.prune_dataset(aum_scores, labels, training_loader, False)
-        elif self.hardness_estimator == 'Forgetting':
-            forgetting_scores = load_forgetting_results('unclean', self.dataset_name)
-            pruned_dataset = self.prune_dataset(forgetting_scores, labels, training_loader, True)
-        elif self.hardness_estimator == 'EL2N':
-            el2n_path = os.path.join(ROOT, f'Results/unclean{self.dataset_name}/el2n_scores.pkl')
-            el2n_scores = load_results(el2n_path)
-            pruned_dataset = self.prune_dataset(el2n_scores, labels, training_loader, True)
+        hardness_estimates = load_hardness_estimates('unclean', self.dataset_name, self.hardness_estimator)
+        if self.hardness_estimator in ['DataIQ', 'Forgetting', 'Loss', 'VoG', 'EL2N']:
+            pruned_dataset = self.prune_dataset(hardness_estimates, labels, training_loader, True)
+        elif self.hardness_estimator in ['Confidence', 'AUM']:
+            pruned_dataset = self.prune_dataset(hardness_estimates, labels, training_loader, False)
         else:
             raise ValueError(f'{self.hardness_estimator} is not a supported hardness estimator.')
 
@@ -81,8 +75,7 @@ if __name__ == "__main__":
                         help='Specify the dataset name (default: CIFAR10)')
     parser.add_argument('--pruning_rate', type=int,
                         help='Percentage of data samples that will be removed during data pruning (use integers).')
-    parser.add_argument('--hardness_estimator', type=str, choices=['AUM', 'EL2N', 'Forgetting'],
-                        help='Specifies which hardness estimator to use for pruning.')
+    parser.add_argument('--hardness_estimator', type=str, help='Specifies which hardness estimator to use for pruning.')
 
     args = parser.parse_args()
 

@@ -11,7 +11,7 @@ from config import get_config, ROOT
 from data import AugmentedSubset, load_dataset
 from data_pruning import DataResampling
 from train_ensemble import ModelTrainer
-from utils import set_reproducibility, load_aum_results, load_forgetting_results, load_results
+from utils import set_reproducibility, load_hardness_estimates
 
 
 class Experiment3:
@@ -37,16 +37,8 @@ class Experiment3:
             os.makedirs(save_dir, exist_ok=True)
 
     def load_hardness_estimates(self):
-        if self.hardness_estimator == 'AUM':
-            hardness_over_models = np.array(load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs))
-        elif self.hardness_estimator == 'Forgetting':
-            hardness_over_models = np.array(load_forgetting_results(self.data_cleanliness, self.dataset_name))
-        elif self.hardness_estimator == 'EL2N':
-            el2n_path = os.path.join(self.hardness_save_dir, 'el2n_scores.pkl')
-            hardness_over_models = np.array(load_results(el2n_path))
-        else:
-            raise ValueError('The chosen hardness estimator is not supported.')
-
+        hardness_over_models = np.array(load_hardness_estimates(self.data_cleanliness, self.dataset_name,
+                                                                self.hardness_estimator))
         hardness_of_ensemble = np.mean(hardness_over_models[:self.config['robust_ensemble_size']], axis=0)
         return hardness_of_ensemble
 
@@ -60,7 +52,7 @@ class Experiment3:
             hardnesses_by_class[label.item()].append(hardness_scores[i])
 
         for label in range(self.num_classes):
-            if self.hardness_estimator == 'AUM':
+            if self.hardness_estimator in ['AUM', 'Confidence']:
                 hardness_of_classes[label] = 1 / np.mean(hardnesses_by_class[label])
             else:
                 hardness_of_classes[label] = np.mean(hardnesses_by_class[label])
@@ -114,9 +106,10 @@ class Experiment3:
         with open(os.path.join(self.hardness_save_dir, f'alpha_{self.alpha}', 'samples_per_class.pkl'), 'wb') as file:
             pickle.dump(samples_per_class, file)
 
+        high_is_hard = self.hardness_estimator in ['Confidence', 'AUM']
         resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
-                                   self.undersampling_strategy, hardnesses_by_class, self.hardness_estimator != 'AUM',
-                                   self.dataset_name, self.num_models, self.mean, self.std)
+                                   self.undersampling_strategy, hardnesses_by_class, high_is_hard, self.dataset_name,
+                                   self.num_models, self.mean, self.std)
         resampled_dataset = resampler.resample_data(samples_per_class)
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
@@ -148,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument('--undersampling', type=str, required=True, choices=['easy', 'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, `prune_extreme`, and `none`).')
-    parser.add_argument('--hardness_estimator', type=str, choices=['EL2N', 'AUM', 'Forgetting'], default='AUM',
+    parser.add_argument('--hardness_estimator', type=str, default='AUM',
                         help='Specifies which instance level hardness estimator to use.')
     parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
     parser.add_argument('--alpha', type=int, default=1, help='Used to control the degree of introduced imbalance.')

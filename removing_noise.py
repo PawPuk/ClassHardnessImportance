@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 from config import ROOT
-from utils import load_aum_results
+from utils import load_hardness_estimates
 
 
 class NoiseRemover:
@@ -15,7 +15,7 @@ class NoiseRemover:
         self.dataset = dataset
 
         self.BATCH_SIZE = self.config['batch_size']
-        self.NUM_MODELS = self.config['robust_ensemble_size']
+        self.ROBUST_NUM_MODELS = self.config['robust_ensemble_size']
         self.TOTAL_SAMPLES = sum(self.config['num_training_samples'])
         self.NUM_EPOCHS = self.config['num_epochs']
 
@@ -150,10 +150,10 @@ class NoiseRemover:
         plt.savefig(os.path.join(self.figure_save_dir, "lowest_AUM_samples.pdf"))
 
     def clean(self):
-        aum_scores_over_models = load_aum_results('unclean', self.dataset_name, self.NUM_EPOCHS)
+        aum_scores_over_models = load_hardness_estimates('unclean', self.dataset_name, 'AUM')
         self.compute_and_visualize_stability_of_noise_removal(aum_scores_over_models)
 
-        aum_scores = np.mean(np.array(aum_scores_over_models[:self.NUM_MODELS]), axis=0)
+        aum_scores = np.mean(np.array(aum_scores_over_models[:self.ROBUST_NUM_MODELS]), axis=0)
         elbow_index = self.plot_cumulative_distribution(aum_scores)
         sorted_indices = np.argsort(aum_scores)
 

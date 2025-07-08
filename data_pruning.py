@@ -12,7 +12,6 @@ from sklearn.neighbors import NearestNeighbors
 import torch
 from torch.utils.data import TensorDataset, Subset
 import torchvision
-from tqdm import tqdm
 
 from config import get_config, ROOT
 from data import load_dataset, AugmentedSubset, IndexedDataset
@@ -187,7 +186,6 @@ class DataResampling:
 
         print(f"Loaded {len(model_states)} models for estimating confidence.")
         return model_states
-
 
     def compute_confidences(self, model_states, synthetic_images, class_id, batch_size=1024):
         """For a given class_id, compute average confidence across models for each synthetic image."""
