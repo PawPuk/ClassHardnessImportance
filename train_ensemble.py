@@ -107,7 +107,7 @@ class ModelTrainer:
             retain_graph=False,
             only_inputs=True
         )[0]  # shape: (B, C, H, W)
-        grad_avgs = grads.mean(dim=[1, 2, 3])  # average over input dimensions → shape: (B,)
+        grad_avgs = grads.mean(dim=1)  # average over channels → shape: (B, H, W)
         for j, avg in enumerate(grad_avgs):
             hardness_estimates['VoG_maps'][batch_indices[j]][epoch] = avg.cpu()
 
@@ -221,14 +221,15 @@ class ModelTrainer:
         os.makedirs(hardness_save_dir, exist_ok=True)
         path = os.path.join(hardness_save_dir, 'hardness_estimates.pkl')
         old_hardness_estimates = self.load_previous_hardness_estimates(path)
+        updated_hardness_estimates = {}
 
         for estimator in hardness_estimates.keys():
             assert estimator != 'VoG_maps'  # Sanity check to ensure del works as I expect it to work.
-            hardness_estimates[estimator] = hardness_estimates[estimator] + old_hardness_estimates[estimator]
+            updated_hardness_estimates[estimator] = hardness_estimates[estimator] + old_hardness_estimates[estimator]
 
         with open(path, "wb") as file:
             print(f'Saving updated hardness estimates.')
-            pickle.dump(hardness_estimates, file)
+            pickle.dump(updated_hardness_estimates, file)
 
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
@@ -255,7 +256,7 @@ class ModelTrainer:
                     hardness_estimates[estimator][model_id] = np.mean(hardness_estimates[estimator][model_id], axis=1)
                 # Finish computing VoG
                 for i in range(self.training_set_size):
-                    maps = torch.stack([epoch_maps[i] for epoch_maps in hardness_estimates['VoG_maps']])
+                    maps = torch.stack([epoch_maps for epoch_maps in hardness_estimates['VoG_maps'][i]])
                     mu = torch.mean(maps, dim=0)
                     var = torch.mean((maps - mu) ** 2, dim=0)
                     vog_map = torch.sqrt(var)
