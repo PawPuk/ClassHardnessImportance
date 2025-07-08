@@ -1,6 +1,7 @@
 import csv
 import os
 import pickle
+import random
 import time
 
 import numpy as np
@@ -41,6 +42,7 @@ class ModelTrainer:
         self.config = get_config(self.dataset_name)
 
         # Incorporate dataset_name and pruning_type into directories to prevent overwriting
+        self.num_epochs = self.config['num_epochs']
         self.save_dir = str(os.path.join(self.config['save_dir'], pruning_type, f"{self.clean_data}{dataset_name}"))
         self.timings_dir = str(os.path.join(self.config['timings_dir'], pruning_type,
                                             f"{self.clean_data}{dataset_name}"))
@@ -53,23 +55,68 @@ class ModelTrainer:
         seed = base_seed + current_model_index * seed_step
         return seed
 
-    @staticmethod
-    def estimate_instance_hardness(indices, outputs, labels, predicted, all_AUMs, all_remembrance, all_forgetting):
-        for index_within_batch, (i, logit, label) in enumerate(zip(indices, outputs, labels)):
+    def estimate_instance_hardness(self, model, model_id, batch_indices, inputs, outputs, labels, predicted,
+                                   hardness_estimates, epoch):
+        remembering = [False for _ in range(self.training_set_size)]
+
+        for idx, (i, x, logits, label) in enumerate(zip(batch_indices, inputs, outputs, labels)):
             i = i.item()  # TODO: Maybe change the output of __iter__ rather than doing the .item() here.
+            correct_label = label.item()
+            predicted_label = predicted[idx].item()
 
-            # Compute Forgetting events
-            if label == predicted[index_within_batch]:
-                all_remembrance[i] = True
-            elif label != predicted[index_within_batch] and all_remembrance[i] == True:
-                all_remembrance[i] = False
-                all_forgetting[i] += 1
+            logits = logits.detach()
+            correct_logit = logits[correct_label].item()
+            probs = torch.nn.functional.softmax(logits, dim=0)
+            # Confidence
+            hardness_estimates['Confidence'][model_id][i][epoch] = correct_logit
+            # AUM
+            max_other_logit = torch.max(torch.cat((logits[:correct_label], logits[correct_label + 1:]))).item()
+            hardness_estimates['AUM'][model_id][i][epoch] = correct_logit - max_other_logit
+            # DataIQ
+            p_y = probs[correct_label].item()
+            hardness_estimates['DataIQ'][model_id][i][epoch] = p_y * (1 - p_y)
+            # Cross-Entropy Loss
+            label_tensor = torch.tensor([correct_label], device=logits.device)
+            loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), label_tensor).item()
+            hardness_estimates['Loss'][model_id][i][epoch] = loss
+            # Forgetting
+            if predicted_label == correct_label:
+                remembering[i] = True
+            elif predicted_label != correct_label and remembering[i]:
+                hardness_estimates['Forgetting'][model_id][i] += 1
+                remembering[i] = False
 
-            # Compute AUM values
-            correct_logit = logit[label].item()
-            max_other_logit = torch.max(torch.cat((logit[:label], logit[label + 1:]))).item()
-            aum = correct_logit - max_other_logit
-            all_AUMs[i].append(aum)
+        # VoG: the below is the first stips of computing VoG
+        cpu_rng_state = torch.get_rng_state()
+        if torch.cuda._initialized:
+            gpu_rng_state = torch.cuda.get_rng_state()
+        np_rng_state = np.random.get_state()
+        py_rng_state = random.getstate()
+        model.eval()
+
+        x_batch = inputs.detach().requires_grad_(True)  # shape: (B, C, H, W)
+        logits = model(x_batch)  # shape: (B, num_classes)
+        correct_logits = logits[torch.arange(logits.size(0)), labels]  # shape: (B,)
+
+        model.zero_grad()
+        grads = torch.autograd.grad(
+            outputs=correct_logits,
+            inputs=x_batch,
+            grad_outputs=torch.ones_like(correct_logits),
+            create_graph=False,
+            retain_graph=False,
+            only_inputs=True
+        )[0]  # shape: (B, C, H, W)
+        grad_avgs = grads.mean(dim=[1, 2, 3])  # average over input dimensions → shape: (B,)
+        for j, avg in enumerate(grad_avgs):
+            hardness_estimates['VoG_maps'][batch_indices[j]][epoch] = avg.cpu()
+
+        torch.set_rng_state(cpu_rng_state)
+        if torch.cuda._initialized:
+            torch.cuda.set_rng_state(gpu_rng_state)
+        np.random.set_state(np_rng_state)
+        random.setstate(py_rng_state)
+        model.train()
 
     def evaluate_model(self, model, criterion):
         """Evaluate the model on the test set."""
@@ -90,9 +137,9 @@ class ModelTrainer:
         avg_loss = running_loss / total
         return avg_loss, accuracy
 
-    def train_model(self, current_model_index):
+    def train_model(self, current_model_index, latest_model_index, hardness_estimates):
         """Train a single model."""
-        seed = self.compute_current_seed(current_model_index)
+        seed = self.compute_current_seed(current_model_index + latest_model_index + 1)
         set_reproducibility(seed)
 
         model = ResNet18LowRes(num_classes=self.config['num_classes']).cuda()
@@ -101,9 +148,11 @@ class ModelTrainer:
                               weight_decay=self.config['weight_decay'], nesterov=True)
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.config['lr_decay_milestones'], gamma=0.2)
 
-        all_AUMs = [[] for _ in range(self.training_set_size)]  # all_AUMs[sample_index][epoch_index]
-        all_remembrance = [False for _ in range(self.training_set_size)]
-        all_forgetting = [0 for _ in range(self.training_set_size)]
+        for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:   # [epoch_index][sample_index]
+            hardness_estimates[estimator].append([[None for _ in range(self.num_epochs)]
+                                                  for _ in range(self.training_set_size)])
+        hardness_estimates['VoG_maps'] = [[None for _ in range(self.num_epochs)] for _ in range(self.training_set_size)]
+        hardness_estimates['Forgetting'].append([0 for _ in range(self.training_set_size)])
 
         for epoch in range(self.config['num_epochs']):
             model.train()
@@ -123,31 +172,33 @@ class ModelTrainer:
                 correct_train += (predicted == labels).sum().item()
 
                 if self.estimate_hardness:
-                    self.estimate_instance_hardness(indices, outputs, labels, predicted, all_AUMs, all_remembrance,
-                                                    all_forgetting)
+                    self.estimate_instance_hardness(model, current_model_index, indices, inputs, outputs, labels,
+                                                    predicted, hardness_estimates, epoch)
             scheduler.step()
 
             avg_train_loss = running_loss / total_train
             train_accuracy = 100 * correct_train / total_train
             avg_test_loss, test_accuracy = self.evaluate_model(model, criterion)
-            print(f'Model {current_model_index}, Epoch [{epoch + 1}/{self.config["num_epochs"]}] '
+            print(f'Model {current_model_index + latest_model_index + 1}, '
+                  f'Epoch [{epoch + 1}/{self.config["num_epochs"]}] '
                   f'Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}%, '
                   f'Test Loss: {avg_test_loss:.4f}, Test Acc: {test_accuracy:.2f}%')
 
             # Optionally save the model at a specific epoch
             if self.save_probe_models and epoch + 1 == self.config['save_epoch']:
-                save_path = os.path.join(self.save_dir, f'model_{current_model_index}_epoch_{epoch + 1}.pth')
+                save_path = os.path.join(self.save_dir,
+                                         f'model_{current_model_index + latest_model_index + 1}_epoch_{epoch + 1}.pth')
                 torch.save(model.state_dict(), save_path)
-                print(f'Model {current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved'
-                      f' at epoch {self.config["save_epoch"]}.')
+                print(f'Model {current_model_index + latest_model_index + 1} ({self.dataset_name}, '
+                      f'{self.pruning_type} dataset) saved at epoch {self.config["save_epoch"]}.')
 
         # Save model after full training
         final_save_path = os.path.join(self.save_dir,
-                                       f'model_{current_model_index}_epoch_{self.config["num_epochs"]}.pth')
+                                       f'model_{current_model_index + latest_model_index + 1}_epoch_'
+                                       f'{self.config["num_epochs"]}.pth')
         torch.save(model.state_dict(), final_save_path)
-        print(f'Model {current_model_index} ({self.dataset_name}, {self.pruning_type} dataset) saved after '
-              f'full training at epoch {self.config["num_epochs"]}.')
-        return all_AUMs, all_forgetting
+        print(f'Model {current_model_index + latest_model_index + 1} ({self.dataset_name}, {self.pruning_type} dataset) '
+              f'saved after full training at epoch {self.config["num_epochs"]}.')
 
     @staticmethod
     def load_previous_hardness_estimates(path):
@@ -158,9 +209,9 @@ class ModelTrainer:
             return prior_hardness_estimates
         else:
             print(f"{path} does not exist or is empty. Initializing new data.")
-            return []
+            return {'Confidence': [], 'AUM': [], 'DataIQ': [], 'Forgetting': [], 'Loss': [], 'VoG': []}
 
-    def save_results(self, all_AUMs, all_forgetting_statistics):
+    def save_results(self, hardness_estimates):
         """
         The purpose of this function is to enable easier generation of results. If we already spent a lot of
         resources on training an ensemble, we don't want it to go to waste just because the ensemble is not large
@@ -168,25 +219,22 @@ class ModelTrainer:
         """
         hardness_save_dir = os.path.join(ROOT, f"Results/{self.clean_data}{self.dataset_name}/")
         os.makedirs(hardness_save_dir, exist_ok=True)
-        aum_path = os.path.join(hardness_save_dir, 'AUM.pkl')
-        forgetting_path = os.path.join(hardness_save_dir, 'Forgetting.pkl')
+        path = os.path.join(hardness_save_dir, 'hardness_estimates.pkl')
+        old_hardness_estimates = self.load_previous_hardness_estimates(path)
 
-        # Save updated AUM.pkl
-        all_AUMs = all_AUMs + self.load_previous_hardness_estimates(aum_path)
-        with open(aum_path, "wb") as file:
-            print(f'Saving AUMs of the following shape: {len(all_AUMs)}, {len(all_AUMs[0])}, {len(all_AUMs[0][0])}.')
-            pickle.dump(all_AUMs, file)
+        for estimator in hardness_estimates.keys():
+            assert estimator != 'VoG_maps'  # Sanity check to ensure del works as I expect it to work.
+            hardness_estimates[estimator] = hardness_estimates[estimator] + old_hardness_estimates[estimator]
 
-        # Save updated Forgetting.pkl
-        all_forgetting_statistics = all_forgetting_statistics + self.load_previous_hardness_estimates(forgetting_path)
-        with open(forgetting_path, "wb") as file:
-            print(f'Saving forgettings of the following shape: '
-                  f'{len(all_forgetting_statistics)}, {len(all_forgetting_statistics[0])}.')
-            pickle.dump(all_forgetting_statistics, file)
+        with open(path, "wb") as file:
+            print(f'Saving updated hardness estimates.')
+            pickle.dump(hardness_estimates, file)
 
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
-        timings, all_AUMs, all_forgetting_statistics = [], [], []
+        timings = []
+        hardness_estimates = {'Confidence': [], 'AUM': [], 'DataIQ': [], 'Forgetting': [], 'Loss': [], 'VoG': []}
+
         latest_model_index = get_latest_model_index(self.save_dir, self.config['num_epochs'])
         num_models = self.config['robust_ensemble_size'] if \
             self.config['robust_ensemble_size'] < self.config['num_models'] else self.config['num_models']
@@ -198,14 +246,23 @@ class ModelTrainer:
 
         for model_id in tqdm(range(num_models)):
             start_time = time.time()
-            AUMs, forgetting_statistics = self.train_model(model_id + latest_model_index + 1)
-            all_AUMs.append(AUMs)
-            all_forgetting_statistics.append(forgetting_statistics)
+            self.train_model(model_id, latest_model_index, hardness_estimates)
             training_time = time.time() - start_time
             timings.append((model_id + latest_model_index + 1, training_time))
 
-        if self.estimate_hardness:
-            self.save_results(all_AUMs, all_forgetting_statistics)
+            if self.estimate_hardness:
+                for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:
+                    hardness_estimates[estimator][model_id] = np.mean(hardness_estimates[estimator][model_id], axis=1)
+                # Finish computing VoG
+                for i in range(self.training_set_size):
+                    maps = torch.stack([epoch_maps[i] for epoch_maps in hardness_estimates['VoG_maps']])
+                    mu = torch.mean(maps, dim=0)
+                    var = torch.mean((maps - mu) ** 2, dim=0)
+                    vog_map = torch.sqrt(var)
+                    scalar_vog = torch.mean(vog_map).item()
+                    hardness_estimates['VoG'].append(scalar_vog)
+                del hardness_estimates['VoG_maps']
+                self.save_results(hardness_estimates)
 
         # Calculate mean and standard deviation of the timings
         timing_values = [timing[1] for timing in timings]
