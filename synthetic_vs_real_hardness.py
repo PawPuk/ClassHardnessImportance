@@ -3,6 +3,7 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+from sklearn.neighbors import NearestNeighbors
 import torch
 import torchvision
 from torch.utils.data import DataLoader, TensorDataset
@@ -12,6 +13,43 @@ from config import get_config, ROOT
 from data import AugmentedSubset, load_dataset, IndexedDataset
 from neural_networks import ResNet18LowRes
 from utils import set_reproducibility
+
+
+def generate_smote_dataset(dataset, num_classes, num_samples, n_neighbors=5):
+    images_list, labels_list, synthetic_samples, synthetic_labels = [], [], [], []
+    for img, label, _ in dataset:
+        images_list.append(img.view(-1).numpy())  # flatten to vector
+        labels_list.append(label)
+    images_list = np.stack(images_list)
+    labels_list = np.array(labels_list)
+
+    print("Running SMOTE...")
+
+    for cls in tqdm.tqdm(range(num_classes), desc='Generating synthetic data via SMOTE.'):
+        class_mask = (labels_list == cls)
+        X_cls = images_list[class_mask]
+        # Fit neighbors on current class
+        nn = NearestNeighbors(n_neighbors=n_neighbors + 1).fit(X_cls)
+        neigh_indices = nn.kneighbors(X_cls, return_distance=False)
+        for _ in range(num_samples[cls]):
+            idx = np.random.randint(0, X_cls.shape[0])  # TODO: Check if .shape accomplishes this goal!!!
+            x = X_cls[idx]
+            # Choose one of its k neighbors (not itself)
+            neighbor_idx = np.random.choice(neigh_indices[idx][1:])
+            x_neighbor = X_cls[neighbor_idx]
+            # Interpolate
+            lam = np.random.rand()
+            x_new = x + lam * (x_neighbor - x)
+            synthetic_samples.append(x_new)
+            synthetic_labels.append(cls)
+
+    print(f"Generated {len(synthetic_samples)} synthetic samples using custom SMOTE.")
+    # Convert to tensor format
+    all_X = np.stack(synthetic_samples)
+    all_y = np.array(synthetic_labels)
+    all_X = torch.tensor(all_X, dtype=torch.float32).view(-1, 3, 32, 32)
+    all_y = torch.tensor(all_y, dtype=torch.long)
+    return IndexedDataset(TensorDataset(all_X, all_y)), all_y
 
 
 def convert_numpy_to_dataset(images_np, labels_np, config):
@@ -50,7 +88,8 @@ def compute_dataset_confidences(dataloader_idx, dataloader, device, model_states
         batch_size = images.size(0)
         batch_conf_sum = torch.zeros(batch_size, device=device)
         if len(model_states) > 0:
-            models = [ResNet18LowRes(num_classes).load_state_dict(model_state) for model_state in model_states]
+            models = [ResNet18LowRes(num_classes).to(device) for _ in model_states]
+            models = [model.load_state_dict(model_states[i]) for i, model in enumerate(models)]
         else:
             models = [torch.hub.load("chenyaofo/pytorch-cifar-models", f"cifar10_resnet{i}", pretrained=True)
                       for i in [20, 32, 44]]
@@ -83,37 +122,55 @@ def plot_class_confidences(base_indices, results, dataset_name, num_classes):
             class_means.append(class_mean)
 
         class_means = np.array(class_means)
-        sort_idx = np.argsort(class_means)
+        # sort_idx = np.argsort(class_means)
 
         plt.figure(figsize=(12, 6))
+        color_map = ['blue', 'red', 'green']
         for i, (dataloader_name, confidences, labels_for_data) in enumerate(results):
-            per_class_means, per_class_stds = [], []
+            per_class_means, per_class_top1, per_class_top5 = [], [], []
             for c in range(num_classes):
                 mask = (labels_for_data == c)
-                if i == 2:
-                    print(f"Class {c} contains {torch.sum(mask).item()} data samples.")
                 conf_vals = confidences[mask].numpy()
-                per_class_means.append(conf_vals.mean())
-                per_class_stds.append(conf_vals.std())
+                if len(conf_vals) == 0:
+                    raise Exception  # This shouldn't happen, but is worth a sanity check.
+                sorted_conf = np.sort(conf_vals)
+                n = len(sorted_conf)
+                print(n)
+                k1 = max(1, int(0.01 * n))
+                k5 = max(1, int(0.05 * n))
 
-            per_class_means = np.array(per_class_means)[sort_idx]
-            per_class_stds = np.array(per_class_stds)[sort_idx]
-            x = np.arange(len(per_class_means))
+                per_class_means.append(np.mean(conf_vals))
+                per_class_top1.append(np.mean(sorted_conf[:k1]))
+                per_class_top5.append(np.mean(sorted_conf[:k5]))
 
-            plt.plot(x, per_class_means, label=f'{dataloader_name}_confidence')
-            plt.fill_between(x, per_class_means - per_class_stds, per_class_means + per_class_stds, alpha=0.2)
+            per_class_means = np.array(per_class_means)
+            per_class_top1 = np.array(per_class_top1)
+            per_class_top5 = np.array(per_class_top5)
+            x = np.arange(num_classes)
+
+            plt.plot(x, per_class_means, label=f'{dataloader_name} avg', color=color_map[i], linewidth=2)
+            plt.plot(x, per_class_top5, label=f'{dataloader_name} top 5%', color=color_map[i], linestyle='--',
+                     alpha=0.6)
+            plt.plot(x, per_class_top1, label=f'{dataloader_name} top 1%', color=color_map[i], linestyle=':',
+                     alpha=0.4)
 
         plt.title(f"Class-level confidences sorted by {results[base_dataloader_idx][0]}")
         plt.xlabel("Sorted classes")
         plt.ylabel("Confidence")
-        plt.legend()
+        plt.legend(bbox_to_anchor=(1.2, 1.10), loc='upper right')
         plt.grid(True)
-        plt.savefig(os.path.join(ROOT, 'Figures', dataset_name, f"{results[base_dataloader_idx][0]}_confidence.pdf"))
+
+        save_dir = os.path.join(ROOT, 'Figures', dataset_name)
+        os.makedirs(save_dir, exist_ok=True)
+        plt.savefig(os.path.join(save_dir, f"{results[base_dataloader_idx][0]}_confidence.pdf"), bbox_inches='tight')
+        plt.show()
 
 
 def main(dataset_name: str):
     config = get_config(dataset_name)
     num_classes = config['num_classes']
+    num_training_samples = config['num_training_samples']
+    num_test_samples = config['num_test_samples']
 
     _, training_dataset, _, test_dataset = load_dataset(dataset_name, False, False, False)
     new_training_transform = torchvision.transforms.Compose([
@@ -123,19 +180,24 @@ def main(dataset_name: str):
     ])
     training_dataset = AugmentedSubset(training_dataset, transform=new_training_transform)
 
+    training_smote_dataset, training_smote_labels = generate_smote_dataset(training_dataset, num_classes,
+                                                                           num_training_samples)
+    test_smote_dataset, test_smote_labels = generate_smote_dataset(test_dataset, num_classes, num_test_samples)
+
     synthetic_data = np.load(os.path.join(ROOT, f'GeneratedImages/{dataset_name}.npz'))
     image_key, label_key = synthetic_data.files
     synthetic_images = synthetic_data[image_key]
     synthetic_labels = synthetic_data[label_key]
     synthetic_dataset = convert_numpy_to_dataset(synthetic_images, synthetic_labels, config)
+    print('Loaded synthetic data generated through EDM.')
 
-    dataloader_names = ['Training', 'Test', 'EDM']
-    loaders = [DataLoader(dataset, batch_size=5000, shuffle=False) for dataset in [training_dataset, test_dataset,
-                                                                                   synthetic_dataset]]
+    dataloader_names = ['Training', 'Training_SMOTE', 'Test', 'Test_SMOTE']
+    loaders = [DataLoader(dataset, batch_size=5000, shuffle=False)
+               for dataset in [training_dataset, training_smote_dataset, test_dataset, test_smote_dataset]]
 
     model_states = load_model_states(dataset_name, config)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    train_labels = torch.tensor([label for _, label, _ in training_dataset])
+    training_labels = torch.tensor([label for _, label, _ in training_dataset])
     test_labels = torch.tensor([label for _, label, _ in test_dataset])
     all_average_confidences = []
 
@@ -149,7 +211,7 @@ def main(dataset_name: str):
                                                               num_classes)
             torch.save(dataset_confidences, confidences_path)
 
-        labels = [train_labels, test_labels, torch.from_numpy(synthetic_labels)]
+        labels = [training_labels, training_smote_labels, test_labels, test_smote_labels]
         all_average_confidences.append((dataloader_name, dataset_confidences, labels[dataloader_idx]))
 
     base_dataloaders_indices = [0]
@@ -166,3 +228,12 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args.dataset_name)
+
+
+"""TODOs
+  - Is convert_numpy_to_dataset correct? Are we properly transforming the EDM data?
+  - Why does AugmentedSubset throw out a warning?'
+  - Ensure reproducibility of the results.
+  - Rerun thew experiments using the pre-trained models I have on HPC.
+  - Add more % for EDM generated data (there is more of it so we can go below 1%)
+"""
