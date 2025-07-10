@@ -1,8 +1,7 @@
 import argparse
-from collections import Counter
 import os
-import pickle
-from typing import Dict, List, Tuple
+from sklearn.cluster import KMeans
+from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,7 +14,7 @@ from tqdm import tqdm
 from config import get_config, ROOT
 from data import load_dataset
 from neural_networks import ResNet18LowRes
-from utils import get_latest_model_index, load_aum_results, load_forgetting_results
+from utils import get_latest_model_index, load_hardness_estimates
 
 
 class Visualizer:
@@ -26,7 +25,8 @@ class Visualizer:
         config = get_config(dataset_name)
         self.num_classes = config['num_classes']
         self.num_epochs = config['num_epochs']
-        self.num_samples = sum(config['num_training_samples'])
+        self.num_training_samples = sum(config['num_training_samples'])
+        self.robust_num_models = config['robust_ensemble_size']
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
 
@@ -52,54 +52,72 @@ class Visualizer:
 
         return model
 
-    def compute_el2n_and_confidence(self, model: ResNet18LowRes,
-                                    dataloader: DataLoader) -> Tuple[List[float], List[float]]:
-        model.eval()
-        el2n_scores, confidences = [], []
+    def compute_instance_scores(self, hardness_estimates: Dict[str, List[List[float]]], dataloader: DataLoader):
+        """
+        Compute instance-level hardness scores using the final trained model.
 
-        with torch.no_grad():
-            for inputs, labels, _ in dataloader:
-                inputs, labels = inputs.cuda(), labels.cuda()
-                outputs = model(inputs)
-
-                softmax_outputs = F.softmax(outputs, dim=1)
-                one_hot_labels = F.one_hot(labels, num_classes=self.num_classes).float()
-                l2_errors = torch.norm(softmax_outputs - one_hot_labels, dim=1)
-                el2n_scores.extend(l2_errors.cpu().numpy())
-
-                max_confidences = torch.max(softmax_outputs, dim=1).values
-                confidences.extend(max_confidences.cpu().numpy())
-
-        return el2n_scores, confidences
-
-    def collect_el2n_and_confidence_scores(self, loader):
-        all_el2n_scores, all_confidences = [], []
-
+        Each maps to a list of per-sample scores, ordered according to dataset indices.
+        """
+        # TODO: Maybe add iVoG and GraNd.
+        for new_hardness_estimate in ['iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N', 'Prototypicality']:
+            hardness_estimates[new_hardness_estimate] = [[0.0 for _ in range(self.num_training_samples)]
+                                                         for _ in range(self.robust_num_models)]
         for model_id in range(self.num_models):
             model = self.load_model(model_id)
-            el2n_scores, confidences = self.compute_el2n_and_confidence(model, loader)
-            all_el2n_scores.append(el2n_scores)
-            all_confidences.append(confidences)
+            model.eval()
+            features = []
+            with torch.no_grad():
+                for inputs, labels, indices in dataloader:
+                    inputs, labels = inputs.cuda(), labels.cuda()
+                    outputs, latent_inputs = model(inputs, True)
+                    features.append(latent_inputs)
+                    _, predicted = torch.max(outputs.data, 1)
+                    for x, label, i, logits in zip(inputs, labels, indices, outputs):
+                        i = i.item()
+                        correct_label = label.item()
+                        logits = logits.detach()
+                        correct_logit = logits[correct_label].item()
+                        probs = torch.nn.functional.softmax(logits, dim=0)
 
-        return all_el2n_scores, all_confidences
+                        # iConfidence
+                        hardness_estimates['iConfidence'][model_id][i] = correct_logit
+                        # iAUM
+                        max_other_logit = torch.max(torch.cat((logits[:correct_label],
+                                                               logits[correct_label + 1:]))).item()
+                        hardness_estimates['iAUM'][model_id][i] = correct_logit - max_other_logit
+                        # iDataIQ
+                        p_y = probs[correct_label].item()
+                        hardness_estimates['iDataIQ'][model_id][i] = p_y * (1 - p_y)
+                        # iLoss
+                        label_tensor = torch.tensor([correct_label], device=logits.device)
+                        loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), label_tensor).item()
+                        hardness_estimates['iLoss'][model_id][i] = loss
+                        # EL2N
+                        one_hot = F.one_hot(label, num_classes=self.num_classes).float()
+                        el2n = torch.norm(probs - one_hot).item()
+                        hardness_estimates['EL2N'][model_id][i] = el2n
+            features = torch.cat(features, dim=0).detach().cpu().numpy()
+            k = self.num_classes
+            distances_across_runs = torch.zeros(self.num_training_samples)
 
-    def save_el2n_scores(self, el2n_scores):
-        with open(os.path.join(self.results_save_dir, 'el2n_scores.pkl'), 'wb') as file:
-            pickle.dump(el2n_scores, file)
+            for _ in range(3):  # repeat clustering 3 times
+                kmeans = KMeans(n_clusters=k, init='k-means++', n_init=1, max_iter=100, algorithm='lloyd')
+                kmeans.fit(features)
+                distances = torch.tensor(kmeans.transform(features).min(axis=1))
+                distances_across_runs += distances
 
-    def get_pruned_indices(self, el2n_scores: List[List[float]], aum_scores: List[List[float]],
-                           forgetting_scores: List[List[float]],
-                           confidence_scores: List[List[float]]) -> Dict[str, List[List[List[int]]]]:
+            distances_across_runs /= 3  # average across runs
+            hardness_estimates['Prototypicality'][model_id] = distances_across_runs.tolist()
+
+    def get_pruned_indices(self, hardness_estimates: Dict[str, List[List[float]]]) -> Dict[str, List[List[List[int]]]]:
         """Extract the indices of data samples that would have been pruned if a threshold (from self.pruning_thresholds)
-        was applied to EL2N, AUM, and Forgetting hardness estimates computed using ensembles of various sizes. This
-        allows us to measure the reliability of those hardness estimates (e.g., how many models in the ensemble they
-        need to output consistent pruning indices).
+        was applied to different hardness estimates computed using ensembles of various sizes. This allows us to measure
+        the reliability of those hardness estimates (e.g., how many models in the ensemble they need to output
+        consistent pruning indices).
         """
         results = {}
 
-        for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
-                                                ("forgetting", forgetting_scores), ("confidence", confidence_scores)],
-                                               desc='Computing pruned indices.'):
+        for metric_name, metric_scores in tqdm(hardness_estimates.items(), desc='Computing pruned indices.'):
             metric_scores = np.array(metric_scores)
             results[metric_name] = []
 
@@ -111,7 +129,7 @@ class Visualizer:
                     # Compute the average hardness score of each sample as a function of the ensemble size
                     avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
                     # For AUM and confidence, hard samples have lower values (opposite for EL2N and forgetting).
-                    if metric_name in ['aum', 'confidence']:
+                    if metric_name in ['AUM', 'Confidence']:
                         sorted_indices = np.argsort(-avg_hardness_scores)
                     else:
                         sorted_indices = np.argsort(avg_hardness_scores)
@@ -197,11 +215,9 @@ class Visualizer:
         plt.tight_layout()
         plt.savefig(os.path.join(self.figures_save_dir, f'overlap_across_hardness_estimators.pdf'))
 
-    def compute_effect_of_ensemble_size_on_resampling(self, el2n_scores, aum_scores, forgetting_scores,
-                                                      confidence_scores, dataset):
+    def compute_effect_of_ensemble_size_on_resampling(self, hardness_estimates, dataset):
         results = {}
-        for metric_name, metric_scores in tqdm([("el2n", el2n_scores), ("aum", aum_scores),
-                                                ("forgetting", forgetting_scores), ("confidences", confidence_scores)],
+        for metric_name, metric_scores in tqdm(hardness_estimates.items(),
                                                desc='Computing effect of ensemble size on resampling.'):
             metric_scores = np.array(metric_scores)
             results[metric_name] = []
@@ -217,7 +233,7 @@ class Visualizer:
                     next_class_results[label].append(next_avg_hardness_scores[i])
                 for label in range(self.num_classes):
                     # For AUM, high values indicate easier samples so inversion is necessary
-                    if metric_name == 'aum':
+                    if metric_name in ['Confidence', 'AUM']:
                         curr_class_hardness[label] = 1 / np.mean(curr_class_results[label])
                         next_class_hardness[label] = 1 / np.mean(next_class_results[label])
                     else:
@@ -283,27 +299,21 @@ class Visualizer:
 
     def main(self):
         training_loader, _, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean', False, True)
-        training_all_el2n_scores, training_all_confidences = self.collect_el2n_and_confidence_scores(training_loader)
-        self.save_el2n_scores(training_all_el2n_scores)
-
-        aum_scores = load_aum_results(self.data_cleanliness, self.dataset_name, self.num_epochs)
-        forgetting_scores = load_forgetting_results(self.data_cleanliness, self.dataset_name)
+        hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
+        self.compute_instance_scores(hardness_estimates, training_loader)
 
         print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')
-        print(f'Shape of hardness estimated via AUM: {len(aum_scores)}, {len(aum_scores[0])}')
-        print(f'Shape of hardness estimated via Forgetting: {len(forgetting_scores)}, {len(forgetting_scores[0])}')
-        print(f'Shape of hardness estimated via EL2N: {len(training_all_el2n_scores)}, '
-              f'{len(training_all_el2n_scores[0])}')
+        for key in hardness_estimates.keys():
+            print(f'Shape of hardness estimated via {key}: {len(hardness_estimates[key])}, '
+                  f'{len(hardness_estimates[key][0])}')
         print()
 
         # pruned_indices[metric_name][pruning_threshold][num_ensemble_models][pruned_indices]
-        pruned_indices = self.get_pruned_indices(training_all_el2n_scores, aum_scores, forgetting_scores,
-                                                 training_all_confidences)
+        pruned_indices = self.get_pruned_indices(hardness_estimates)
         self.compute_and_visualize_stability_of_pruning(pruned_indices)
         self.compute_overlap_of_pruned_indices_across_hardness_estimators(pruned_indices)
 
-        differences = self.compute_effect_of_ensemble_size_on_resampling(
-            training_all_el2n_scores, aum_scores, forgetting_scores, training_all_confidences, training_loader.dataset)
+        differences = self.compute_effect_of_ensemble_size_on_resampling(hardness_estimates, training_loader.dataset)
         self.visualize_stability_of_resampling(differences)
 
 

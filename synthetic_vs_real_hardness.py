@@ -68,6 +68,7 @@ def load_model_states(dataset_name, config):
     models_dir = os.path.join(ROOT, "Models")
     model_states = []
     full_dataset_dir = os.path.join(models_dir, "none", f"unclean{dataset_name}")
+    os.makedirs(full_dataset_dir, exist_ok=True)
 
     for file in os.listdir(full_dataset_dir):
         if file.endswith(".pth") and f"_epoch_{config['num_epochs']}" in file:
@@ -79,7 +80,7 @@ def load_model_states(dataset_name, config):
     return model_states
 
 
-def compute_dataset_confidences(dataloader_idx, dataloader, device, model_states, num_classes):
+def compute_dataset_confidences(dataloader_idx, dataloader, device, model_states, num_classes, dataset_name):
     dataset_confidences = []
 
     for images, labels, _ in tqdm.tqdm(dataloader, desc=f'Iterating through images in DataLoader {dataloader_idx}.'):
@@ -91,7 +92,8 @@ def compute_dataset_confidences(dataloader_idx, dataloader, device, model_states
             models = [ResNet18LowRes(num_classes).to(device) for _ in model_states]
             models = [model.load_state_dict(model_states[i]) for i, model in enumerate(models)]
         else:
-            models = [torch.hub.load("chenyaofo/pytorch-cifar-models", f"cifar10_resnet{i}", pretrained=True)
+            models = [torch.hub.load("chenyaofo/pytorch-cifar-models", f"cifar{dataset_name}_resnet{i}",
+                                     pretrained=True)
                       for i in [20, 32, 44]]
         for model in models:
             model = model.to(device)
@@ -122,10 +124,10 @@ def plot_class_confidences(base_indices, results, dataset_name, num_classes):
             class_means.append(class_mean)
 
         class_means = np.array(class_means)
-        # sort_idx = np.argsort(class_means)
+        sort_idx = np.argsort(class_means)
 
         plt.figure(figsize=(12, 6))
-        color_map = ['blue', 'red', 'green']
+        color_map = ['blue', 'red', 'green', 'orange', 'black']
         for i, (dataloader_name, confidences, labels_for_data) in enumerate(results):
             per_class_means, per_class_top1, per_class_top5 = [], [], []
             for c in range(num_classes):
@@ -135,24 +137,28 @@ def plot_class_confidences(base_indices, results, dataset_name, num_classes):
                     raise Exception  # This shouldn't happen, but is worth a sanity check.
                 sorted_conf = np.sort(conf_vals)
                 n = len(sorted_conf)
-                print(n)
-                k1 = max(1, int(0.01 * n))
-                k5 = max(1, int(0.05 * n))
+                if dataloader_name in ['Test', 'Test_SMOTE']:
+                    k25 = max(1, int(0.25 * n))
+                    k50 = max(1, int(0.50 * n))
+                elif dataloader_name in ['Training', 'Training_SMOTE']:
+                    k25 = max(1, int(0.05 * n))
+                    k50 = max(1, int(0.10 * n))
+                else:
+                    k25 = max(1, int(0.0025 * n))
+                    k50 = max(1, int(0.0050 * n))
 
                 per_class_means.append(np.mean(conf_vals))
-                per_class_top1.append(np.mean(sorted_conf[:k1]))
-                per_class_top5.append(np.mean(sorted_conf[:k5]))
+                per_class_top1.append(np.mean(sorted_conf[:k25]))
+                per_class_top5.append(np.mean(sorted_conf[:k50]))
 
-            per_class_means = np.array(per_class_means)
-            per_class_top1 = np.array(per_class_top1)
-            per_class_top5 = np.array(per_class_top5)
+            per_class_means = np.array(per_class_means)[sort_idx]
+            per_class_top1 = np.array(per_class_top1)[sort_idx]
+            per_class_top5 = np.array(per_class_top5)[sort_idx]
             x = np.arange(num_classes)
 
             plt.plot(x, per_class_means, label=f'{dataloader_name} avg', color=color_map[i], linewidth=2)
-            plt.plot(x, per_class_top5, label=f'{dataloader_name} top 5%', color=color_map[i], linestyle='--',
-                     alpha=0.6)
-            plt.plot(x, per_class_top1, label=f'{dataloader_name} top 1%', color=color_map[i], linestyle=':',
-                     alpha=0.4)
+            plt.plot(x, per_class_top5, label=f'{dataloader_name} k50', color=color_map[i], linestyle='--', alpha=0.6)
+            plt.plot(x, per_class_top1, label=f'{dataloader_name} k25', color=color_map[i], linestyle=':', alpha=0.4)
 
         plt.title(f"Class-level confidences sorted by {results[base_dataloader_idx][0]}")
         plt.xlabel("Sorted classes")
@@ -191,9 +197,10 @@ def main(dataset_name: str):
     synthetic_dataset = convert_numpy_to_dataset(synthetic_images, synthetic_labels, config)
     print('Loaded synthetic data generated through EDM.')
 
-    dataloader_names = ['Training', 'Training_SMOTE', 'Test', 'Test_SMOTE']
+    dataloader_names = ['Training', 'Training_SMOTE', 'Test', 'Test_SMOTE', 'EDM']
     loaders = [DataLoader(dataset, batch_size=5000, shuffle=False)
-               for dataset in [training_dataset, training_smote_dataset, test_dataset, test_smote_dataset]]
+               for dataset in [training_dataset, training_smote_dataset, test_dataset, test_smote_dataset,
+                               synthetic_dataset]]
 
     model_states = load_model_states(dataset_name, config)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -203,19 +210,25 @@ def main(dataset_name: str):
 
     for dataloader_idx, dataloader in enumerate(loaders):
         dataloader_name = dataloader_names[dataloader_idx]
-        confidences_path = os.path.join(ROOT, f'Results', dataset_name, f'{dataloader_name}_confidences.pt')
+        results_path = os.path.join(ROOT, f'Results', dataset_name)
+        os.makedirs(results_path, exist_ok=True)
+        confidences_path = os.path.join(results_path, f'{dataloader_name}_confidences.pt')
         if os.path.exists(confidences_path):
             dataset_confidences = torch.load(confidences_path)
+            print(f'Loaded {dataloader_name} DataLoader.')
         else:
             dataset_confidences = compute_dataset_confidences(dataloader_idx, dataloader, device, model_states,
-                                                              num_classes)
+                                                              num_classes, 10 if dataloader_name == 'CIFAR10' else 100)
             torch.save(dataset_confidences, confidences_path)
 
-        labels = [training_labels, training_smote_labels, test_labels, test_smote_labels]
+        labels = [training_labels, training_smote_labels, test_labels, test_smote_labels,
+                  torch.from_numpy(synthetic_labels)]
         all_average_confidences.append((dataloader_name, dataset_confidences, labels[dataloader_idx]))
 
     base_dataloaders_indices = [0]
-    plot_class_confidences(base_dataloaders_indices, all_average_confidences, dataset_name, num_classes)
+    plot_class_confidences(base_dataloaders_indices, all_average_confidences[:2], dataset_name, num_classes)
+    plot_class_confidences(base_dataloaders_indices, all_average_confidences[2:4], dataset_name, num_classes)
+    plot_class_confidences([4], all_average_confidences, dataset_name, num_classes)
 
 
 if __name__ == '__main__':
@@ -234,6 +247,6 @@ if __name__ == '__main__':
   - Is convert_numpy_to_dataset correct? Are we properly transforming the EDM data?
   - Why does AugmentedSubset throw out a warning?'
   - Ensure reproducibility of the results.
-  - Rerun thew experiments using the pre-trained models I have on HPC.
+  - Rerun the experiments using the pre-trained models I have on HPC.
   - Add more % for EDM generated data (there is more of it so we can go below 1%)
 """

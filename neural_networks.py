@@ -25,7 +25,7 @@ class ResNet18LowRes(nn.Module):
         # Adjust the final fully connected layer for the number of classes (e.g., CIFAR-10 or CIFAR-100)
         self.fc = nn.Linear(512, num_classes)
 
-    def forward(self, x):
+    def forward(self, x, latent=False):
         # Modified first convolution layer
         x = self.conv1(x)
         x = self.bn1(x)
@@ -39,7 +39,11 @@ class ResNet18LowRes(nn.Module):
         x = self.avgpool(x)
 
         # Flatten the tensor for the fully connected layer
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
+        latent_x = torch.flatten(x, 1)
 
-        return x
+        x = self.fc(latent_x)
+
+        if latent:
+            return x, latent_x
+        else:
+            return x

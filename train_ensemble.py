@@ -86,7 +86,7 @@ class ModelTrainer:
                 hardness_estimates['Forgetting'][model_id][i] += 1
                 remembering[i] = False
 
-        # VoG: the below is the first stips of computing VoG
+        # VoG: the below is the first step of computing VoG
         cpu_rng_state = torch.get_rng_state()
         if torch.cuda._initialized:
             gpu_rng_state = torch.cuda.get_rng_state()
@@ -225,7 +225,7 @@ class ModelTrainer:
 
         for estimator in hardness_estimates.keys():
             assert estimator != 'VoG_maps'  # Sanity check to ensure del works as I expect it to work.
-            updated_hardness_estimates[estimator] = hardness_estimates[estimator] + old_hardness_estimates[estimator]
+            updated_hardness_estimates[estimator] = old_hardness_estimates[estimator] + hardness_estimates[estimator]
 
         with open(path, "wb") as file:
             print(f'Saving updated hardness estimates.')
@@ -234,7 +234,6 @@ class ModelTrainer:
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
         timings = []
-        hardness_estimates = {'Confidence': [], 'AUM': [], 'DataIQ': [], 'Forgetting': [], 'Loss': [], 'VoG': []}
 
         latest_model_index = get_latest_model_index(self.save_dir, self.config['num_epochs'])
         num_models = self.config['robust_ensemble_size'] if \
@@ -246,6 +245,7 @@ class ModelTrainer:
         print('-'*20)
 
         for model_id in tqdm(range(num_models)):
+            hardness_estimates = {'Confidence': [], 'AUM': [], 'DataIQ': [], 'Forgetting': [], 'Loss': [], 'VoG': []}
             start_time = time.time()
             self.train_model(model_id, latest_model_index, hardness_estimates)
             training_time = time.time() - start_time
