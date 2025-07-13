@@ -111,65 +111,74 @@ def compute_dataset_confidences(dataloader_idx, dataloader, device, model_states
     return dataset_confidences
 
 
-def plot_class_confidences(base_indices, results, dataset_name, num_classes):
-    for base_dataloader_idx in base_indices:
-        base_conf = results[base_dataloader_idx][1]
-        base_labels = results[base_dataloader_idx][2]
+def plot_class_confidences(base_index, results, dataset_name, num_classes):
+    base_conf = results[base_index][1]
+    base_labels = results[base_index][2]
 
-        # Compute class-level means
-        class_means = []
+    # Compute class-level means
+    class_means = []
+    for c in range(num_classes):
+        class_mask = (base_labels == c)
+        class_mean = base_conf[class_mask].mean().item()
+        class_means.append(class_mean)
+
+    class_means = np.array(class_means)
+    sort_idx = np.argsort(class_means)
+
+    plt.figure(figsize=(12, 6))
+    color_map = ['blue', 'red', 'green', 'orange', 'black']
+    for i, (dataloader_name, confidences, labels_for_data) in enumerate(results):
+        per_class_means, per_class_tops = [], {}
         for c in range(num_classes):
-            class_mask = (base_labels == c)
-            class_mean = base_conf[class_mask].mean().item()
-            class_means.append(class_mean)
+            mask = (labels_for_data == c)
+            conf_vals = confidences[mask].numpy()
+            if len(conf_vals) == 0:
+                raise Exception  # This shouldn't happen, but is worth a sanity check.
+            sorted_conf = np.sort(conf_vals)
+            n = len(sorted_conf)
+            ks = []
+            if dataloader_name in ['Test', 'Test_SMOTE']:
+                ks.append(('25%', max(1, int(0.25 * n))))
+                ks.append(('50%', max(1, int(0.50 * n))))
+            elif dataloader_name in ['Training', 'Training_SMOTE']:
+                ks.append(('5%', max(1, int(0.05 * n))))
+                ks.append(('10%', max(1, int(0.10 * n))))
+            else:
+                ks.append(('50%', max(1, int(0.50 * n))))
+                ks.append(('25%', max(1, int(0.25 * n))))
+                ks.append(('10%', max(1, int(0.10 * n))))
+                ks.append(('5%', max(1, int(0.05 * n))))
 
-        class_means = np.array(class_means)
-        sort_idx = np.argsort(class_means)
-
-        plt.figure(figsize=(12, 6))
-        color_map = ['blue', 'red', 'green', 'orange', 'black']
-        for i, (dataloader_name, confidences, labels_for_data) in enumerate(results):
-            per_class_means, per_class_top1, per_class_top5 = [], [], []
-            for c in range(num_classes):
-                mask = (labels_for_data == c)
-                conf_vals = confidences[mask].numpy()
-                if len(conf_vals) == 0:
-                    raise Exception  # This shouldn't happen, but is worth a sanity check.
-                sorted_conf = np.sort(conf_vals)
-                n = len(sorted_conf)
-                if dataloader_name in ['Test', 'Test_SMOTE']:
-                    k25 = max(1, int(0.25 * n))
-                    k50 = max(1, int(0.50 * n))
-                elif dataloader_name in ['Training', 'Training_SMOTE']:
-                    k25 = max(1, int(0.05 * n))
-                    k50 = max(1, int(0.10 * n))
+            per_class_means.append(np.mean(conf_vals))
+            for p, k in ks:
+                if p in per_class_tops.keys():
+                    per_class_tops[p].append(np.mean(sorted_conf[:k]))
                 else:
-                    k25 = max(1, int(0.0025 * n))
-                    k50 = max(1, int(0.0050 * n))
+                    per_class_tops[p] = [np.mean(sorted_conf[:k])]
 
-                per_class_means.append(np.mean(conf_vals))
-                per_class_top1.append(np.mean(sorted_conf[:k25]))
-                per_class_top5.append(np.mean(sorted_conf[:k50]))
+        per_class_means = np.array(per_class_means)[sort_idx]
+        for p in per_class_tops.keys():
+            per_class_tops[p] = np.array(per_class_tops[p])[sort_idx]
+        x = np.arange(num_classes)
 
-            per_class_means = np.array(per_class_means)[sort_idx]
-            per_class_top1 = np.array(per_class_top1)[sort_idx]
-            per_class_top5 = np.array(per_class_top5)[sort_idx]
-            x = np.arange(num_classes)
+        plt.plot(x, per_class_means, label=f'{dataloader_name} avg', color=color_map[i], linewidth=2)
+        line_styles = ['dashed', 'dashdot', 'dotted', 'dashed', 'dashdot', 'dotted']
+        if base_index == 0 or i == base_index:
+            for p_idx, p in enumerate(per_class_tops.keys()):
+                alpha = 0.3 + (p_idx + 1) * (0.8 - 0.3) / len(per_class_tops.keys())
+                plt.plot(x, per_class_tops[p], label=f'{dataloader_name} {p}', color=color_map[i],
+                         linestyle=line_styles[p_idx], alpha=alpha)
 
-            plt.plot(x, per_class_means, label=f'{dataloader_name} avg', color=color_map[i], linewidth=2)
-            plt.plot(x, per_class_top5, label=f'{dataloader_name} k50', color=color_map[i], linestyle='--', alpha=0.6)
-            plt.plot(x, per_class_top1, label=f'{dataloader_name} k25', color=color_map[i], linestyle=':', alpha=0.4)
+    plt.title(f"Class-level confidences sorted by {results[base_index][0]}")
+    plt.xlabel("Sorted classes")
+    plt.ylabel("Confidence")
+    plt.legend(bbox_to_anchor=(1.22, 1.10), loc='upper right')
+    plt.grid(True)
 
-        plt.title(f"Class-level confidences sorted by {results[base_dataloader_idx][0]}")
-        plt.xlabel("Sorted classes")
-        plt.ylabel("Confidence")
-        plt.legend(bbox_to_anchor=(1.2, 1.10), loc='upper right')
-        plt.grid(True)
-
-        save_dir = os.path.join(ROOT, 'Figures', dataset_name)
-        os.makedirs(save_dir, exist_ok=True)
-        plt.savefig(os.path.join(save_dir, f"{results[base_dataloader_idx][0]}_confidence.pdf"), bbox_inches='tight')
-        plt.show()
+    save_dir = os.path.join(ROOT, 'Figures', dataset_name)
+    os.makedirs(save_dir, exist_ok=True)
+    plt.savefig(os.path.join(save_dir, f"{results[base_index][0]}_confidence.pdf"), bbox_inches='tight')
+    plt.show()
 
 
 def main(dataset_name: str):
@@ -225,10 +234,9 @@ def main(dataset_name: str):
                   torch.from_numpy(synthetic_labels)]
         all_average_confidences.append((dataloader_name, dataset_confidences, labels[dataloader_idx]))
 
-    base_dataloaders_indices = [0]
-    plot_class_confidences(base_dataloaders_indices, all_average_confidences[:2], dataset_name, num_classes)
-    plot_class_confidences(base_dataloaders_indices, all_average_confidences[2:4], dataset_name, num_classes)
-    plot_class_confidences([4], all_average_confidences, dataset_name, num_classes)
+    plot_class_confidences(0, all_average_confidences[:2], dataset_name, num_classes)
+    plot_class_confidences(0, all_average_confidences[2:4], dataset_name, num_classes)
+    plot_class_confidences(4, all_average_confidences, dataset_name, num_classes)
 
 
 if __name__ == '__main__':
