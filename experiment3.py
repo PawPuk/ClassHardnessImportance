@@ -52,7 +52,7 @@ class Experiment3:
             hardnesses_by_class[label.item()].append(hardness_scores[i])
 
         for label in range(self.num_classes):
-            if self.hardness_estimator in ['AUM', 'Confidence']:
+            if self.hardness_estimator in ['AUM', 'Confidence', 'iAUM', 'iConfidence']:
                 hardness_of_classes[label] = 1 / np.mean(hardnesses_by_class[label])
             else:
                 hardness_of_classes[label] = np.mean(hardnesses_by_class[label])
