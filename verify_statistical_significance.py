@@ -9,10 +9,11 @@ import seaborn as sns
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+import torchvision
 from tqdm import tqdm
 
 from config import get_config, ROOT
-from data import load_dataset
+from data import AugmentedSubset, load_dataset
 from neural_networks import ResNet18LowRes
 from utils import get_latest_model_index, load_hardness_estimates
 
@@ -307,8 +308,15 @@ class Visualizer:
             plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))
 
     def main(self):
-        # Remove data augmentation
-        training_loader, _, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean', False, True)
+        config = get_config(self.dataset_name)
+        _, training_dataset, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean', False, False)
+        new_training_transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToPILImage(),
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize(config['mean'], config['std']),
+        ])
+        training_dataset = AugmentedSubset(training_dataset, transform=new_training_transform)
+        training_loader = torch.utils.data.DataLoader(training_dataset, batch_size=1000, shuffle=False)
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
         self.compute_instance_scores(hardness_estimates, training_loader)
 
