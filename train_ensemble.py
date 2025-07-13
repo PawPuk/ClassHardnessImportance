@@ -1,7 +1,6 @@
 import csv
 import os
 import pickle
-import random
 import time
 
 import numpy as np
@@ -55,8 +54,7 @@ class ModelTrainer:
         seed = base_seed + current_model_index * seed_step
         return seed
 
-    def estimate_instance_hardness(self, model, model_id, batch_indices, inputs, outputs, labels, predicted,
-                                   hardness_estimates, epoch):
+    def estimate_instance_hardness(self, batch_indices, inputs, outputs, labels, predicted, hardness_estimates, epoch):
         remembering = [False for _ in range(self.training_set_size)]
 
         for idx, (i, x, logits, label) in enumerate(zip(batch_indices, inputs, outputs, labels)):
@@ -68,55 +66,23 @@ class ModelTrainer:
             correct_logit = logits[correct_label].item()
             probs = torch.nn.functional.softmax(logits, dim=0)
             # Confidence
-            hardness_estimates['Confidence'][model_id][i][epoch] = correct_logit
+            hardness_estimates['Confidence'][i][epoch] = correct_logit
             # AUM
             max_other_logit = torch.max(torch.cat((logits[:correct_label], logits[correct_label + 1:]))).item()
-            hardness_estimates['AUM'][model_id][i][epoch] = correct_logit - max_other_logit
+            hardness_estimates['AUM'][i][epoch] = correct_logit - max_other_logit
             # DataIQ
             p_y = probs[correct_label].item()
-            hardness_estimates['DataIQ'][model_id][i][epoch] = p_y * (1 - p_y)
+            hardness_estimates['DataIQ'][i][epoch] = p_y * (1 - p_y)
             # Cross-Entropy Loss
             label_tensor = torch.tensor([correct_label], device=logits.device)
             loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), label_tensor).item()
-            hardness_estimates['Loss'][model_id][i][epoch] = loss
+            hardness_estimates['Loss'][i][epoch] = loss
             # Forgetting
             if predicted_label == correct_label:
                 remembering[i] = True
             elif predicted_label != correct_label and remembering[i]:
-                hardness_estimates['Forgetting'][model_id][i] += 1
+                hardness_estimates['Forgetting'][i] += 1
                 remembering[i] = False
-
-        # VoG: the below is the first step of computing VoG
-        cpu_rng_state = torch.get_rng_state()
-        if torch.cuda._initialized:
-            gpu_rng_state = torch.cuda.get_rng_state()
-        np_rng_state = np.random.get_state()
-        py_rng_state = random.getstate()
-        model.eval()
-
-        x_batch = inputs.detach().requires_grad_(True)  # shape: (B, C, H, W)
-        logits = model(x_batch)  # shape: (B, num_classes)
-        correct_logits = logits[torch.arange(logits.size(0)), labels]  # shape: (B,)
-
-        model.zero_grad()
-        grads = torch.autograd.grad(
-            outputs=correct_logits,
-            inputs=x_batch,
-            grad_outputs=torch.ones_like(correct_logits),
-            create_graph=False,
-            retain_graph=False,
-            only_inputs=True
-        )[0]  # shape: (B, C, H, W)
-        grad_avgs = grads.mean(dim=1)  # average over channels → shape: (B, H, W)
-        for j, avg in enumerate(grad_avgs):
-            hardness_estimates['VoG_maps'][batch_indices[j]][epoch] = avg.cpu()
-
-        torch.set_rng_state(cpu_rng_state)
-        if torch.cuda._initialized:
-            torch.cuda.set_rng_state(gpu_rng_state)
-        np.random.set_state(np_rng_state)
-        random.setstate(py_rng_state)
-        model.train()
 
     def evaluate_model(self, model, criterion):
         """Evaluate the model on the test set."""
@@ -149,10 +115,9 @@ class ModelTrainer:
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.config['lr_decay_milestones'], gamma=0.2)
 
         for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:   # [epoch_index][sample_index]
-            hardness_estimates[estimator].append([[None for _ in range(self.num_epochs)]
-                                                  for _ in range(self.training_set_size)])
-        hardness_estimates['VoG_maps'] = [[None for _ in range(self.num_epochs)] for _ in range(self.training_set_size)]
-        hardness_estimates['Forgetting'].append([0 for _ in range(self.training_set_size)])
+            hardness_estimates[estimator] = [[None for _ in range(self.num_epochs)]
+                                             for _ in range(self.training_set_size)]
+        hardness_estimates['Forgetting'] = [0 for _ in range(self.training_set_size)]
 
         for epoch in range(self.config['num_epochs']):
             model.train()
@@ -172,8 +137,8 @@ class ModelTrainer:
                 correct_train += (predicted == labels).sum().item()
 
                 if self.estimate_hardness:
-                    self.estimate_instance_hardness(model, current_model_index, indices, inputs, outputs, labels,
-                                                    predicted, hardness_estimates, epoch)
+                    self.estimate_instance_hardness(indices, inputs, outputs, labels, predicted, hardness_estimates,
+                                                    epoch)
             scheduler.step()
 
             avg_train_loss = running_loss / total_train
@@ -209,7 +174,7 @@ class ModelTrainer:
             return prior_hardness_estimates
         else:
             print(f"{path} does not exist or is empty. Initializing new data.")
-            return {'Confidence': [], 'AUM': [], 'DataIQ': [], 'Forgetting': [], 'Loss': [], 'VoG': []}
+            return {'Confidence': [], 'AUM': [], 'DataIQ': [], 'Forgetting': [], 'Loss': []}
 
     def save_results(self, hardness_estimates):
         """
@@ -221,15 +186,13 @@ class ModelTrainer:
         os.makedirs(hardness_save_dir, exist_ok=True)
         path = os.path.join(hardness_save_dir, 'hardness_estimates.pkl')
         old_hardness_estimates = self.load_previous_hardness_estimates(path)
-        updated_hardness_estimates = {}
 
         for estimator in hardness_estimates.keys():
-            assert estimator != 'VoG_maps'  # Sanity check to ensure del works as I expect it to work.
-            updated_hardness_estimates[estimator] = old_hardness_estimates[estimator] + hardness_estimates[estimator]
+            old_hardness_estimates[estimator].append(hardness_estimates[estimator])
 
         with open(path, "wb") as file:
             print(f'Saving updated hardness estimates.')
-            pickle.dump(updated_hardness_estimates, file)
+            pickle.dump(old_hardness_estimates, file)
 
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
@@ -245,7 +208,7 @@ class ModelTrainer:
         print('-'*20)
 
         for model_id in tqdm(range(num_models)):
-            hardness_estimates = {'Confidence': [], 'AUM': [], 'DataIQ': [], 'Forgetting': [], 'Loss': [], 'VoG': []}
+            hardness_estimates = {}
             start_time = time.time()
             self.train_model(model_id, latest_model_index, hardness_estimates)
             training_time = time.time() - start_time
@@ -253,16 +216,7 @@ class ModelTrainer:
 
             if self.estimate_hardness:
                 for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:
-                    hardness_estimates[estimator][model_id] = np.mean(hardness_estimates[estimator][model_id], axis=1)
-                # Finish computing VoG
-                for i in range(self.training_set_size):
-                    maps = torch.stack([epoch_maps for epoch_maps in hardness_estimates['VoG_maps'][i]])
-                    mu = torch.mean(maps, dim=0)
-                    var = torch.mean((maps - mu) ** 2, dim=0)
-                    vog_map = torch.sqrt(var)
-                    scalar_vog = torch.mean(vog_map).item()
-                    hardness_estimates['VoG'].append(scalar_vog)
-                del hardness_estimates['VoG_maps']
+                    hardness_estimates[estimator] = np.mean(hardness_estimates[estimator], axis=1)
                 self.save_results(hardness_estimates)
 
         # Calculate mean and standard deviation of the timings
