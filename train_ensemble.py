@@ -54,13 +54,13 @@ class ModelTrainer:
         seed = base_seed + current_model_index * seed_step
         return seed
 
-    def estimate_instance_hardness(self, batch_indices, inputs, outputs, labels, predicted, hardness_estimates, epoch):
-        remembering = [False for _ in range(self.training_set_size)]
-
-        for idx, (i, x, logits, label) in enumerate(zip(batch_indices, inputs, outputs, labels)):
+    @staticmethod
+    def estimate_instance_hardness(batch_indices, inputs, outputs, labels, predicted, hardness_estimates, epoch,
+                                   remembering):
+        for index_within_batch, (i, x, logits, label) in enumerate(zip(batch_indices, inputs, outputs, labels)):
             i = i.item()  # TODO: Maybe change the output of __iter__ rather than doing the .item() here.
             correct_label = label.item()
-            predicted_label = predicted[idx].item()
+            predicted_label = predicted[index_within_batch].item()
 
             logits = logits.detach()
             correct_logit = logits[correct_label].item()
@@ -118,6 +118,7 @@ class ModelTrainer:
             hardness_estimates[estimator] = [[None for _ in range(self.num_epochs)]
                                              for _ in range(self.training_set_size)]
         hardness_estimates['Forgetting'] = [0 for _ in range(self.training_set_size)]
+        remembering = [False for _ in range(self.training_set_size)]
 
         for epoch in range(self.config['num_epochs']):
             model.train()
@@ -138,7 +139,7 @@ class ModelTrainer:
 
                 if self.estimate_hardness:
                     self.estimate_instance_hardness(indices, inputs, outputs, labels, predicted, hardness_estimates,
-                                                    epoch)
+                                                    epoch, remembering)
             scheduler.step()
 
             avg_train_loss = running_loss / total_train
