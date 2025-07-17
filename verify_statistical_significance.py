@@ -1,10 +1,10 @@
 import argparse
 import os
-from sklearn.cluster import KMeans
 from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pickle
 import seaborn as sns
 import torch
 import torch.nn.functional as F
@@ -27,7 +27,6 @@ class Visualizer:
         self.num_classes = config['num_classes']
         self.num_epochs = config['num_epochs']
         self.num_training_samples = sum(config['num_training_samples'])
-        self.robust_num_models = config['robust_ensemble_size']
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
 
@@ -36,7 +35,7 @@ class Visualizer:
         for save_dir in [self.results_save_dir, self.figures_save_dir]:
             os.makedirs(save_dir, exist_ok=True)
 
-        self.pruning_thresholds = np.arange(10, 50, 10)
+        self.pruning_thresholds = np.arange(10, 60, 10)
         model_save_dir = os.path.join(config['save_dir'], 'none', f'{self.data_cleanliness}{dataset_name}')
         self.num_models = get_latest_model_index(model_save_dir, self.num_epochs) + 1
 
@@ -59,11 +58,10 @@ class Visualizer:
 
         Each maps to a list of per-sample scores, ordered according to dataset indices.
         """
-        # TODO: Maybe add iVoG and GraNd.
-        for new_hardness_estimate in ['iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N', 'Prototypicality']:
+        for new_hardness_estimate in ['iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N']:
             hardness_estimates[new_hardness_estimate] = [[0.0 for _ in range(self.num_training_samples)]
-                                                         for _ in range(self.robust_num_models)]
-        for model_id in range(self.num_models):
+                                                         for _ in range(self.num_models)]
+        for model_id in tqdm(range(self.num_models), desc='Iterating through models.'):
             model = self.load_model(model_id)
             model.eval()
             features = []
@@ -97,18 +95,6 @@ class Visualizer:
                         one_hot = F.one_hot(label, num_classes=self.num_classes).float()
                         el2n = torch.norm(probs - one_hot).item()
                         hardness_estimates['EL2N'][model_id][i] = el2n
-            features = torch.cat(features, dim=0).detach().cpu().numpy()
-            k = self.num_classes
-            distances_across_runs = torch.zeros(self.num_training_samples)
-
-            for _ in range(3):  # repeat clustering 3 times
-                kmeans = KMeans(n_clusters=k, init='k-means++', n_init=1, max_iter=100, algorithm='lloyd')
-                kmeans.fit(features)
-                distances = torch.tensor(kmeans.transform(features).min(axis=1))
-                distances_across_runs += distances
-
-            distances_across_runs /= 3  # average across runs
-            hardness_estimates['Prototypicality'][model_id] = distances_across_runs.tolist()
 
     def get_pruned_indices(self, hardness_estimates: Dict[str, List[List[float]]]) -> \
             Dict[str, Dict[str, List[List[List[int]]]]]:
@@ -130,7 +116,7 @@ class Visualizer:
                 for num_ensemble_models in range(1, self.num_models + 1):
                     # Compute the average hardness score of each sample as a function of the ensemble size
                     avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
-                    # For AUM and confidence, hard samples have lower values (opposite for EL2N and forgetting).
+                    # For AUM and Confidence, hard samples have lower values (opposite for other hardness estimators).
                     if metric_name in ['AUM', 'Confidence', 'iAUM', 'iConfidence']:
                         sorted_indices = np.argsort(-avg_hardness_scores)
                     else:
@@ -145,7 +131,7 @@ class Visualizer:
         return results
 
     def compute_and_visualize_stability_of_pruning(self, results):
-        metric_names = list(results.keys())
+        metric_names = list(results['easy'].keys())
         # TODO: Modify the below so that it's not hardcoded.
         vmin, vmax = 0, 100  # Ensure all heatmaps share the same scale
 
@@ -191,7 +177,7 @@ class Visualizer:
                 plt.xlabel('Number of models in ensemble (j) during hardness estimation')
                 plt.ylabel('Pruning threshold (%)')
                 plt.xticks(np.arange(num_models - 1) + 0.5, np.arange(1, num_models))
-                plt.yticks(np.arange(num_pruning_thresholds) + 0.5, np.arange(10, 100, 10))
+                plt.yticks(np.arange(num_pruning_thresholds) + 0.5, np.arange(10, 60, 10))
                 plt.savefig(os.path.join(self.figures_save_dir,
                                          f'pruning{hardness}_stability_based_on_{metric_name}.pdf'))
                 plt.close()
@@ -267,7 +253,7 @@ class Visualizer:
         return results
 
     def visualize_stability_of_resampling(self, results):
-        metrics = list(results.keys())
+        metrics = list(results['easy'].keys())
         ensemble_sizes = {metric: [entry[0] for entry in results[metric]] for metric in metrics}
         differences = {metric: [entry[1] for entry in results[metric]] for metric in metrics}
         relative_differences = {metric: [entry[2] for entry in results[metric]] for metric in metrics}
@@ -302,10 +288,17 @@ class Visualizer:
             plt.title(f"Based on {metric.upper()}")
             plt.xlabel('Number of Models (j) in Ensemble During Hardness Estimation')
             plt.xticks(range(1, 20, 2))
-            plt.ylabel("Relative Difference in Class-Wise SXample Count for Resampling after Adding a Model")
+            plt.ylabel("Relative Difference in Class-Wise Sample Count for Resampling after Adding a Model")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))
+
+    def save_hardness_estimates(self, hardness_estimates):
+        hardness_save_dir = os.path.join(ROOT, f"Results/{self.data_cleanliness}{self.dataset_name}/")
+        path = os.path.join(hardness_save_dir, 'hardness_estimates.pkl')
+        with open(path, "wb") as file:
+            print(f'Saving updated hardness estimates.')
+            pickle.dump(hardness_estimates, file)
 
     def main(self):
         config = get_config(self.dataset_name)
@@ -333,6 +326,7 @@ class Visualizer:
 
         differences = self.compute_effect_of_ensemble_size_on_resampling(hardness_estimates, training_loader.dataset)
         self.visualize_stability_of_resampling(differences)
+        self.save_hardness_estimates(hardness_estimates)
 
 
 if __name__ == '__main__':
