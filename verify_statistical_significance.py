@@ -253,7 +253,7 @@ class Visualizer:
         return results
 
     def visualize_stability_of_resampling(self, results):
-        metrics = list(results['easy'].keys())
+        metrics = list(results.keys())
         ensemble_sizes = {metric: [entry[0] for entry in results[metric]] for metric in metrics}
         differences = {metric: [entry[1] for entry in results[metric]] for metric in metrics}
         relative_differences = {metric: [entry[2] for entry in results[metric]] for metric in metrics}
@@ -337,3 +337,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     Visualizer(args.dataset_name, args.remove_noise).main()
+
+"""
+1. (-) Check if hardness estimates were computed. If they were don't do that again and use CPU.
+2. (-) Change the visualization from heatmaps to plots (maybe do both).
+3. (-) Plot the class-level ID estimates (sorted and unsorted)
+"""
