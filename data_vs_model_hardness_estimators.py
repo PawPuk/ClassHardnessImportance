@@ -5,6 +5,9 @@
 5. (+) Compute class-level estimates
 6. (+) Compute Pearson and Spearman Rank correlation and create correlation matrix (add accuracies)
 7. (+) Reduce the dimensionality of data using PCA and repeat the experiments with data-based hardness estimators
+8. (+) Compute and plot cumulative distribution of hardness for each instance-level hardness estimator
+9. (+) Use both subjective (my ensemble) and objective (ensemble of different architectures from GitHub) for accuracy
+10. (+) Plot the class-level ID estimates (sorted and unsorted)
 """
 
 import argparse
@@ -49,19 +52,6 @@ class EstimatorBenchmarker:
         model_save_dir = os.path.join(config['save_dir'], 'none', f'unclean{dataset_name}')
         self.num_models = get_latest_model_index(model_save_dir, self.num_epochs) + 1
 
-    def load_model(self, model_id: int) -> ResNet18LowRes:
-        model = ResNet18LowRes(num_classes=self.num_classes).cuda()
-        model_path = os.path.join(self.model_dir, 'none', f"unclean{args.dataset_name}",
-                                  f'model_{model_id}_epoch_{self.save_epoch}.pth')
-
-        if os.path.exists(model_path):
-            model.load_state_dict(torch.load(model_path))
-        else:
-            # This code can only be run if models were pretrained. If no pretrained models are found, throw error.
-            raise Exception(f'Model {model_id} not found at epoch {self.save_epoch}.')
-
-        return model
-
     def divide_samples_by_class(self, dataloader: torch.utils.data.DataLoader):
         all_inputs,  all_labels, all_indices = [], [], []
         samples_by_class = {c: [] for c in range(self.num_classes)}
@@ -78,6 +68,115 @@ class EstimatorBenchmarker:
                     samples_by_class[y.item()].append(x.numpy())
         all_labels = torch.cat(all_labels, dim=0).numpy()
         return samples_by_class, all_labels
+
+    def load_model(self, model_id: int) -> ResNet18LowRes:
+        model = ResNet18LowRes(num_classes=self.num_classes).cuda()
+        model_path = os.path.join(self.model_dir, 'none', f"unclean{args.dataset_name}",
+                                  f'model_{model_id}_epoch_{self.save_epoch}.pth')
+
+        if os.path.exists(model_path):
+            model.load_state_dict(torch.load(model_path))
+        else:
+            # This code can only be run if models were pretrained. If no pretrained models are found, throw error.
+            raise Exception(f'Model {model_id} not found at epoch {self.save_epoch}.')
+
+        return model
+
+    def load_objective_models(self):
+        dataset_name = 'cifar10' if self.dataset_name == 'CIFAR10' else 'cifar100'
+        supported_models = (
+            f"{dataset_name}_resnet20", f"{dataset_name}_resnet32", f"{dataset_name}_resnet44",
+            f"{dataset_name}_resnet56", f"{dataset_name}_vgg11_bn", f"{dataset_name}_vgg13_bn",
+            f"{dataset_name}_vgg16_bn", f"{dataset_name}_vgg19_bn", f"{dataset_name}_mobilenetv2_x0_5",
+            f"{dataset_name}_mobilenetv2_x0_75", f"{dataset_name}_mobilenetv2_x1_0", f"{dataset_name}_mobilenetv2_x1_4",
+            f"{dataset_name}_shufflenetv2_x0_5", f"{dataset_name}_shufflenetv2_x1_0",
+            f"{dataset_name}_shufflenetv2_x1_5", f"{dataset_name}_shufflenetv2_x2_0",
+            f"{dataset_name}_shufflenetv2_x0_5", f"{dataset_name}_repvgg_a0", f"{dataset_name}_repvgg_a1",
+            f"{dataset_name}_repvgg_a2"
+        )
+
+        if self.dataset_name not in supported_models:
+            raise NotImplementedError(f"No pretrained models defined for {self.dataset_name} in objective ensemble.")
+
+        models = []
+        for model_name in supported_models:
+            model = torch.hub.load("chenyaofo/pytorch-cifar-models", model_name, pretrained=True)
+            model = model.eval().cuda()
+            models.append(model)
+
+        return models
+
+    def compute_class_level_accuracy(self, dataloader, hardness_estimates):
+        print("Computing class-level accuracies...")
+        t0 = time.time()
+
+        def evaluate_ensemble(models, label):
+            class_correct = np.zeros((self.num_models, self.num_classes))
+            class_total = np.zeros((self.num_models, self.num_classes))
+            for model_id, model in tqdm(enumerate(models), desc='iterating through models'):
+                with torch.no_grad():
+                    for inputs, labels, _ in dataloader:
+                        inputs, labels = inputs.cuda(), labels.cuda()
+                        outputs = model(inputs)
+                        preds = torch.argmax(outputs, dim=1)
+                        for cls in range(self.num_classes):
+                            class_mask = labels == cls
+                            class_total[model_id, cls] += class_mask.sum().item()
+                            class_correct[model_id, cls] += (preds[class_mask] == cls).sum().item()
+            avg_accuracy_per_class = (class_correct / class_total).mean(axis=0)
+            hardness_estimates[label] = avg_accuracy_per_class.tolist()
+
+        subjective_models = [self.load_model(model_id).eval().cuda() for model_id in range(self.num_models)]
+        evaluate_ensemble(subjective_models, label='Subjective Accuracy')
+        objective_models = self.load_objective_models()
+        evaluate_ensemble(objective_models, label='Objective Accuracy')
+        print(f"Finished computing class-level accuracies in {time.time() - t0} seconds.")
+
+    def plot_instance_level_hardness_distributions(self, hardness_estimates):
+        instance_level_keys = ['Confidence', 'AUM', 'DataIQ', 'Forgetting', 'Loss', 'iConfidence', 'iAUM', 'iDataIQ',
+                               'iLoss', 'EL2N', 'Class Impurity']
+        for key in instance_level_keys:
+            values = np.array(hardness_estimates[key])
+            sorted_vals = np.sort(values)
+            cdf = np.cumsum(sorted_vals) / np.sum(sorted_vals)
+
+            # Plot sorted values
+            plt.figure(figsize=(8, 5))
+            plt.plot(sorted_vals)
+            plt.title(f'Sorted Hardness Scores - {key}')
+            plt.xlabel('Sorted Sample Index')
+            plt.ylabel('Hardness Score')
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.figures_save_dir, f"sorted_hardness_{key}.pdf"))
+            plt.close()
+
+            # Plot cumulative distribution function
+            plt.figure(figsize=(8, 5))
+            plt.plot(sorted_vals, cdf)
+            plt.title(f'Cumulative Distribution Function - {key}')
+            plt.xlabel('Hardness Score')
+            plt.ylabel('Cumulative Probability')
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.figures_save_dir, f"cdf_hardness_{key}.pdf"))
+            plt.close()
+
+    def aggregate_model_based_estimates_to_class_level(self, hardness_estimates, labels):
+        model_based_keys = [
+            'Confidence', 'AUM', 'DataIQ', 'Forgetting', 'Loss',
+            'iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N'
+        ]
+        for key in model_based_keys:
+            estimates = np.array(hardness_estimates[key])  # shape [num_models][num_samples]
+            sample_scores = np.mean(estimates, axis=0)  # [num_samples]
+            class_sums = np.zeros(self.num_classes)
+            class_counts = np.zeros(self.num_classes)
+            for score, label in zip(sample_scores, labels):
+                class_sums[label] += score
+                class_counts[label] += 1
+            class_averages = class_sums / np.maximum(class_counts, 1e-8)
+            hardness_estimates[key] = class_averages
 
     def compute_class_impurity(self, samples_by_class, hardness_estimates, k: int = 15):
         all_samples, all_labels = [], []
@@ -96,7 +195,7 @@ class EstimatorBenchmarker:
             neighbor_labels = all_labels[neighbor_indices]
             impurity = np.sum(neighbor_labels != sample_label) / k
             impurity_by_class[sample_label].append(impurity)
-        for c in self.num_classes:
+        for c in range(self.num_classes):
             hardness_estimates['Class Impurity'][c] = float(np.mean(impurity_by_class[c]))
 
     @staticmethod
@@ -118,7 +217,7 @@ class EstimatorBenchmarker:
             else:
                 log_mu = np.log(valid_ratios)
                 d_hat = 1.0 / np.mean(log_mu)
-                hardness_estimates['ID'][class_label] = d_hat
+                hardness_estimates['ID'][class_label] = int(round(d_hat))
 
     @staticmethod
     def compute_volume(samples_by_class, hardness_estimates):
@@ -143,11 +242,12 @@ class EstimatorBenchmarker:
             hardness_estimates['Volume'][class_label] = volume
 
     @staticmethod
-    def compute_curvature(samples_by_class, hardness_estimates, k: int = 15):
+    def compute_curvature(samples_by_class, hardness_estimates):
         for class_label, class_samples in tqdm(samples_by_class.items(), desc='Iterating through classes.'):
             intrinsic_dimension = hardness_estimates['ID'][class_label]
-            curvature = estimate_curvatures(class_samples, k=k, pca_components=intrinsic_dimension,
-                                            curvature_type='gaussian')
+            class_samples = np.stack(class_samples, axis=0)  # Ensure it's a 2D NumPy array: [Nc, D]
+            curvature = estimate_curvatures(class_samples, k=2 * intrinsic_dimension,
+                                            pca_components=intrinsic_dimension, curvature_type='gaussian')
             hardness_estimates['Curvature'][class_label] = curvature
 
     def compute_data_based_hardness_estimates(self, hardness_estimates, samples_by_class):
@@ -173,44 +273,32 @@ class EstimatorBenchmarker:
         self.compute_curvature(samples_by_class, hardness_estimates)
         print(f'Finished computing volumes in {time.time() - t0} seconds.')
 
-    def compute_class_level_accuracy(self, dataloader, hardness_estimates):
-        print("Computing class-level accuracies...")
-        t0 = time.time()
-        class_correct = np.zeros((self.num_models, self.num_classes))
-        class_total = np.zeros((self.num_models, self.num_classes))
-        for model_id in tqdm(range(self.num_models), desc='iterating through models'):
-            model = self.load_model(model_id)
-            model.eval()
-            with torch.no_grad():
-                for inputs, labels, _ in dataloader:
-                    inputs, labels = inputs.cuda(), labels.cuda()
-                    outputs = model(inputs)
-                    preds = torch.argmax(outputs, dim=1)
-                    for cls in range(self.num_classes):
-                        class_mask = labels == cls
-                        class_total[model_id, cls] += class_mask.sum().item()
-                        class_correct[model_id, cls] += (preds[class_mask] == cls).sum().item()
+    def plot_class_level_id_estimates(self, hardness_estimates):
+        """Plot class-level intrinsic dimension (ID) estimates: sorted and unsorted."""
+        id_estimates = np.array(hardness_estimates['ID'])
 
-        # Compute mean accuracy per class across models
-        avg_accuracy_per_class = (class_correct / class_total).mean(axis=0)
-        hardness_estimates['Accuracy'] = avg_accuracy_per_class.tolist()
-        print(f"Finished computing class-level accuracies in {time.time() - t0} seconds.")
+        # Unsorted Plot
+        plt.figure(figsize=(8, 5))
+        plt.bar(range(len(id_estimates)), id_estimates, color='skyblue')
+        plt.xlabel("Class Label")
+        plt.ylabel("Intrinsic Dimension")
+        plt.title("Class-Level Intrinsic Dimensions (Unsorted)")
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.figures_save_dir, "class_id_unsorted.pdf"))
+        plt.close()
 
-    def aggregate_model_based_estimates_to_class_level(self, hardness_estimates, labels):
-        model_based_keys = [
-            'Confidence', 'AUM', 'DataIQ', 'Forgetting', 'Loss',
-            'iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N'
-        ]
-        for key in model_based_keys:
-            estimates = np.array(hardness_estimates[key])  # shape [num_models][num_samples]
-            sample_scores = np.mean(estimates, axis=0)  # [num_samples]
-            class_sums = np.zeros(self.num_classes)
-            class_counts = np.zeros(self.num_classes)
-            for score, label in zip(sample_scores, labels):
-                class_sums[label] += score
-                class_counts[label] += 1
-            class_averages = class_sums / np.maximum(class_counts, 1e-8)
-            hardness_estimates[key] = class_averages
+        # Sorted Plot
+        sorted_id = np.sort(id_estimates)
+        plt.figure(figsize=(8, 5))
+        plt.bar(range(len(sorted_id)), sorted_id, color='salmon')
+        plt.xlabel("Sorted Class Index")
+        plt.ylabel("Intrinsic Dimension")
+        plt.title("Class-Level Intrinsic Dimensions (Sorted)")
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.figures_save_dir, "class_id_sorted.pdf"))
+        plt.close()
 
     def compute_and_plot_correlations(self, hardness_estimates, projected: str = ''):
         keys = list(hardness_estimates.keys())
@@ -242,7 +330,7 @@ class EstimatorBenchmarker:
         for class_label, class_samples in tqdm(samples_by_class.items()):
             X = np.stack(class_samples, axis=0)  # [Nc, D]
             intrinsic_dim = hardness_estimates['ID'][class_label]
-            reduced_dim = min(int(intrinsic_dim * 2), X.shape[1])  # Make sure it doesn’t exceed original dim
+            reduced_dim = min(int(intrinsic_dim * 2), X.shape[1])  # Make sure it doesn’t exceed the original dim
 
             # Fit PCA on centered class samples
             pca = PCA(n_components=reduced_dim)
@@ -253,7 +341,7 @@ class EstimatorBenchmarker:
 
     def main(self):
         config = get_config(self.dataset_name)
-        _, training_dataset, _, _ = load_dataset(args.dataset_name, 'unclean', False, False)
+        _, training_dataset, _, _ = load_dataset(args.dataset_name, False, False, False)
         new_training_transform = torchvision.transforms.Compose([
             torchvision.transforms.ToPILImage(),
             torchvision.transforms.ToTensor(),
@@ -263,10 +351,14 @@ class EstimatorBenchmarker:
         training_loader = torch.utils.data.DataLoader(training_dataset, batch_size=1000, shuffle=False)
         samples_by_class, labels = self.divide_samples_by_class(training_loader)
         hardness_estimates = load_hardness_estimates('unclean', self.dataset_name)
+
         self.compute_class_level_accuracy(training_loader, hardness_estimates)
+        self.plot_instance_level_hardness_distributions(hardness_estimates)
         self.aggregate_model_based_estimates_to_class_level(hardness_estimates, labels)
         self.compute_data_based_hardness_estimates(hardness_estimates, samples_by_class)
+        self.plot_class_level_id_estimates(hardness_estimates)
         self.compute_and_plot_correlations(hardness_estimates)
+
         projected_samples_by_class = self.project_classes_via_pca(samples_by_class, hardness_estimates)
         print('Now repeating the experiments on data projected onto low dimensional representations obtained via PCA.')
         self.compute_data_based_hardness_estimates(hardness_estimates, projected_samples_by_class)
