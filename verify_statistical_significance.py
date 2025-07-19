@@ -1,7 +1,9 @@
 import argparse
+from itertools import combinations
 import os
 from typing import Dict, List
 
+from matplotlib.cm import get_cmap
 import matplotlib.pyplot as plt
 import numpy as np
 import pickle
@@ -130,26 +132,33 @@ class Visualizer:
 
         return results
 
-    def compute_and_visualize_stability_of_pruning(self, results):
+    @staticmethod
+    def compute_stability_of_pruning(results):
         metric_names = list(results['easy'].keys())
-        # TODO: Modify the below so that it's not hardcoded.
-        vmin, vmax = 0, 100  # Ensure all heatmaps share the same scale
-
-        for metric_name in tqdm(metric_names, desc='Computing and visualizing stability of pruning across metrics'):
-            for hardness in ['hard', 'easy']:
-                metric_results = results[hardness][metric_name]
-                num_pruning_thresholds = len(metric_results)
-                num_models = len(metric_results[0])
-                stability_results = np.zeros((num_pruning_thresholds, num_models - 1))
-
+        num_pruning_thresholds = len(results['easy']['Confidence'])
+        num_models = len(results['easy']['Confidence'][0])
+        stability_results = {
+            hardness_type: {
+                metric_name: np.zeros((num_pruning_thresholds, num_models - 1)) for metric_name in metric_names
+            } for hardness_type in ['easy', 'hard']
+        }
+        for metric_name in metric_names:
+            for hardness_type in ['hard', 'easy']:
+                metric_results = results[hardness_type][metric_name]
                 for i in range(num_pruning_thresholds):
                     for j in range(num_models - 1):
                         set1 = set(metric_results[i][j])  # Pruned indices for ensemble with j models
-                        set2 = set(metric_results[i][j + 1])  # Pruned indices for ensemble with j+1 models
-
+                        set2 = set(metric_results[i][j + 1])  # Pruned indices for ensemble with j + 1 models
                         changed = len(set2 - set1) / len(set1)
-                        stability_results[i, j] = changed * 100
+                        stability_results[hardness_type][metric_name][i][j] = changed * 100
+        return stability_results, num_models, num_pruning_thresholds
 
+    def visualize_stability_of_pruning(self, stability_results, num_models, num_pruning_thresholds):
+        metric_names = list(stability_results['easy'].keys())
+        vmin, vmax = 0, 100  # Ensure all heatmaps share the same scale
+
+        for metric_name in metric_names:
+            for hardness_type in ['hard', 'easy']:
                 # Format the annotation values
                 def custom_format(val):
                     if val >= 10:
@@ -165,51 +174,85 @@ class Visualizer:
 
                 # Create figure and plot the heatmap
                 plt.figure(figsize=(10, 6))
-                sns.heatmap(stability_results, annot=True, fmt='.2f', cmap='coolwarm',
+                sns.heatmap(stability_results[hardness_type][metric_name], annot=True, fmt='.2f', cmap='coolwarm',
                             cbar_kws={'label': 'Jaccard Overlap'}, vmin=vmin, vmax=vmax)  # Set color scale
 
                 # Adjust the annotation format
                 for text in plt.gca().texts:
                     text.set_text(custom_format(float(text.get_text())))
 
-                plt.title(f'Change in Pruned {hardness} Indices After Increasing Ensemble Size (%) Based on '
-                          f'{metric_name.upper()}')
-                plt.xlabel('Number of models in ensemble (j) during hardness estimation')
+                plt.title(f'{hardness_type.capitalize()} PCR Based on {metric_name.upper()}')
+                plt.xlabel('Ensemble size during hardness estimation')
                 plt.ylabel('Pruning threshold (%)')
                 plt.xticks(np.arange(num_models - 1) + 0.5, np.arange(1, num_models))
                 plt.yticks(np.arange(num_pruning_thresholds) + 0.5, np.arange(10, 60, 10))
                 plt.savefig(os.path.join(self.figures_save_dir,
-                                         f'pruning{hardness}_stability_based_on_{metric_name}.pdf'))
+                                         f'pruning_{hardness_type}_stability_based_on_{metric_name}.pdf'))
+                plt.close()
+
+    def plot_stability_summary_across_metrics(self, stability_results, num_models, num_pruning_thresholds):
+        metric_groups = [
+            ('DataIQ', 'Loss', 'AUM', 'Confidence'),
+            ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
+        ]
+        thresholds = [0, num_pruning_thresholds - 1]  # First and last pruning threshold
+        threshold_labels = ['10%', '50%']
+        colors = get_cmap("tab10")  # Enough distinct colors
+
+        for group_id, group in enumerate(metric_groups):
+            for hardness_type in ['hard', 'easy']:
+                plt.figure(figsize=(10, 6))
+                for idx, metric_name in enumerate(group):
+                    for tidx, threshold in enumerate(thresholds):
+                        values = stability_results[hardness_type][metric_name][threshold]  # shape: [num_models - 1]
+                        label = f"{metric_name} ({threshold_labels[tidx]})"
+                        plt.plot(np.arange(1, num_models), values, label=label, color=colors(idx),
+                                 linestyle='-' if tidx == 0 else '--', marker='o' if tidx == 0 else '^')
+
+                plt.xlabel('Ensemble size during hardness estimation')
+                plt.ylabel('PCR (%)')
+                plt.title(f'{hardness_type.capitalize()} PCR (Group {group_id + 1})')
+                plt.xticks(np.arange(1, num_models))
+                plt.grid(alpha=0.3)
+                plt.legend(title='Metric (Threshold)', ncol=2)
+                save_name = f"stability_lineplot_{hardness_type}_group{group_id + 1}.pdf"
+                plt.savefig(os.path.join(self.figures_save_dir, save_name))
                 plt.close()
 
     def compute_overlap_of_pruned_indices_across_hardness_estimators(self, results):
-        metric_names = list(results['hard'].keys())
-        num_metrics = len(metric_names)
-
-        for hardness in ['hard', 'easy']:
+        def plot_overlap(metric_pairs, hardness_type, filename_suffix):
             plt.figure(figsize=(10, 6))
-            for i in tqdm(range(num_metrics), desc='Comparing pruned indices across hardness estimators'):
-                for j in range(i + 1, num_metrics):  # Only compute unique pairs.
-                    overlaps = []
-                    for thresh_idx, thresh in enumerate(self.pruning_thresholds):
-                        set1 = set(results[hardness][metric_names[i]][thresh_idx][-1])  # Using the full ensemble.
-                        set2 = set(results[hardness][metric_names[j]][thresh_idx][-1])
-                        intersection = len(set1 & set2)
-                        union = len(set1 | set2)
-                        overlap = intersection / union if union > 0 else 0.0
-                        overlaps.append(overlap)
+            for metric1, metric2 in metric_pairs:
+                overlaps = []
+                for thresh_idx, thresh in enumerate(self.pruning_thresholds):
+                    set1 = set(results[hardness_type][metric1][thresh_idx][-1])  # Using full ensemble
+                    set2 = set(results[hardness_type][metric2][thresh_idx][-1])
+                    intersection = len(set1 & set2)
+                    union = len(set1 | set2)
+                    overlap = intersection / union if union > 0 else 0.0
+                    overlaps.append(overlap)
 
-                    plt.plot(self.pruning_thresholds, overlaps, label=f"{metric_names[i]} vs {metric_names[j]}",
-                             marker='o')
+                plt.plot(self.pruning_thresholds, overlaps, label=f"{metric1} vs {metric2}", marker='o')
 
-            # Customizing the plot.
-            plt.xlabel(f"Pruning {hardness} rate (% of samples removed)")
+            plt.xlabel(f"Pruning {hardness_type} rate (% of samples removed)")
             plt.ylabel("Overlap percentage")
-            plt.title(self.dataset_name)
+            plt.title(f"{self.dataset_name} ({hardness_type})")
             plt.legend(title="Metric pairs")
             plt.grid(alpha=0.3)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.figures_save_dir, f'overlap_across_{hardness}_estimators.pdf'))
+            plt.savefig(os.path.join(self.figures_save_dir, f'overlap_{hardness_type}_{filename_suffix}.pdf'))
+            plt.close()
+
+        group1 = ('DataIQ', 'Loss', 'AUM', 'Confidence')
+        group2 = ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
+        direct_pairs = list(zip(group1, group2))
+
+        group1_pairs = list(combinations(group1, 2))
+        group2_pairs = list(combinations(group2, 2))
+
+        for hardness in ['hard', 'easy']:
+            plot_overlap(group1_pairs, hardness, 'group1')
+            plot_overlap(group2_pairs, hardness, 'group2')
+            plot_overlap(direct_pairs, hardness, 'paired')
 
     def compute_effect_of_ensemble_size_on_resampling(self, hardness_estimates, dataset):
         results = {}
@@ -266,8 +309,6 @@ class Visualizer:
 
         for metric in metrics:
             max_diffs, min_diffs, avg_diffs = compute_stats(differences[metric])
-            if metric == 'el2n':
-                print(max_diffs, min_diffs, avg_diffs)
             plt.figure(figsize=(10, 6))
             plt.plot(ensemble_sizes[metric], max_diffs, label=f'Max Diff', linestyle='-', marker='o')
             plt.plot(ensemble_sizes[metric], min_diffs, label=f'Min Diff', linestyle='--', marker='x')
@@ -279,6 +320,7 @@ class Visualizer:
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.savefig(os.path.join(self.figures_save_dir, f'absolute_differences_{metric}.pdf'))
+            plt.close()
 
             max_rel_diffs, min_rel_diffs, avg_rel_diffs = compute_stats(relative_differences[metric])
             plt.figure(figsize=(10, 6))
@@ -292,6 +334,7 @@ class Visualizer:
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))
+            plt.close()
 
     def save_hardness_estimates(self, hardness_estimates):
         hardness_save_dir = os.path.join(ROOT, f"Results/{self.data_cleanliness}{self.dataset_name}/")
@@ -311,7 +354,8 @@ class Visualizer:
         training_dataset = AugmentedSubset(training_dataset, transform=new_training_transform)
         training_loader = torch.utils.data.DataLoader(training_dataset, batch_size=1000, shuffle=False)
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
-        self.compute_instance_scores(hardness_estimates, training_loader)
+        if 'iConfidence' not in hardness_estimates.keys():
+            self.compute_instance_scores(hardness_estimates, training_loader)
 
         print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')
         for key in hardness_estimates.keys():
@@ -319,9 +363,11 @@ class Visualizer:
                   f'{len(hardness_estimates[key][0])}')
         print()
 
-        # pruned_indices[metric_name][pruning_threshold][num_ensemble_models][pruned_indices]
+        # pruned_indices[hardness_type][metric_name][pruning_threshold][num_ensemble_models][pruned_indices]
         pruned_indices = self.get_pruned_indices(hardness_estimates)
-        self.compute_and_visualize_stability_of_pruning(pruned_indices)
+        stability_results, num_models, num_pruning_thresholds = self.compute_stability_of_pruning(pruned_indices)
+        self.visualize_stability_of_pruning(stability_results, num_models, num_pruning_thresholds)
+        self.plot_stability_summary_across_metrics(stability_results, num_models, num_pruning_thresholds)
         self.compute_overlap_of_pruned_indices_across_hardness_estimators(pruned_indices)
 
         differences = self.compute_effect_of_ensemble_size_on_resampling(hardness_estimates, training_loader.dataset)
@@ -339,7 +385,6 @@ if __name__ == '__main__':
     Visualizer(args.dataset_name, args.remove_noise).main()
 
 """
-1. (-) Check if hardness estimates were computed. If they were don't do that again and use CPU.
-2. (-) Change the visualization from heatmaps to plots (maybe do both).
-3. (-) Plot the class-level ID estimates (sorted and unsorted)
+1. (-) Change the visualization from heatmaps to plots (maybe do both).
+2. (+) Find a way to make the overlap_of_pruned_indices figure clear.
 """
