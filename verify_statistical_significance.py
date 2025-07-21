@@ -31,20 +31,22 @@ class Visualizer:
         self.num_training_samples = sum(config['num_training_samples'])
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
+        self.num_epochs = config['num_epochs']
 
         self.results_save_dir = os.path.join(ROOT, 'Results/', f'{self.data_cleanliness}{dataset_name}')
         self.figures_save_dir = os.path.join(ROOT, 'Figures/', f'{self.data_cleanliness}{dataset_name}')
         for save_dir in [self.results_save_dir, self.figures_save_dir]:
             os.makedirs(save_dir, exist_ok=True)
 
-        self.pruning_thresholds = np.arange(10, 60, 10)
+        self.pruning_thresholds = np.array([1, 2, 3, 4, 6, 8, 10, 20, 30, 40, 50])
         model_save_dir = os.path.join(config['save_dir'], 'none', f'{self.data_cleanliness}{dataset_name}')
         self.num_models = get_latest_model_index(model_save_dir, self.num_epochs) + 1
 
-    def load_model(self, model_id: int) -> ResNet18LowRes:
+    def load_model(self, model_id: int, probe = False) -> ResNet18LowRes:
         model = ResNet18LowRes(num_classes=self.num_classes).cuda()
+        epoch = self.save_epoch if probe else self.num_epochs
         model_path = os.path.join(self.model_dir, 'none', f"{self.data_cleanliness}{args.dataset_name}",
-                                  f'model_{model_id}_epoch_{self.save_epoch}.pth')
+                                  f'model_{model_id}_epoch_{epoch}.pth')
 
         if os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path))
@@ -124,7 +126,7 @@ class Visualizer:
                     else:
                         sorted_indices = np.argsort(avg_hardness_scores)
                     pruned_easy_indices = sorted_indices[:prune_count]
-                    pruned_hard_indices = sorted_indices[prune_count:]
+                    pruned_hard_indices = sorted_indices[-prune_count:]
                     metric_easy_results.append(pruned_easy_indices.tolist())
                     metric_hard_results.append(pruned_hard_indices.tolist())
                 results['easy'][metric_name].append(metric_easy_results)
@@ -185,17 +187,17 @@ class Visualizer:
                 plt.xlabel('Ensemble size during hardness estimation')
                 plt.ylabel('Pruning threshold (%)')
                 plt.xticks(np.arange(num_models - 1) + 0.5, np.arange(1, num_models))
-                plt.yticks(np.arange(num_pruning_thresholds) + 0.5, np.arange(10, 60, 10))
+                plt.yticks(np.arange(num_pruning_thresholds) + 0.5, self.pruning_thresholds)
                 plt.savefig(os.path.join(self.figures_save_dir,
                                          f'pruning_{hardness_type}_stability_based_on_{metric_name}.pdf'))
                 plt.close()
 
     def plot_stability_summary_across_metrics(self, stability_results, num_models, num_pruning_thresholds):
         metric_groups = [
-            ('DataIQ', 'Loss', 'AUM', 'Confidence'),
+            ('DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting'),
             ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
         ]
-        thresholds = [0, num_pruning_thresholds - 1]  # First and last pruning threshold
+        thresholds = [6, num_pruning_thresholds - 1]  # First and last pruning threshold
         threshold_labels = ['10%', '50%']
         colors = get_cmap("tab10")  # Enough distinct colors
 
@@ -242,9 +244,9 @@ class Visualizer:
             plt.savefig(os.path.join(self.figures_save_dir, f'overlap_{hardness_type}_{filename_suffix}.pdf'))
             plt.close()
 
-        group1 = ('DataIQ', 'Loss', 'AUM', 'Confidence')
+        group1 = ('DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting')
         group2 = ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
-        direct_pairs = list(zip(group1, group2))
+        direct_pairs = list(zip(('DataIQ', 'Loss', 'AUM', 'Confidence'), ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence')))
 
         group1_pairs = list(combinations(group1, 2))
         group2_pairs = list(combinations(group2, 2))
@@ -385,6 +387,7 @@ if __name__ == '__main__':
     Visualizer(args.dataset_name, args.remove_noise).main()
 
 """
-1. (-) Change the visualization from heatmaps to plots (maybe do both).
+1. (+) Change the visualization from heatmaps to plots (maybe do both).
 2. (+) Find a way to make the overlap_of_pruned_indices figure clear.
+3. (+) Modify EL2N to use the probe network
 """
