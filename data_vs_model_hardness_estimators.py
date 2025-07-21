@@ -95,9 +95,6 @@ class EstimatorBenchmarker:
             f"{dataset_name}_repvgg_a2"
         )
 
-        if self.dataset_name not in supported_models:
-            raise NotImplementedError(f"No pretrained models defined for {self.dataset_name} in objective ensemble.")
-
         models = []
         for model_name in supported_models:
             model = torch.hub.load("chenyaofo/pytorch-cifar-models", model_name, pretrained=True)
@@ -131,52 +128,6 @@ class EstimatorBenchmarker:
         objective_models = self.load_objective_models()
         evaluate_ensemble(objective_models, label='Objective Accuracy')
         print(f"Finished computing class-level accuracies in {time.time() - t0} seconds.")
-
-    def plot_instance_level_hardness_distributions(self, hardness_estimates):
-        instance_level_keys = ['Confidence', 'AUM', 'DataIQ', 'Forgetting', 'Loss', 'iConfidence', 'iAUM', 'iDataIQ',
-                               'iLoss', 'EL2N', 'Class Impurity']
-        for key in instance_level_keys:
-            values = np.array(hardness_estimates[key])
-            sorted_vals = np.sort(values)
-            cdf = np.cumsum(sorted_vals) / np.sum(sorted_vals)
-
-            # Plot sorted values
-            plt.figure(figsize=(8, 5))
-            plt.plot(sorted_vals)
-            plt.title(f'Sorted Hardness Scores - {key}')
-            plt.xlabel('Sorted Sample Index')
-            plt.ylabel('Hardness Score')
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.figures_save_dir, f"sorted_hardness_{key}.pdf"))
-            plt.close()
-
-            # Plot cumulative distribution function
-            plt.figure(figsize=(8, 5))
-            plt.plot(sorted_vals, cdf)
-            plt.title(f'Cumulative Distribution Function - {key}')
-            plt.xlabel('Hardness Score')
-            plt.ylabel('Cumulative Probability')
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.figures_save_dir, f"cdf_hardness_{key}.pdf"))
-            plt.close()
-
-    def aggregate_model_based_estimates_to_class_level(self, hardness_estimates, labels):
-        model_based_keys = [
-            'Confidence', 'AUM', 'DataIQ', 'Forgetting', 'Loss',
-            'iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N'
-        ]
-        for key in model_based_keys:
-            estimates = np.array(hardness_estimates[key])  # shape [num_models][num_samples]
-            sample_scores = np.mean(estimates, axis=0)  # [num_samples]
-            class_sums = np.zeros(self.num_classes)
-            class_counts = np.zeros(self.num_classes)
-            for score, label in zip(sample_scores, labels):
-                class_sums[label] += score
-                class_counts[label] += 1
-            class_averages = class_sums / np.maximum(class_counts, 1e-8)
-            hardness_estimates[key] = class_averages
 
     def compute_class_impurity(self, samples_by_class, hardness_estimates, k: int = 15):
         all_samples, all_labels = [], []
@@ -240,6 +191,7 @@ class EstimatorBenchmarker:
             except np.linalg.LinAlgError:
                 raise Exception  # Sanity check - also shouldn't happen as this means we can't estimate class volume.
             hardness_estimates['Volume'][class_label] = volume
+            print(hardness_estimates['Volume'][class_label])
 
     @staticmethod
     def compute_curvature(samples_by_class, hardness_estimates):
@@ -250,7 +202,7 @@ class EstimatorBenchmarker:
                                             pca_components=intrinsic_dimension, curvature_type='gaussian')
             hardness_estimates['Curvature'][class_label] = curvature
 
-    def compute_data_based_hardness_estimates(self, hardness_estimates, samples_by_class):
+    def compute_data_based_hardness_estimates(self, hardness_estimates, samples_by_class, projected):
         """
         Compute instance-level hardness scores using the final trained model.
 
@@ -259,11 +211,13 @@ class EstimatorBenchmarker:
         for new_hardness_estimate in ['ID', 'Volume', 'Curvature']:
             hardness_estimates[new_hardness_estimate] = [0.0 for _ in range(self.num_classes)]
         hardness_estimates['Class Impurity'] = [0.0 for _ in range(self.num_training_samples)]
+        if not projected:
+            t0 = time.time()
+            print('Starting computing class impurities.')
+            self.compute_class_impurity(samples_by_class, hardness_estimates)
+            print(f'Finished computing class impurities in {time.time() - t0} seconds.')
         t0 = time.time()
-        print('Starting computing class impurities.')
-        self.compute_class_impurity(samples_by_class, hardness_estimates)
-        print(f'Finished computing class impurities in {time.time() - t0} seconds. Now computing intrinsic dimensions.')
-        t0 = time.time()
+        print('Starting computing intrinsic dimensions.')
         self.compute_intrinsic_dimension(samples_by_class, hardness_estimates)
         print(f'Finished computing intrinsic dimensions in {time.time() - t0} seconds. Now computing volumes.')
         t0 = time.time()
@@ -271,7 +225,52 @@ class EstimatorBenchmarker:
         print(f'Finished computing volumes in {time.time() - t0} seconds. Now computing curvatures.')
         t0 = time.time()
         self.compute_curvature(samples_by_class, hardness_estimates)
-        print(f'Finished computing volumes in {time.time() - t0} seconds.')
+        print(f'Finished computing curvatures in {time.time() - t0} seconds.')
+
+    def plot_instance_level_hardness_distributions(self, hardness_estimates):
+        instance_level_keys = ['Confidence', 'AUM', 'DataIQ', 'Forgetting', 'Loss', 'iConfidence', 'iAUM', 'iDataIQ',
+                               'iLoss', 'EL2N', 'Class Impurity']
+        for key in instance_level_keys:
+            values = np.array(hardness_estimates[key])
+            if key != 'Class Impurity':
+                values = np.mean(values, axis=0)
+            sorted_vals = np.sort(values)
+            cdf = np.cumsum(sorted_vals) / np.sum(sorted_vals)
+
+            # Plot sorted values
+            plt.figure(figsize=(8, 5))
+            plt.plot(sorted_vals)
+            plt.title(f'Sorted Hardness Scores - {key}')
+            plt.xlabel('Sorted Sample Index')
+            plt.ylabel('Hardness Score')
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.figures_save_dir, f"sorted_hardness_{key}.pdf"))
+            plt.close()
+
+            # Plot cumulative distribution function
+            plt.figure(figsize=(8, 5))
+            plt.plot(sorted_vals, cdf)
+            plt.title(f'Cumulative Distribution Function - {key}')
+            plt.xlabel('Hardness Score')
+            plt.ylabel('Cumulative Probability')
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.figures_save_dir, f"cdf_hardness_{key}.pdf"))
+            plt.close()
+
+    def aggregate_model_based_estimates_to_class_level(self, hardness_estimates, labels, estimates_to_aggregate):
+        for key in estimates_to_aggregate:
+            sample_scores = np.array(hardness_estimates[key])  # shape [num_models][num_samples]
+            if key != 'Class Impurity':
+                sample_scores = np.mean(sample_scores, axis=0)  # [num_samples]
+            class_sums = np.zeros(self.num_classes)
+            class_counts = np.zeros(self.num_classes)
+            for score, label in zip(sample_scores, labels):
+                class_sums[label] += score
+                class_counts[label] += 1
+            class_averages = class_sums / np.maximum(class_counts, 1e-8)
+            hardness_estimates[key] = class_averages
 
     def plot_class_level_id_estimates(self, hardness_estimates):
         """Plot class-level intrinsic dimension (ID) estimates: sorted and unsorted."""
@@ -353,15 +352,20 @@ class EstimatorBenchmarker:
         hardness_estimates = load_hardness_estimates('unclean', self.dataset_name)
 
         self.compute_class_level_accuracy(training_loader, hardness_estimates)
+        self.compute_data_based_hardness_estimates(hardness_estimates, samples_by_class, False)
         self.plot_instance_level_hardness_distributions(hardness_estimates)
-        self.aggregate_model_based_estimates_to_class_level(hardness_estimates, labels)
-        self.compute_data_based_hardness_estimates(hardness_estimates, samples_by_class)
+        estimates_to_aggregate = [
+            'Confidence', 'AUM', 'DataIQ', 'Forgetting', 'Loss',
+            'iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N', 'Class Impurity'
+        ]
+        self.aggregate_model_based_estimates_to_class_level(hardness_estimates, labels, estimates_to_aggregate)
         self.plot_class_level_id_estimates(hardness_estimates)
         self.compute_and_plot_correlations(hardness_estimates)
 
         projected_samples_by_class = self.project_classes_via_pca(samples_by_class, hardness_estimates)
         print('Now repeating the experiments on data projected onto low dimensional representations obtained via PCA.')
-        self.compute_data_based_hardness_estimates(hardness_estimates, projected_samples_by_class)
+        self.compute_data_based_hardness_estimates(hardness_estimates, projected_samples_by_class, True)
+        self.aggregate_model_based_estimates_to_class_level(hardness_estimates, labels, ['Class Impurity'])
         self.compute_and_plot_correlations(hardness_estimates, 'projected')
 
 
