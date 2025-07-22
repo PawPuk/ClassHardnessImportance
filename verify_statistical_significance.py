@@ -61,7 +61,7 @@ class Visualizer:
 
         Each maps to a list of per-sample scores, ordered according to dataset indices.
         """
-        for new_hardness_estimate in ['iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N']:
+        for new_hardness_estimate in ['iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N', 'probs']:
             hardness_estimates[new_hardness_estimate] = [[0.0 for _ in range(self.num_training_samples)]
                                                          for _ in range(self.num_models)]
         for model_id in tqdm(range(self.num_models), desc='Iterating through models.'):
@@ -86,6 +86,7 @@ class Visualizer:
                         probs = torch.nn.functional.softmax(logits, dim=0)
                         probe_probs = torch.nn.functional.softmax(probe_logits, dim=0)
 
+                        hardness_estimates['probs'][model_id][i] = probs[correct_label].item()
                         # iConfidence
                         hardness_estimates['iConfidence'][model_id][i] = correct_logit
                         # iAUM
@@ -103,6 +104,21 @@ class Visualizer:
                         one_hot = F.one_hot(label, num_classes=self.num_classes).float()
                         el2n = torch.norm(probe_probs - one_hot).item()
                         hardness_estimates['EL2N'][model_id][i] = el2n
+
+    def plot_instance_level_hardness_distributions(self, hardness_estimates):
+        values = np.array(hardness_estimates['probs'])
+        values = np.mean(values, axis=0)
+        sorted_vals = np.sort(values)
+        plt.figure(figsize=(8, 5))
+        plt.plot(sorted_vals)
+        plt.title(f'Sorted Hardness Scores - probs')
+        plt.xlabel('Sorted Sample Index')
+        plt.ylabel('Hardness Score')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.figures_save_dir, f"sorted_hardness_probs.pdf"))
+        plt.close()
+        del hardness_estimates['probs']
 
     def get_pruned_indices(self, hardness_estimates: Dict[str, List[List[float]]]) -> \
             Dict[str, Dict[str, List[List[List[int]]]]]:
@@ -363,6 +379,7 @@ class Visualizer:
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
         if 'iConfidence' not in hardness_estimates.keys():
             self.compute_instance_scores(hardness_estimates, training_loader)
+        self.plot_instance_level_hardness_distributions(hardness_estimates)
 
         print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')
         for key in hardness_estimates.keys():
