@@ -5,11 +5,10 @@
 5. (+) Compute class-level estimates
 6. (+) Compute Pearson and Spearman Rank correlation and create correlation matrix (add accuracies)
 7. (+) Reduce the dimensionality of data using PCA and repeat the experiments with data-based hardness estimators
-8. (+) Compute and plot cumulative distribution of hardness for each instance-level hardness estimator
-9. (+) Use both subjective (my ensemble) and objective (ensemble of different architectures from GitHub) for accuracy
-10. (+) Plot the class-level ID estimates (sorted and unsorted)
-11. (+) Plot ID as a function of the dimensionality of the space (use PCA projections)
-12. (+) Modify the projection experiments to iterate through dimensions rather than use only one, hardcoded dimension.
+8. (+) Use both subjective (my ensemble) and objective (ensemble of different architectures from GitHub) for accuracy
+9. (+) Plot the class-level ID estimates (sorted and unsorted)
+10. (+) Plot ID as a function of the dimensionality of the space (use PCA projections)
+11. (+) Modify the projection experiments to iterate through dimensions rather than use only one, hardcoded dimension.
 """
 
 import argparse
@@ -195,18 +194,18 @@ class EstimatorBenchmarker:
             except np.linalg.LinAlgError:
                 raise Exception  # Sanity check - also shouldn't happen as this means we can't estimate class volume.
             hardness_estimates['Volume'][class_label] = volume
-            print(hardness_estimates['Volume'][class_label])
 
     @staticmethod
-    def compute_curvature(samples_by_class, hardness_estimates):
+    def compute_curvature(samples_by_class, hardness_estimates, d):
         for class_label, class_samples in tqdm(samples_by_class.items(), desc='Iterating through classes.'):
             intrinsic_dimension = hardness_estimates['ID'][class_label]
             class_samples = np.stack(class_samples, axis=0)  # Ensure it's a 2D NumPy array: [Nc, D]
-            curvature = estimate_curvatures(class_samples, k=2 * intrinsic_dimension,
-                                            pca_components=intrinsic_dimension, curvature_type='gaussian')
+            d = intrinsic_dimension if d is None else d
+            curvature = estimate_curvatures(class_samples, k=2*d, pca_components=d, curvature_type='gaussian')
             hardness_estimates['Curvature'][class_label] = curvature
 
-    def compute_data_based_hardness_estimates(self, hardness_estimates, samples_by_class, projected):
+    def compute_data_based_hardness_estimates(self, hardness_estimates, samples_by_class,
+                                              projected_dimensionality=None, projected_samples_by_class=None):
         """
         Compute instance-level hardness scores using the final trained model.
 
@@ -214,44 +213,13 @@ class EstimatorBenchmarker:
         """
         for new_hardness_estimate in ['ID', 'Volume', 'Curvature']:
             hardness_estimates[new_hardness_estimate] = [0.0 for _ in range(self.num_classes)]
-        if not projected:
+        if projected_dimensionality is None:
             hardness_estimates['Class Impurity'] = [0.0 for _ in range(sum(self.num_training_samples))]
             self.compute_class_impurity(samples_by_class, hardness_estimates)
-        self.compute_intrinsic_dimension(samples_by_class, hardness_estimates)
-        self.compute_volume(samples_by_class, hardness_estimates)
-        self.compute_curvature(samples_by_class, hardness_estimates)
-
-    def plot_instance_level_hardness_distributions(self, hardness_estimates):
-        instance_level_keys = ['Confidence', 'AUM', 'DataIQ', 'Forgetting', 'Loss', 'iConfidence', 'iAUM', 'iDataIQ',
-                               'iLoss', 'EL2N', 'Class Impurity']
-        for key in instance_level_keys:
-            values = np.array(hardness_estimates[key])
-            if key != 'Class Impurity':
-                values = np.mean(values, axis=0)
-            sorted_vals = np.sort(values)
-            cdf = np.cumsum(sorted_vals) / np.sum(sorted_vals)
-
-            # Plot sorted values
-            plt.figure(figsize=(8, 5))
-            plt.plot(sorted_vals)
-            plt.title(f'Sorted Hardness Scores - {key}')
-            plt.xlabel('Sorted Sample Index')
-            plt.ylabel('Hardness Score')
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.figures_save_dir, f"sorted_hardness_{key}.pdf"))
-            plt.close()
-
-            # Plot cumulative distribution function
-            plt.figure(figsize=(8, 5))
-            plt.plot(sorted_vals, cdf)
-            plt.title(f'Cumulative Distribution Function - {key}')
-            plt.xlabel('Hardness Score')
-            plt.ylabel('Cumulative Probability')
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.figures_save_dir, f"cdf_hardness_{key}.pdf"))
-            plt.close()
+            projected_samples_by_class = samples_by_class
+        self.compute_intrinsic_dimension(projected_samples_by_class, hardness_estimates)
+        self.compute_volume(projected_samples_by_class, hardness_estimates)
+        self.compute_curvature(samples_by_class, hardness_estimates, projected_dimensionality)
 
     def aggregate_model_based_estimates_to_class_level(self, hardness_estimates, labels):
         estimates_to_aggregate = [
@@ -273,26 +241,14 @@ class EstimatorBenchmarker:
     def plot_class_level_id_estimates(self, hardness_estimates):
         """Plot class-level intrinsic dimension (ID) estimates: sorted and unsorted."""
         id_estimates = np.array(hardness_estimates['ID'])
-
-        # Unsorted Plot
-        plt.figure(figsize=(8, 5))
-        plt.bar(range(len(id_estimates)), id_estimates, color='skyblue')
-        plt.xlabel("Class Label")
-        plt.ylabel("Intrinsic Dimension")
-        plt.title("Class-Level Intrinsic Dimensions (Unsorted)")
-        plt.grid(True, linestyle='--', alpha=0.5)
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.figures_save_dir, "class_id_unsorted.pdf"))
-        plt.close()
-
-        # Sorted Plot
         sorted_id = np.sort(id_estimates)
-        plt.figure(figsize=(8, 5))
-        plt.bar(range(len(sorted_id)), sorted_id, color='salmon')
-        plt.xlabel("Sorted Class Index")
-        plt.ylabel("Intrinsic Dimension")
-        plt.title("Class-Level Intrinsic Dimensions (Sorted)")
-        plt.grid(True, linestyle='--', alpha=0.5)
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(range(len(sorted_id)), sorted_id, marker='o', linestyle='-', color='salmon')
+        ax.set_xlabel("Sorted Class Index")
+        ax.set_ylabel("Intrinsic Dimension")
+        ax.set_title("Class-Level Intrinsic Dimensions (Sorted)")
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.yaxis.get_major_locator().set_params(integer=True)
         plt.tight_layout()
         plt.savefig(os.path.join(self.figures_save_dir, "class_id_sorted.pdf"))
         plt.close()
@@ -308,7 +264,7 @@ class EstimatorBenchmarker:
         sns.heatmap(pearson_corr, annot=True, fmt=".2f", cmap='coolwarm', vmin=-1, vmax=1)
         plt.title(f"Pearson Correlation Between {projected.capitalize()} Class-Level Hardness Estimators")
         plt.tight_layout()
-        plt.savefig(os.path.join(self.figures_save_dir, f"{projected}_correlation_matrix_pearson.pdf"))
+        plt.savefig(os.path.join(self.figures_save_dir, f"{projected}correlation_matrix_pearson.pdf"))
         plt.close()
 
         # Plot Spearman correlation matrix
@@ -320,20 +276,15 @@ class EstimatorBenchmarker:
         plt.savefig(os.path.join(self.figures_save_dir, f"{projected}_correlation_matrix_spearman.pdf"))
         plt.close()
 
-    def project_classes_via_pca(self, samples_by_class, hardness_estimates, dimensionality_ratio):
+    @staticmethod
+    def project_classes_via_pca(samples_by_class, reduced_dim):
         projected_samples_by_class = {}
         for i, (class_label, class_samples) in tqdm(enumerate(samples_by_class.items())):
             X = np.stack(class_samples, axis=0)  # [Nc, D]
-            intrinsic_dim = hardness_estimates['ID'][class_label]
-            reduced_dim = int(intrinsic_dim + dimensionality_ratio * (X.shape[1] - intrinsic_dim))
-            if reduced_dim < self.num_training_samples[i]:
-                # Fit PCA on centered class samples
-                pca = PCA(n_components=reduced_dim)
-                X_reduced = pca.fit_transform(X)
-                projected_samples_by_class[class_label] = [x for x in X_reduced]
-            else:
-                projected_samples_by_class = None
-                break
+            # Fit PCA on centered class samples
+            pca = PCA(n_components=reduced_dim)
+            X_reduced = pca.fit_transform(X)
+            projected_samples_by_class[class_label] = [x for x in X_reduced]
         return projected_samples_by_class
 
     def load_or_compute_projected_estimates(self, samples_by_class, hardness_estimates):
@@ -344,25 +295,24 @@ class EstimatorBenchmarker:
                 projected_estimates = pickle.load(f)
             return projected_estimates
 
+        if self.dataset_name == 'CIFAR10':
+            dimensionalities = [15, 17, 19, 21, 23, 25, 30, 35, 40, 45, 50, 75, 100, 250, 1000]
+        else:
+            dimensionalities = [15, 17, 19, 21, 23, 25, 30, 35, 40, 45, 50, 75, 100, 250]
+
         print("Computing projected estimates...")
         projected_estimates = {
             metric_name: {
-                dimensionality_ratio: [] for dimensionality_ratio in np.arange(0.98, 0, -0.02)
+                dimensionality: [] for dimensionality in dimensionalities
             } for metric_name in ['ID', 'Volume', 'Curvature']
         }
 
-        for dimensionality_ratio in tqdm(np.arange(0.98, 0, -0.02), desc='Iterating through dimensionality ratios'):
-            projected_samples_by_class = self.project_classes_via_pca(
-                samples_by_class, hardness_estimates, dimensionality_ratio
-            )
-            if projected_samples_by_class is not None:
-                self.compute_data_based_hardness_estimates(hardness_estimates, projected_samples_by_class,
-                                                           projected=True)
-                for metric_name in projected_estimates:
-                    projected_estimates[metric_name][dimensionality_ratio] = hardness_estimates[metric_name]
-            else:
-                for metric_name in projected_estimates:
-                    del projected_estimates[metric_name][dimensionality_ratio]
+        for dimensionality in tqdm(dimensionalities, desc='Iterating through dimensionalities'):
+            projected_samples_by_class = self.project_classes_via_pca(samples_by_class, dimensionality)
+            self.compute_data_based_hardness_estimates(hardness_estimates, samples_by_class, dimensionality,
+                                                       projected_samples_by_class)
+            for metric_name in projected_estimates:
+                projected_estimates[metric_name][dimensionality] = hardness_estimates[metric_name]
 
         with open(cache_path, 'wb') as f:
             pickle.dump(projected_estimates, f)
@@ -438,8 +388,7 @@ class EstimatorBenchmarker:
         hardness_estimates = load_hardness_estimates('unclean', self.dataset_name)
 
         self.compute_class_level_accuracy(training_loader, hardness_estimates)
-        self.compute_data_based_hardness_estimates(hardness_estimates, samples_by_class, False)
-        self.plot_instance_level_hardness_distributions(hardness_estimates)
+        self.compute_data_based_hardness_estimates(hardness_estimates, samples_by_class)
         self.aggregate_model_based_estimates_to_class_level(hardness_estimates, labels)
         self.plot_class_level_id_estimates(hardness_estimates)
         self.compute_and_plot_correlations(hardness_estimates)
@@ -450,7 +399,7 @@ class EstimatorBenchmarker:
         best_projected_ratio = self.get_best_projection_ratio(projected_estimates, hardness_estimates)
         for metric_name in ['ID', 'Volume', 'Curvature']:
             hardness_estimates[metric_name] = projected_estimates[metric_name][best_projected_ratio]
-        self.compute_and_plot_correlations(hardness_estimates, 'projected')
+        self.compute_and_plot_correlations(hardness_estimates, 'projected_')
 
 
 if __name__ == '__main__':
