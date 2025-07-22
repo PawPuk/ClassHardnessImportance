@@ -190,7 +190,8 @@ class EstimatorBenchmarker:
                 if det <= 0:
                     raise Exception  # Sanity check - shouldn't happen as this means we can't estimate class volume.
                 else:
-                    volume = 0.5 * np.log2(det)
+                    eigvals = np.linalg.eigvalsh(S)
+                    volume = 0.5 * np.sum(np.log2(1 + eigvals))
             except np.linalg.LinAlgError:
                 raise Exception  # Sanity check - also shouldn't happen as this means we can't estimate class volume.
             hardness_estimates['Volume'][class_label] = volume
@@ -319,7 +320,6 @@ class EstimatorBenchmarker:
         plt.savefig(os.path.join(self.figures_save_dir, f"{projected}_correlation_matrix_spearman.pdf"))
         plt.close()
 
-
     def project_classes_via_pca(self, samples_by_class, hardness_estimates, dimensionality_ratio):
         projected_samples_by_class = {}
         for i, (class_label, class_samples) in tqdm(enumerate(samples_by_class.items())):
@@ -333,6 +333,7 @@ class EstimatorBenchmarker:
                 projected_samples_by_class[class_label] = [x for x in X_reduced]
             else:
                 projected_samples_by_class = None
+                break
         return projected_samples_by_class
 
     def load_or_compute_projected_estimates(self, samples_by_class, hardness_estimates):
@@ -350,7 +351,7 @@ class EstimatorBenchmarker:
             } for metric_name in ['ID', 'Volume', 'Curvature']
         }
 
-        for dimensionality_ratio in tqdm(np.arange(1, 0, -0.02), desc='Iterating through dimensionality ratios'):
+        for dimensionality_ratio in tqdm(np.arange(0.98, 0, -0.02), desc='Iterating through dimensionality ratios'):
             projected_samples_by_class = self.project_classes_via_pca(
                 samples_by_class, hardness_estimates, dimensionality_ratio
             )
@@ -359,6 +360,9 @@ class EstimatorBenchmarker:
                                                            projected=True)
                 for metric_name in projected_estimates:
                     projected_estimates[metric_name][dimensionality_ratio] = hardness_estimates[metric_name]
+            else:
+                for metric_name in projected_estimates:
+                    del projected_estimates[metric_name][dimensionality_ratio]
 
         with open(cache_path, 'wb') as f:
             pickle.dump(projected_estimates, f)
