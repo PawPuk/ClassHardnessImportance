@@ -31,18 +31,17 @@ class Visualizer:
         self.num_training_samples = sum(config['num_training_samples'])
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
-        self.num_epochs = config['num_epochs']
 
         self.results_save_dir = os.path.join(ROOT, 'Results/', f'{self.data_cleanliness}{dataset_name}')
         self.figures_save_dir = os.path.join(ROOT, 'Figures/', f'{self.data_cleanliness}{dataset_name}')
         for save_dir in [self.results_save_dir, self.figures_save_dir]:
             os.makedirs(save_dir, exist_ok=True)
 
-        self.pruning_thresholds = np.array([1, 2, 3, 4, 6, 8, 10, 20, 30, 40, 50])
+        self.pruning_thresholds = np.array([10, 20, 30, 40, 50])
         model_save_dir = os.path.join(config['save_dir'], 'none', f'{self.data_cleanliness}{dataset_name}')
         self.num_models = get_latest_model_index(model_save_dir, self.num_epochs) + 1
 
-    def load_model(self, model_id: int, probe = False) -> ResNet18LowRes:
+    def load_model(self, model_id: int, probe=False) -> ResNet18LowRes:
         model = ResNet18LowRes(num_classes=self.num_classes).cuda()
         epoch = self.save_epoch if probe else self.num_epochs
         model_path = os.path.join(self.model_dir, 'none', f"{self.data_cleanliness}{args.dataset_name}",
@@ -67,20 +66,25 @@ class Visualizer:
                                                          for _ in range(self.num_models)]
         for model_id in tqdm(range(self.num_models), desc='Iterating through models.'):
             model = self.load_model(model_id)
+            probe_model = self.load_model(model_id, probe=True)
             model.eval()
+            probe_model.eval()
             features = []
             with torch.no_grad():
                 for inputs, labels, indices in dataloader:
                     inputs, labels = inputs.cuda(), labels.cuda()
                     outputs, latent_inputs = model(inputs, True)
+                    probe_outputs, _ = probe_model(inputs, True)
                     features.append(latent_inputs)
                     _, predicted = torch.max(outputs.data, 1)
-                    for x, label, i, logits in zip(inputs, labels, indices, outputs):
+                    for x, label, i, logits, probe_logits in zip(inputs, labels, indices, outputs, probe_outputs):
                         i = i.item()
                         correct_label = label.item()
                         logits = logits.detach()
+                        probe_logits = probe_logits.detach()
                         correct_logit = logits[correct_label].item()
                         probs = torch.nn.functional.softmax(logits, dim=0)
+                        probe_probs = torch.nn.functional.softmax(probe_logits, dim=0)
 
                         # iConfidence
                         hardness_estimates['iConfidence'][model_id][i] = correct_logit
@@ -97,7 +101,7 @@ class Visualizer:
                         hardness_estimates['iLoss'][model_id][i] = loss
                         # EL2N
                         one_hot = F.one_hot(label, num_classes=self.num_classes).float()
-                        el2n = torch.norm(probs - one_hot).item()
+                        el2n = torch.norm(probe_probs - one_hot).item()
                         hardness_estimates['EL2N'][model_id][i] = el2n
 
     def get_pruned_indices(self, hardness_estimates: Dict[str, List[List[float]]]) -> \
@@ -197,7 +201,7 @@ class Visualizer:
             ('DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting'),
             ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
         ]
-        thresholds = [6, num_pruning_thresholds - 1]  # First and last pruning threshold
+        thresholds = [0, num_pruning_thresholds - 1]  # First and last pruning threshold
         threshold_labels = ['10%', '50%']
         colors = get_cmap("tab10")  # Enough distinct colors
 
@@ -239,8 +243,9 @@ class Visualizer:
             plt.xlabel(f"Pruning {hardness_type} rate (% of samples removed)")
             plt.ylabel("Overlap percentage")
             plt.title(f"{self.dataset_name} ({hardness_type})")
-            plt.legend(title="Metric pairs")
+            plt.legend(title="Metric pairs", bbox_to_anchor=(1.01, 1), loc='upper left')
             plt.grid(alpha=0.3)
+            plt.tight_layout()
             plt.savefig(os.path.join(self.figures_save_dir, f'overlap_{hardness_type}_{filename_suffix}.pdf'))
             plt.close()
 
