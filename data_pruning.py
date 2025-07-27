@@ -16,6 +16,7 @@ import torchvision
 from config import get_config, ROOT
 from data import load_dataset, AugmentedSubset, IndexedDataset
 from neural_networks import ResNet18LowRes
+from utils import load_results
 
 
 class DataResampling:
@@ -391,8 +392,8 @@ class DataResampling:
 
 
 class DataPruning:
-    def __init__(self, instance_hardness: List[List[Union[int, float]]], prune_percentage: int, dataset_name: str,
-                 high_is_hard: bool):
+    def __init__(self, instance_hardness: Union[List[List[Union[int, float]]], None], prune_percentage: int,
+                 dataset_name: str, high_is_hard: Union[bool, None], imbalance_ratio: Union[List[float], None]):
         """
         Initialize the DataPruning class.
 
@@ -405,19 +406,28 @@ class DataPruning:
         self.prune_percentage = prune_percentage / 100
         self.dataset_name = dataset_name
         self.high_is_hard = high_is_hard
+        self.imbalance_ratio = imbalance_ratio
+
+        config = get_config(dataset_name)
+        self.num_classes = config['num_classes']
+        self.num_samples_per_class = config['num_training_samples']
 
         self.fig_save_dir = os.path.join(ROOT, 'Figures/')
         self.res_save_dir = os.path.join(ROOT, 'Results/')
-        self.num_classes = get_config(dataset_name)['num_classes']
-        self.class_level_sample_counts = {}
 
-    def get_unpruned_indices(self, hardness_scores: NDArray[Union[int, float]], retain_count: int) -> NDArray[np.int_]:
-        sorted_indices = np.argsort(hardness_scores)
-
-        if self.high_is_hard:
-            return sorted_indices[-retain_count:]
+    def get_unpruned_indices(self, hardness_scores: Union[NDArray[Union[int, float]], None], retain_count: int,
+                             current_number_of_samples: int) -> NDArray[np.int_]:
+        print(hardness_scores)
+        if hardness_scores is None:
+            return np.random.choice(current_number_of_samples, retain_count, replace=False)
         else:
-            return sorted_indices[:retain_count]
+            sorted_indices = np.argsort(hardness_scores)
+            print(sorted_indices)
+            print(retain_count)
+            if self.high_is_hard:
+                return sorted_indices[-retain_count:]
+            else:
+                return sorted_indices[:retain_count]
 
     def plot_class_level_sample_distribution(self, remaining_indices: List[int], pruning_key: str, labels: NDArray[int]):
         os.makedirs(self.fig_save_dir, exist_ok=True)
@@ -427,19 +437,21 @@ class DataPruning:
         remaining_labels = labels[remaining_indices]
         unique_classes, class_counts = np.unique(remaining_labels, return_counts=True)
 
-        # Create a dictionary for current pruning type if it doesn't exist
-        if pruning_key not in self.class_level_sample_counts:
-            self.class_level_sample_counts[pruning_key] = {}
+        path = os.path.join(self.res_save_dir, 'class_level_sample_counts.pkl')
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            class_level_sample_counts_after_pruning = load_results(path)
+        else:
+            class_level_sample_counts_after_pruning = {}
+        if pruning_key not in class_level_sample_counts_after_pruning:
+            class_level_sample_counts_after_pruning[pruning_key] = {}
 
         # Store the distribution of samples after pruning
-        self.class_level_sample_counts[pruning_key][int(self.prune_percentage * 100)] = [
+        class_level_sample_counts_after_pruning[pruning_key][int(self.prune_percentage * 100)] = [
             class_counts[unique_classes.tolist().index(cls)] if cls in unique_classes else 0
             for cls in range(self.num_classes)
         ]
-
-        # Save the updated class_level_sample_counts to a pickle file
         with open(os.path.join(self.res_save_dir, "class_level_sample_counts.pkl"), "wb") as file:
-            pickle.dump(self.class_level_sample_counts, file)
+            pickle.dump(class_level_sample_counts_after_pruning, file)
 
         # Plot the original class distribution
         plt.figure()
@@ -471,8 +483,9 @@ class DataPruning:
 
         :return: List of indices of the remaining data samples after pruning.
         """
-        retain_count = int((1 - self.prune_percentage) * len(self.instance_hardness))
-        remaining_indices = self.get_unpruned_indices(self.instance_hardness, retain_count)
+        retain_count = int((1 - self.prune_percentage) * sum(self.num_samples_per_class))
+        remaining_indices = self.get_unpruned_indices(self.instance_hardness, retain_count,
+                                                      sum(self.num_samples_per_class))
 
         self.fig_save_dir = os.path.join(self.fig_save_dir, 'dlp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
@@ -494,11 +507,12 @@ class DataPruning:
 
         _, training_dataset, _, _ = load_dataset(self.dataset_name, False, False, True)
         for i, (_, label, _) in enumerate(training_dataset):
-            np.append(class_level_hardness[label], self.instance_hardness[i])
+            class_level_hardness[label] = np.append(class_level_hardness[label], self.instance_hardness[i])
 
         for class_id, class_scores in class_level_hardness.items():
-            retain_count = int((1 - self.prune_percentage) * len(class_scores))
-            class_remaining_indices = self.get_unpruned_indices(class_scores, retain_count)
+            retain_count = int((1 - self.prune_percentage) * self.num_samples_per_class[class_id])
+            class_remaining_indices = self.get_unpruned_indices(class_scores, retain_count,
+                                                                self.num_samples_per_class[class_id])
             global_indices = np.where(labels == class_id)[0]
             remaining_indices.extend(global_indices[class_remaining_indices])
 
