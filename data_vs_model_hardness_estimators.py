@@ -9,6 +9,7 @@
 9. (+) Plot the class-level ID estimates (sorted and unsorted)
 10. (+) Plot ID as a function of the dimensionality of the space (use PCA projections)
 11. (+) Modify the projection experiments to iterate through dimensions rather than use only one, hardcoded dimension.
+12. (+) Add correlations between volume and ID as a function of projection dimension.
 """
 
 import argparse
@@ -219,7 +220,8 @@ class EstimatorBenchmarker:
             projected_samples_by_class = samples_by_class
         self.compute_intrinsic_dimension(projected_samples_by_class, hardness_estimates)
         self.compute_volume(projected_samples_by_class, hardness_estimates)
-        self.compute_curvature(samples_by_class, hardness_estimates, projected_dimensionality)
+        if projected_dimensionality is None or projected_dimensionality < 35:  # To reduce computational cost
+            self.compute_curvature(samples_by_class, hardness_estimates, projected_dimensionality)
 
     def aggregate_model_based_estimates_to_class_level(self, hardness_estimates, labels):
         estimates_to_aggregate = [
@@ -295,11 +297,7 @@ class EstimatorBenchmarker:
                 projected_estimates = pickle.load(f)
             return projected_estimates
 
-        if self.dataset_name == 'CIFAR10':
-            dimensionalities = [15, 17, 19, 21, 23, 25, 30, 35, 40, 45, 50, 75, 100, 250, 1000]
-        else:
-            dimensionalities = [15, 17, 19, 21, 23, 25, 30, 35, 40, 45, 50, 75, 100, 250]
-
+        dimensionalities = [10, 12, 15, 17, 20, 22, 25, 30, 35, 40, 45, 50, 75, 100]
         print("Computing projected estimates...")
         projected_estimates = {
             metric_name: {
@@ -320,15 +318,15 @@ class EstimatorBenchmarker:
         return projected_estimates
 
     def plot_projection_correlation_trends(self, projected_estimates, hardness_estimates):
-        ratios = sorted(next(iter(projected_estimates.values())).keys(), reverse=True)
+        dimensionalities = sorted(next(iter(projected_estimates.values())).keys(), reverse=True)
         metric_names = list(projected_estimates.keys())
         obj = np.array(hardness_estimates['Objective Accuracy'])
         subj = np.array(hardness_estimates['Subjective Accuracy'])
 
         for metric in metric_names:
             pearsons, spearmans = [], []
-            for ratio in ratios:
-                metric_vals = np.array(projected_estimates[metric][ratio])
+            for dimensionality in dimensionalities:
+                metric_vals = np.array(projected_estimates[metric][dimensionality])
                 pearson = np.corrcoef(metric_vals, obj)[0, 1], np.corrcoef(metric_vals, subj)[0, 1]
                 spearman = pd.Series(metric_vals).corr(pd.Series(obj), method='spearman'), \
                     pd.Series(metric_vals).corr(pd.Series(subj), method='spearman')
@@ -339,11 +337,11 @@ class EstimatorBenchmarker:
             spearmans = np.array(spearmans)
 
             plt.figure(figsize=(8, 6))
-            plt.plot(ratios, pearsons[:, 0], label='Pearson (Objective)', color='blue')
-            plt.plot(ratios, pearsons[:, 1], label='Pearson (Subjective)', color='blue', linestyle='--')
-            plt.plot(ratios, spearmans[:, 0], label='Spearman (Objective)', color='green')
-            plt.plot(ratios, spearmans[:, 1], label='Spearman (Subjective)', color='green', linestyle='--')
-            plt.xlabel('Dimensionality Ratio')
+            plt.plot(dimensionalities, pearsons[:, 0], label='Pearson (Objective)', color='blue')
+            plt.plot(dimensionalities, pearsons[:, 1], label='Pearson (Subjective)', color='blue', linestyle='--')
+            plt.plot(dimensionalities, spearmans[:, 0], label='Spearman (Objective)', color='green')
+            plt.plot(dimensionalities, spearmans[:, 1], label='Spearman (Subjective)', color='green', linestyle='--')
+            plt.xlabel('Dimensionality')
             plt.ylabel('Correlation')
             plt.title(f'Correlation of {metric} vs Accuracy')
             plt.legend()
@@ -351,28 +349,29 @@ class EstimatorBenchmarker:
             plt.savefig(os.path.join(self.figures_save_dir, f"{metric}_projection_correlations.pdf"))
             plt.close()
 
-    @staticmethod
-    def get_best_projection_ratio(projected_estimates, hardness_estimates):
-        ratios = sorted(next(iter(projected_estimates.values())).keys(), reverse=True)
-        metric_names = list(projected_estimates.keys())
-        obj = np.array(hardness_estimates['Objective Accuracy'])
-        subj = np.array(hardness_estimates['Subjective Accuracy'])
+    def plot_inter_metric_correlation_trends(self, projected_estimates):
+        metric_pairs = [('ID', 'Volume')]
+        dimensionalities = sorted(next(iter(projected_estimates.values())).keys())
 
-        average_corrs = []
-        for ratio in ratios:
-            corr_sum = 0
-            for metric in metric_names:
-                vals = np.array(projected_estimates[metric][ratio])
-                pearson = np.corrcoef(vals, obj)[0, 1] + np.corrcoef(vals, subj)[0, 1]
-                spearman = pd.Series(vals).corr(pd.Series(obj), method='spearman') + \
-                           pd.Series(vals).corr(pd.Series(subj), method='spearman')
-                corr_sum += (pearson + spearman) / 4  # average of 4 scores
-            average_corrs.append(corr_sum / len(metric_names))
+        for metric_x, metric_y in metric_pairs:
+            pearsons, spearmans = [], []
+            for dimensionality in dimensionalities:
+                x = np.array(projected_estimates[metric_x][dimensionality])
+                y = np.array(projected_estimates[metric_y][dimensionality])
+                pearsons.append(np.corrcoef(x, y)[0, 1])
+                spearmans.append(pd.Series(x).corr(pd.Series(y), method='spearman'))
 
-        best_idx = np.argmax(average_corrs)
-        best_ratio = ratios[best_idx]
-        print(f"Best projection ratio (avg corr): {best_ratio}")
-        return best_ratio
+            plt.figure(figsize=(8, 6))
+            plt.plot(dimensionalities, pearsons, label='Pearson', color='blue')
+            plt.plot(dimensionalities, spearmans, label='Spearman', color='green')
+            plt.xlabel('PCA Dimensionality')
+            plt.ylabel('Correlation')
+            plt.title(f'{metric_x} vs {metric_y} Correlation by PCA Dimensionality')
+            plt.legend()
+            plt.grid(True)
+            fname = f"{metric_x}_vs_{metric_y}_projection_correlation.pdf"
+            plt.savefig(os.path.join(self.figures_save_dir, fname))
+            plt.close()
 
     def main(self):
         config = get_config(self.dataset_name)
@@ -390,16 +389,15 @@ class EstimatorBenchmarker:
         self.compute_class_level_accuracy(training_loader, hardness_estimates)
         self.compute_data_based_hardness_estimates(hardness_estimates, samples_by_class)
         self.aggregate_model_based_estimates_to_class_level(hardness_estimates, labels)
+        if 'probs' in hardness_estimates.keys():
+            del hardness_estimates['probs']
         self.plot_class_level_id_estimates(hardness_estimates)
         self.compute_and_plot_correlations(hardness_estimates)
 
         del hardness_estimates['Class Impurity']
         projected_estimates = self.load_or_compute_projected_estimates(samples_by_class, hardness_estimates)
         self.plot_projection_correlation_trends(projected_estimates, hardness_estimates)
-        best_projected_ratio = self.get_best_projection_ratio(projected_estimates, hardness_estimates)
-        for metric_name in ['ID', 'Volume', 'Curvature']:
-            hardness_estimates[metric_name] = projected_estimates[metric_name][best_projected_ratio]
-        self.compute_and_plot_correlations(hardness_estimates, 'projected_')
+        self.plot_inter_metric_correlation_trends(projected_estimates)
 
 
 if __name__ == '__main__':
