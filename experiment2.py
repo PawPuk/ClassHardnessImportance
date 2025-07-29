@@ -1,7 +1,9 @@
 import argparse
 import os.path
 
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
@@ -32,6 +34,47 @@ class Experiment2:
         self.NUM_EPOCHS = config['num_epochs']
 
         self.results_save_dir = os.path.join(ROOT, 'Results/')
+        self.figure_save_dir = os.path.join(ROOT, 'Figures/')
+
+    def investigate_resampling_ratios(self, hardness_estimates, labels):
+        per_class_counts = {}
+        thresholds = np.arange(0, 100, 1)
+        for estimator_name in hardness_estimates.keys():
+            if estimator_name == 'probs':
+                continue
+            estimates = np.mean(np.array(hardness_estimates[estimator_name]), axis=0)
+            sorted_indices = np.argsort(estimates)
+            num_samples = len(estimates)
+            per_class_counts[estimator_name] = []
+            for t in thresholds:
+                retain_count = int((100 - t) / 100 * num_samples)
+                retained_indices = sorted_indices[:retain_count]
+                counts = np.zeros(self.NUM_CLASSES, dtype=int)
+                for idx in retained_indices:
+                    cls = labels[idx]
+                    counts[cls] += 1
+                per_class_counts[estimator_name].append(counts)
+
+            pearsons, spearmans = [], []
+            for i in range(len(per_class_counts[estimator_name]) - 1):
+                x = per_class_counts[estimator_name][i]
+                y = per_class_counts[estimator_name][i+1]
+                pearsons.append(np.corrcoef(x, y)[0, 1])
+                spearmans.append(pd.Series(x).corr(pd.Series(y), method='spearman'))
+            plt.figure(figsize=(8, 5))
+            plt.plot(thresholds[:-1], pearsons, label='Pearson', color='blue')
+            plt.plot(thresholds[:-1], spearmans, label='Spearman', color='orange', linestyle='--')
+            plt.xlabel("Pruning Threshold (%)")
+            plt.ylabel("Inter-Class Distribution Correlation")
+            plt.title(f"Class Retention Correlation Across Pruning Thresholds ({self.hardness_estimator})")
+            plt.legend()
+            plt.grid(True)
+            fig_path = os.path.join(self.figure_save_dir, f"unclean{self.dataset_name}",
+                                    f"correlation_threshold_stability_{estimator_name}.pdf")
+            plt.savefig(fig_path)
+            plt.close()
+
+        return per_class_counts[self.hardness_estimator][self.pruning_rate]
 
     def prune_dataset(self, labels, training_loader, hardness_estimates = None, high_is_hard = None,
                       imbalance_ratio = None):
@@ -53,16 +96,19 @@ class Experiment2:
         training_loader, training_dataset, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
         labels = np.array([label for _, label, _ in training_dataset])
 
+        hardness_estimates = load_hardness_estimates('unclean', self.dataset_name)
+        imbalance_ratio = self.investigate_resampling_ratios(hardness_estimates, labels)
         if self.pruning_type == 'easy':
-            hardness_estimates = load_hardness_estimates('unclean', self.dataset_name, self.hardness_estimator)
             if self.hardness_estimator in ['DataIQ', 'iDataIQ', 'Forgetting', 'Loss', 'iLoss', 'EL2N']:
-                pruned_dataset = self.prune_dataset(labels, training_loader, hardness_estimates, True)
+                pruned_dataset = self.prune_dataset(labels, training_loader,
+                                                    hardness_estimates[self.hardness_estimator], True)
             elif self.hardness_estimator in ['Confidence', 'iConfidence', 'AUM', 'iAUM']:
-                pruned_dataset = self.prune_dataset(labels, training_loader, hardness_estimates, False)
+                pruned_dataset = self.prune_dataset(labels, training_loader,
+                                                    hardness_estimates[self.hardness_estimator], False)
             else:
                 raise ValueError(f'{self.hardness_estimator} is not a supported hardness estimator.')
         else:
-            imbalance_ratio = load_results(os.path.join(self.results_save_dir, f'unclean{self.dataset_name}'))
+            print(imbalance_ratio)
             pruned_dataset = self.prune_dataset(labels, training_loader, imbalance_ratio = imbalance_ratio)
 
         # This is required to shuffle the data.

@@ -392,8 +392,8 @@ class DataResampling:
 
 
 class DataPruning:
-    def __init__(self, instance_hardness: Union[List[List[Union[int, float]]], None], prune_percentage: int,
-                 dataset_name: str, high_is_hard: Union[bool, None], imbalance_ratio: Union[List[float], None]):
+    def __init__(self, instance_hardness: Union[NDArray, None], prune_percentage: int,
+                 dataset_name: str, high_is_hard: Union[bool, None], imbalance_ratio: Union[List[int], None]):
         """
         Initialize the DataPruning class.
 
@@ -402,7 +402,8 @@ class DataPruning:
         :param dataset_name: Name of the dataset we are working on (used for saving).
         """
         # Compute the average instance-level hardness for each sample across all models
-        self.instance_hardness = np.mean(np.array(instance_hardness), axis=0)
+        if instance_hardness is not None:
+            self.instance_hardness = np.mean(np.array(instance_hardness), axis=0)
         self.prune_percentage = prune_percentage / 100
         self.dataset_name = dataset_name
         self.high_is_hard = high_is_hard
@@ -417,13 +418,10 @@ class DataPruning:
 
     def get_unpruned_indices(self, hardness_scores: Union[NDArray[Union[int, float]], None], retain_count: int,
                              current_number_of_samples: int) -> NDArray[np.int_]:
-        print(hardness_scores)
         if hardness_scores is None:
             return np.random.choice(current_number_of_samples, retain_count, replace=False)
         else:
             sorted_indices = np.argsort(hardness_scores)
-            print(sorted_indices)
-            print(retain_count)
             if self.high_is_hard:
                 return sorted_indices[-retain_count:]
             else:
@@ -483,9 +481,18 @@ class DataPruning:
 
         :return: List of indices of the remaining data samples after pruning.
         """
-        retain_count = int((1 - self.prune_percentage) * sum(self.num_samples_per_class))
-        remaining_indices = self.get_unpruned_indices(self.instance_hardness, retain_count,
-                                                      sum(self.num_samples_per_class))
+        if self.imbalance_ratio is None:
+            retain_count = int((1 - self.prune_percentage) * sum(self.num_samples_per_class))
+            remaining_indices = self.get_unpruned_indices(self.instance_hardness, retain_count,
+                                                          sum(self.num_samples_per_class))
+        else:
+            remaining_indices = []
+            for class_id in range(self.num_classes):
+                class_remaining_indices = self.get_unpruned_indices(None, self.imbalance_ratio[class_id],
+                                                                    self.num_samples_per_class[class_id])
+                global_indices = np.where(labels == class_id)[0]
+                remaining_indices.extend(global_indices[class_remaining_indices])
+            remaining_indices = np.array(remaining_indices)
 
         self.fig_save_dir = os.path.join(self.fig_save_dir, 'dlp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
@@ -505,11 +512,13 @@ class DataPruning:
         remaining_indices = []
         class_level_hardness = {class_id: np.array([]) for class_id in range(self.num_classes)}
 
-        _, training_dataset, _, _ = load_dataset(self.dataset_name, False, False, True)
-        for i, (_, label, _) in enumerate(training_dataset):
-            class_level_hardness[label] = np.append(class_level_hardness[label], self.instance_hardness[i])
+        if self.imbalance_ratio is None:
+            _, training_dataset, _, _ = load_dataset(self.dataset_name, False, False, True)
+            for i, (_, label, _) in enumerate(training_dataset):
+                class_level_hardness[label] = np.append(class_level_hardness[label], self.instance_hardness[i])
 
-        for class_id, class_scores in class_level_hardness.items():
+        for class_id in range(self.num_classes):
+            class_scores = None if self.imbalance_ratio is not None else class_level_hardness[class_id]
             retain_count = int((1 - self.prune_percentage) * self.num_samples_per_class[class_id])
             class_remaining_indices = self.get_unpruned_indices(class_scores, retain_count,
                                                                 self.num_samples_per_class[class_id])
