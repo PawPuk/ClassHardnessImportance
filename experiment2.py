@@ -4,6 +4,7 @@ import os.path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 import torch
 from torch.utils.data import DataLoader
 
@@ -32,13 +33,32 @@ class Experiment2:
         self.MODEL_DIR = config['save_dir']
         self.NUM_CLASSES = config['num_classes']
         self.NUM_EPOCHS = config['num_epochs']
+        self.NUM_TRAINING_SAMPLES = config['num_training_samples']
 
         self.results_save_dir = os.path.join(ROOT, 'Results/')
         self.figure_save_dir = os.path.join(ROOT, 'Figures/')
 
-    def investigate_resampling_ratios(self, hardness_estimates, labels):
-        per_class_counts = {}
-        thresholds = np.arange(0, 100, 1)
+    def compute_imbalance_ratio_with_hardness(self, hardness_scores, labels):
+        hardnesses_by_class, hardness_of_classes = {class_id: [] for class_id in range(self.NUM_CLASSES)}, {}
+        estimates = np.mean(np.array(hardness_scores), axis=0)
+
+        for i, label in enumerate(labels):
+            hardnesses_by_class[label].append(estimates[i])
+
+        for class_id in range(self.NUM_CLASSES):
+            if self.hardness_estimator in ['AUM', 'Confidence', 'iAUM', 'iConfidence']:
+                hardness_of_classes[class_id] = 1 / np.mean(hardnesses_by_class[class_id])
+            else:
+                hardness_of_classes[class_id] = np.mean(hardnesses_by_class[class_id])
+        ratios = {class_id: class_hardness / sum(hardness_of_classes.values())
+                  for class_id, class_hardness in hardness_of_classes.items()}
+        samples_per_class = np.array([int(round(ratio * sum(self.NUM_TRAINING_SAMPLES)))
+                                      for class_id, ratio in ratios.items()])
+
+        return samples_per_class
+
+    def investigate_resampling_ratios(self, hardness_estimates, labels, thresholds):
+        per_class_counts, pearson_scores, spearman_scores, ideal_ratios, window_size = {}, {}, {}, {}, 5
         for estimator_name in hardness_estimates.keys():
             if estimator_name == 'probs':
                 continue
@@ -46,6 +66,7 @@ class Experiment2:
             sorted_indices = np.argsort(estimates)
             num_samples = len(estimates)
             per_class_counts[estimator_name] = []
+            pearson_scores[estimator_name], spearman_scores[estimator_name] = [], []
             for t in thresholds:
                 retain_count = int((100 - t) / 100 * num_samples)
                 retained_indices = sorted_indices[:retain_count]
@@ -54,19 +75,34 @@ class Experiment2:
                     cls = labels[idx]
                     counts[cls] += 1
                 per_class_counts[estimator_name].append(counts)
-
-            pearsons, spearmans = [], []
             for i in range(len(per_class_counts[estimator_name]) - 1):
                 x = per_class_counts[estimator_name][i]
-                y = per_class_counts[estimator_name][i+1]
-                pearsons.append(np.corrcoef(x, y)[0, 1])
-                spearmans.append(pd.Series(x).corr(pd.Series(y), method='spearman'))
+                y = per_class_counts[estimator_name][i + 1]
+                pearson_scores[estimator_name].append(np.corrcoef(x, y)[0, 1])
+                spearman_scores[estimator_name].append(pd.Series(x).corr(pd.Series(y), method='spearman'))
+            pearson_avg = pd.Series(pearson_scores[estimator_name]).rolling(window=window_size, min_periods=1).mean()
+            spearman_avg = pd.Series(spearman_scores[estimator_name]).rolling(window=window_size, min_periods=1).mean()
+            combined_avg = (pearson_avg + spearman_avg) / 2
+            best_combined_idx = combined_avg.idxmax()
+            ideal_ratios[estimator_name] = per_class_counts[estimator_name][best_combined_idx]
+            # ideal_ratios[estimator_name] = per_class_counts[estimator_name][25]  # sanity check
+            print(f'{best_combined_idx} is the best ratio for {estimator_name}.')
+        # Hardness-Based Resampling Ratio computation
+        # ideal_ratios['HBRR'] = self.compute_imbalance_ratio_with_hardness(hardness_estimates['AUM'], labels)
+        ideal_ratios['HBRR'] = self.compute_imbalance_ratio_with_hardness(hardness_estimates['Confidence'], labels)  # sanity check
+        return per_class_counts, pearson_scores, spearman_scores, ideal_ratios
+
+    def measure_stability_of_resampling_ratios(self, pearson_scores, spearman_scores, ideal_ratios, hardness_estimates,
+                                               thresholds):
+        for estimator_name in hardness_estimates.keys():
+            if estimator_name == 'probs':
+                continue
             plt.figure(figsize=(8, 5))
-            plt.plot(thresholds[:-1], pearsons, label='Pearson', color='blue')
-            plt.plot(thresholds[:-1], spearmans, label='Spearman', color='orange', linestyle='--')
+            plt.plot(thresholds[:-1], pearson_scores[estimator_name], label='Pearson', color='blue')
+            plt.plot(thresholds[:-1], spearman_scores[estimator_name], label='Spearman', color='orange')
             plt.xlabel("Pruning Threshold (%)")
             plt.ylabel("Inter-Class Distribution Correlation")
-            plt.title(f"Class Retention Correlation Across Pruning Thresholds ({self.hardness_estimator})")
+            plt.title(f"Class Retention Correlation Across Pruning Thresholds ({estimator_name})")
             plt.legend()
             plt.grid(True)
             fig_path = os.path.join(self.figure_save_dir, f"unclean{self.dataset_name}",
@@ -74,7 +110,21 @@ class Experiment2:
             plt.savefig(fig_path)
             plt.close()
 
-        return per_class_counts[self.hardness_estimator][self.pruning_rate]
+        ideal_ratios_df = pd.DataFrame(ideal_ratios)
+        correlation_matrix = ideal_ratios_df.corr(method='pearson')  # or 'spearman'
+        fig = plt.figure(figsize=(10, 8))
+        sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm')
+        plt.title("Pearson Correlation Matrix of Ideal Resampling Ratios")
+        fig.savefig(os.path.join(self.figure_save_dir, f"unclean{self.dataset_name}",
+                                 "resampling_ratio_pearson_correlation_matrix.pdf"))
+        plt.close()
+        correlation_matrix = ideal_ratios_df.corr(method='spearman')  # or 'spearman'
+        fig = plt.figure(figsize=(10, 8))
+        sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm')
+        plt.title("Spearman Correlation Matrix of Ideal Resampling Ratios")
+        fig.savefig(os.path.join(self.figure_save_dir, f"unclean{self.dataset_name}",
+                                 "resampling_ratio_spearman_correlation_matrix.pdf"))
+        plt.close()
 
     def prune_dataset(self, labels, training_loader, hardness_estimates = None, high_is_hard = None,
                       imbalance_ratio = None):
@@ -97,7 +147,11 @@ class Experiment2:
         labels = np.array([label for _, label, _ in training_dataset])
 
         hardness_estimates = load_hardness_estimates('unclean', self.dataset_name)
-        imbalance_ratio = self.investigate_resampling_ratios(hardness_estimates, labels)
+        thresholds = np.arange(0, 100, 1)
+        per_class_counts, pearson_scores, spearman_scores, ideal_ratios = self.investigate_resampling_ratios(
+            hardness_estimates, labels, thresholds)
+        self.measure_stability_of_resampling_ratios(pearson_scores, spearman_scores, ideal_ratios, hardness_estimates,
+                                                    thresholds)
         if self.pruning_type == 'easy':
             if self.hardness_estimator in ['DataIQ', 'iDataIQ', 'Forgetting', 'Loss', 'iLoss', 'EL2N']:
                 pruned_dataset = self.prune_dataset(labels, training_loader,
@@ -108,7 +162,7 @@ class Experiment2:
             else:
                 raise ValueError(f'{self.hardness_estimator} is not a supported hardness estimator.')
         else:
-            print(imbalance_ratio)
+            imbalance_ratio = per_class_counts[self.hardness_estimator][self.pruning_rate]
             pruned_dataset = self.prune_dataset(labels, training_loader, imbalance_ratio = imbalance_ratio)
 
         # This is required to shuffle the data.

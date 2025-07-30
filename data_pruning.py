@@ -494,9 +494,9 @@ class DataPruning:
                 remaining_indices.extend(global_indices[class_remaining_indices])
             remaining_indices = np.array(remaining_indices)
 
-        self.fig_save_dir = os.path.join(self.fig_save_dir, 'dlp' + str(int(self.prune_percentage * 100)),
+        self.fig_save_dir = os.path.join(self.fig_save_dir, 'random_dlp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
-        self.res_save_dir = os.path.join(self.res_save_dir, 'dlp' + str(int(self.prune_percentage * 100)),
+        self.res_save_dir = os.path.join(self.res_save_dir, 'random_dlp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
         self.plot_class_level_sample_distribution(remaining_indices.tolist(), 'dlp', labels)
 
