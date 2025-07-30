@@ -5,6 +5,8 @@ from typing import Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.stats import pearsonr, spearmanr
+import seaborn as sns
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -15,8 +17,9 @@ from config import get_config, ROOT
 
 
 class PerformanceVisualizer:
-    def __init__(self, dataset_name):
+    def __init__(self, dataset_name, pruning_type):
         self.dataset_name = dataset_name
+        self.pruning_type = pruning_type
 
         config = get_config(args.dataset_name)
         self.num_classes = config['num_classes']
@@ -32,9 +35,9 @@ class PerformanceVisualizer:
 
     def load_models(self) -> Dict[str, Dict[int, List[dict]]]:
         models_dir = os.path.join(ROOT, "Models/")
-        models_by_rate = {'clp': {}, 'dlp': {}}
+        models_by_rate = {f'{self.pruning_type}_clp': {}, f'{self.pruning_type}_dlp': {}}
 
-        for pruning_strategy in ['clp', 'dlp']:
+        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
             # Walk through each folder in the Models directory
             for root, dirs, files in os.walk(models_dir):
                 # Ensure the dataset name matches exactly (avoid partial matches like "cifar10" in "cifar100")
@@ -46,6 +49,8 @@ class PerformanceVisualizer:
                             model_path = os.path.join(root, file)
                             model_state = torch.load(model_path)
                             models_by_rate[pruning_strategy][pruning_rate].append(model_state)
+            if len(models_by_rate[pruning_strategy][pruning_rate]) < self.num_models:
+                self.num_models = len(models_by_rate[pruning_strategy][pruning_rate])
 
             # Load models trained on the full dataset (no pruning)
             full_dataset_dir = os.path.join(models_dir, "none", f'unclean{self.dataset_name}')
@@ -66,7 +71,7 @@ class PerformanceVisualizer:
         """Computes the percentage of samples that were pruned per class for each of the pruning rate and pruning
         strategy."""
         pruned_percentages = {}
-        for pruning_strategy in ['clp', 'dlp']:
+        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
             pruning_rates = models_by_rate[pruning_strategy].keys()
             pruned_percentages[pruning_strategy] = {pruning_rate: [] for pruning_rate in pruning_rates}
 
@@ -77,7 +82,8 @@ class PerformanceVisualizer:
                                             f"class_level_sample_counts.pkl")
                     with open(pkl_path, "rb") as file:
                         class_level_sample_counts = pickle.load(file)
-                    remaining_data_count = class_level_sample_counts[pruning_strategy][pruning_rate]
+                    pkey = 'clp' if 'clp' in pruning_strategy else 'dlp'
+                    remaining_data_count = class_level_sample_counts[pkey][pruning_rate]
                     for c in range(self.num_classes):
                         pruned_percentage = 100.0 * (self.num_training_samples[c] - remaining_data_count[c]) / \
                                             self.num_training_samples[c]
@@ -138,7 +144,7 @@ class PerformanceVisualizer:
 
     def evaluate_ensemble(self, models_by_rate: Dict[str, Dict[int, List[dict]]], test_loader: DataLoader,
                           results: Dict[str, Dict[str, Dict]]):
-        for pruning_strategy in ['clp', 'dlp']:
+        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
             for pruning_rate, ensemble in tqdm(models_by_rate[pruning_strategy].items(),
                                                desc=f'Iterating over pruning rates ({pruning_strategy}).'):
                 for metric_name in ['Tp', 'Fp', 'Fn', 'Tn']:
@@ -152,34 +158,97 @@ class PerformanceVisualizer:
         with open(save_location, "wb") as file:
             pickle.dump(data, file)
 
+    def compute_and_plot_recall_correlations_across_ensemble_sizes(self, results):
+        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
+            pruning_rates = sorted(results[pruning_strategy]['Recall'].keys())
+            pearson_matrix, spearman_matrix = [], []
+            pearson_pval_matrix, spearman_pval_matrix = [], []
+            for pruning_rate in sorted(results[pruning_strategy]['Recall'].keys()):
+                pearson_row, spearman_row = [], []
+                pearson_pval_row, spearman_pval_row = [], []
+                for i in range(1, self.num_models):
+                    recall_i, recall_ip1 = [], []
+                    for class_id in range(self.num_classes):
+                        # Ensemble of size i
+                        recall_vec_i = np.mean([
+                            results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx]
+                            for model_idx in range(i)
+                        ])
+                        # Ensemble of size i+1
+                        recall_vec_ip1 = np.mean([
+                            results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx]
+                            for model_idx in range(i + 1)
+                        ])
+                        recall_i.append(recall_vec_i)
+                        recall_ip1.append(recall_vec_ip1)
+                    pearson_corr, pearson_pval = pearsonr(recall_i, recall_ip1)
+                    spearman_corr, spearman_pval = spearmanr(recall_i, recall_ip1)
+                    pearson_row.append(pearson_corr)
+                    spearman_row.append(spearman_corr)
+                    pearson_pval_row.append(pearson_pval)
+                    spearman_pval_row.append(spearman_pval)
+                pearson_matrix.append(pearson_row)
+                spearman_matrix.append(spearman_row)
+                pearson_pval_matrix.append(pearson_pval_row)
+                spearman_pval_matrix.append(spearman_pval_row)
+            pearson_matrix = np.array(pearson_matrix)
+            spearman_matrix = np.array(spearman_matrix)
+            pearson_pval_matrix = np.array(pearson_pval_matrix)
+            spearman_pval_matrix = np.array(spearman_pval_matrix)
+
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
+            x_labels = list(range(1, self.num_models))
+            y_labels = [f"{r}%" for r in pruning_rates]
+            heatmaps = [
+                (pearson_matrix, "Pearson Correlation", axes[0, 0]),
+                (spearman_matrix, "Spearman Correlation", axes[0, 1]),
+                (pearson_pval_matrix, "Pearson p-value", axes[1, 0]),
+                (spearman_pval_matrix, "Spearman p-value", axes[1, 1]),
+            ]
+            for mat, title, ax in heatmaps:
+                sns.heatmap(
+                    mat, xticklabels=x_labels, yticklabels=y_labels, annot=True, fmt=".2f",
+                    cmap="YlGnBu" if "Correlation" in title else "OrRd", ax=ax,
+                    cbar=True, vmin=0.0, vmax=1.0
+                )
+                ax.set_title(title)
+            for ax in axes[1]:  # Label only bottom row
+                ax.set_xlabel("Ensemble Size i (vs i+1)")
+            for ax in axes[:, 0]:  # Label only left column
+                ax.set_ylabel("Pruning Rate")
+            fig.suptitle(f"Recall Correlation & p-values Across Ensemble Sizes ({pruning_strategy})", fontsize=14)
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
+            fig.savefig(os.path.join(self.figure_save_dir, f"recall_corr_pval_heatmap_{pruning_strategy}.pdf"))
+            plt.close()
+
     def plot_class_level_results(self, results: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]],
                                  pruned_percentages: Dict[str, Dict[int, List[float]]]):
-        pruning_rates = sorted(results['clp']['Average Accuracy'].keys())
+        pruning_rates = sorted(results[f'{self.pruning_type}_clp']['Average Accuracy'].keys())
 
-        for metric_name in results['clp'].keys():
+        for metric_name in results[f'{self.pruning_type}_clp'].keys():
             fig, axes = plt.subplots(2, 5, figsize=(20, 10), sharey='all')
             fig.suptitle(f"Class-Level {metric_name} Across Pruning Rates", fontsize=16)
             axes = axes.flatten()
 
             for class_id in range(self.num_classes):
-                avg_metric_values_clp = np.array([np.mean([results['clp'][metric_name][p][class_id][model_idx]
-                                                           for model_idx in range(self.num_models)])
+                avg_metric_values_clp = np.array([np.mean([results[f'{self.pruning_type}_clp'][metric_name][p][class_id]
+                                                           [model_idx] for model_idx in range(self.num_models)])
                                                   for p in pruning_rates])
-                std_metric_values_clp = np.array([np.std([results['clp'][metric_name][p][class_id][model_idx]
-                                                          for model_idx in range(self.num_models)])
+                std_metric_values_clp = np.array([np.std([results[f'{self.pruning_type}_clp'][metric_name][p][class_id]
+                                                          [model_idx] for model_idx in range(self.num_models)])
                                                   for p in pruning_rates])
 
-                avg_metric_values_dlp = np.array([np.mean([results['dlp'][metric_name][p][class_id][model_idx]
-                                                           for model_idx in range(self.num_models)])
+                avg_metric_values_dlp = np.array([np.mean([results[f'{self.pruning_type}_dlp'][metric_name][p][class_id]
+                                                           [model_idx] for model_idx in range(self.num_models)])
                                                   for p in pruning_rates])
-                std_metric_values_dlp = np.array([np.std([results['dlp'][metric_name][p][class_id][model_idx]
-                                                          for model_idx in range(self.num_models)])
+                std_metric_values_dlp = np.array([np.std([results[f'{self.pruning_type}_dlp'][metric_name][p][class_id]
+                                                          [model_idx] for model_idx in range(self.num_models)])
                                                   for p in pruning_rates])
                 if metric_name == 'Recall':
                     print(f'Class {class_id}:\n\t{avg_metric_values_clp}\n\t{avg_metric_values_dlp}')
 
-                pruning_clp = [pruned_percentages['clp'][p][class_id] for p in pruning_rates]
-                pruning_dlp = [pruned_percentages['dlp'][p][class_id] for p in pruning_rates]
+                pruning_clp = [pruned_percentages[f'{self.pruning_type}_clp'][p][class_id] for p in pruning_rates]
+                pruning_dlp = [pruned_percentages[f'{self.pruning_type}_dlp'][p][class_id] for p in pruning_rates]
 
                 # Plot CLP (Blue Line)
                 ax = axes[class_id]
@@ -208,23 +277,23 @@ class PerformanceVisualizer:
             plt.close()
 
     def compare_clp_with_dlp(self, results: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]]):
-        pruning_rates = sorted(results['clp']['Average Accuracy'].keys())
+        pruning_rates = sorted(results[f'{self.pruning_type}_clp']['Average Accuracy'].keys())
 
-        for metric_name in results['clp'].keys():
-            avg_metric_clp = np.array([np.mean([results['clp'][metric_name][p][class_id][model_idx]
+        for metric_name in results[f'{self.pruning_type}_clp'].keys():
+            avg_metric_clp = np.array([np.mean([results[f'{self.pruning_type}_clp'][metric_name][p][class_id][model_idx]
                                                 for model_idx in range(self.num_models)
                                                 for class_id in range(self.num_classes)])
                                        for p in pruning_rates])
-            std_metric_clp = np.array([np.std([results['clp'][metric_name][p][class_id][model_idx]
+            std_metric_clp = np.array([np.std([results[f'{self.pruning_type}_clp'][metric_name][p][class_id][model_idx]
                                                for model_idx in range(self.num_models)
                                                for class_id in range(self.num_classes)])
                                        for p in pruning_rates])
 
-            avg_metric_dlp = np.array([np.mean([results['dlp'][metric_name][p][class_id][model_idx]
+            avg_metric_dlp = np.array([np.mean([results[f'{self.pruning_type}_dlp'][metric_name][p][class_id][model_idx]
                                                 for model_idx in range(self.num_models)
                                                 for class_id in range(self.num_classes)])
                                        for p in pruning_rates])
-            std_metric_dlp = np.array([np.std([results['dlp'][metric_name][p][class_id][model_idx]
+            std_metric_dlp = np.array([np.std([results[f'{self.pruning_type}_dlp'][metric_name][p][class_id][model_idx]
                                                for model_idx in range(self.num_models)
                                                for class_id in range(self.num_classes)])
                                        for p in pruning_rates])
@@ -256,7 +325,7 @@ class PerformanceVisualizer:
         models = self.load_models()
         pruned_percentages = self.compute_pruned_percentages(models)
         if self.num_classes == 10:
-            self.plot_pruned_percentages(pruned_percentages['dlp'])
+            self.plot_pruned_percentages(pruned_percentages[f'{self.pruning_type}_dlp'])
 
         # We only use test_loader so values of remove_noise, shuffle, and apply_augmentation doesn't matter below.
         _, _, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
@@ -267,10 +336,9 @@ class PerformanceVisualizer:
             with open(os.path.join(self.results_dir, "ensemble_results.pkl"), 'rb') as f:
                 results = pickle.load(f)
         else:
-            print('Evaluating performance of ensembles trained on variously pruned dataset.')
-
             results = {}
-            for pruning_strategy in ['clp', 'dlp']:
+        if f'{self.pruning_type}_clp' not in results.keys():
+            for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
                 results[pruning_strategy] = {}
                 for metric_name in ['Tp', 'Fn', 'Fp', 'Tn']:
                     results[pruning_strategy][metric_name] = {}
@@ -278,10 +346,10 @@ class PerformanceVisualizer:
             self.evaluate_ensemble(models, test_loader, results)
             self.save_file("ensemble_results.pkl", results)
 
-        for pruning_strategy in ['clp', 'dlp']:
+        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
             for metric_name in ['F1', 'MCC', 'Average Accuracy', 'Precision', 'Recall']:
                 results[pruning_strategy][metric_name] = {}
-            for pruning_rate in results['clp']['Tp'].keys():
+            for pruning_rate in results[f'{self.pruning_type}_clp']['Tp'].keys():
                 for metric_name in ['F1', 'MCC', 'Average Accuracy', 'Precision', 'Recall']:
                     results[pruning_strategy][metric_name][pruning_rate] = {}
                 for class_id in range(self.num_classes):
@@ -308,6 +376,7 @@ class PerformanceVisualizer:
                         results[pruning_strategy]['Precision'][pruning_rate][class_id][model_idx] = precision
                         results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx] = recall
 
+        self.compute_and_plot_recall_correlations_across_ensemble_sizes(results)
         if self.num_classes == 10:
             self.plot_class_level_results(results, pruned_percentages)
         self.compare_clp_with_dlp(results)
@@ -316,5 +385,9 @@ class PerformanceVisualizer:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Load models for specified pruning strategy and dataset")
     parser.add_argument("--dataset_name", type=str, required=True, help="Name of the dataset (e.g., 'CIFAR10')")
+    parser.add_argument("--pruning_type", choices=['easy', 'random'])
     args = parser.parse_args()
-    PerformanceVisualizer(args.dataset_name).main()
+    PerformanceVisualizer(args.dataset_name, args.pruning_type).main()
+
+# TODO: Plot stability of recall gap as a function of ensemble size and pruning rate (1 plot per pruning rate)
+# TODO: Repeat the sum of absolute differences in class-level recall values (1 plot per pruning rate).
