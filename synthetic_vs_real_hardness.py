@@ -6,6 +6,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 import torch
 import torchvision
+from torchvision.utils import make_grid
 from torch.utils.data import DataLoader, TensorDataset
 import tqdm
 
@@ -111,6 +112,64 @@ def compute_dataset_confidences(dataloader_idx, dataloader, device, model_states
     return dataset_confidences
 
 
+def visualize_edm_sample_hardness(dataset_name, synthetic_dataset, synthetic_confidences, test_labels,
+                                  test_confidences, num_classes, class_names):
+    # Compute per-class average confidence from test set
+    test_class_means = [test_confidences[test_labels == c].mean().item() for c in range(num_classes)]
+
+    # Print top-20% of the hardest classes
+    class_avg_confidences = torch.tensor(test_class_means)
+    sorted_class_ids = torch.argsort(class_avg_confidences)
+
+    top_k = max(1, num_classes // 5)
+    hardest_classes = sorted_class_ids[:top_k].tolist()
+
+    print(f"\nTop {top_k} hardest classes (lowest avg test confidence):")
+    for rank, class_id in enumerate(hardest_classes, 1):
+        conf = class_avg_confidences[class_id].item()
+        print(f"{rank}. Class {class_id} — Avg Test Confidence: {conf:.4f}")
+
+    # Extract EDM image tensors and labels
+    edm_images, edm_labels = [], []
+    for img, label, _ in synthetic_dataset:
+        edm_images.append(img)
+        edm_labels.append(label)
+    edm_images = torch.stack(edm_images)
+    edm_labels = torch.tensor(edm_labels)
+
+    output_dir = os.path.join(ROOT, 'Figures', dataset_name, 'EDM_Hardness')
+    os.makedirs(output_dir, exist_ok=True)
+
+    for c in range(num_classes):
+        cls_mask = edm_labels == c
+        cls_imgs = edm_images[cls_mask]
+        cls_confs = synthetic_confidences[cls_mask]
+        test_avg = test_class_means[c]
+
+        # Hardest 20
+        hardest_idx = torch.argsort(cls_confs)[:20]
+        hardest_imgs = cls_imgs[hardest_idx]
+
+        # 20 closest to test average
+        diff = torch.abs(cls_confs - test_avg)
+        closest_idx = torch.argsort(diff)[:20]
+        closest_imgs = cls_imgs[closest_idx]
+
+        def plot_and_save(imgs, title, fname):
+            grid = make_grid(imgs, nrow=5, normalize=True)
+            plt.figure(figsize=(10, 6))
+            plt.imshow(grid.permute(1, 2, 0).cpu())
+            plt.axis('off')
+            plt.title(title)
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, f"class_{c}_{fname}.png"))
+            plt.close()
+
+        plot_and_save(hardest_imgs, f"{class_names[c].capitalize()} - 20 Hardest EDM Samples", "hardest")
+
+        plot_and_save(closest_imgs, f"{class_names[c].capitalize()} - 20 Avg-like EDM Samples", "avg_like")
+
+
 def plot_class_confidences(base_index, results, dataset_name, num_classes):
     base_conf = results[base_index][1]
     base_labels = results[base_index][2]
@@ -174,16 +233,17 @@ def plot_class_confidences(base_index, results, dataset_name, num_classes):
     plt.ylabel("Confidence")
     plt.legend(bbox_to_anchor=(1.22, 1.10), loc='upper right')
     plt.grid(True)
+    plt.tight_layout()
 
     save_dir = os.path.join(ROOT, 'Figures', dataset_name)
     os.makedirs(save_dir, exist_ok=True)
     plt.savefig(os.path.join(save_dir, f"{results[base_index][0]}_confidence.pdf"), bbox_inches='tight')
-    plt.show()
 
 
 def main(dataset_name: str):
     config = get_config(dataset_name)
     num_classes = config['num_classes']
+    class_names = config['class_names']
     num_training_samples = config['num_training_samples']
     num_test_samples = config['num_test_samples']
 
@@ -234,6 +294,9 @@ def main(dataset_name: str):
                   torch.from_numpy(synthetic_labels)]
         all_average_confidences.append((dataloader_name, dataset_confidences, labels[dataloader_idx]))
 
+    visualize_edm_sample_hardness(dataset_name, synthetic_dataset, all_average_confidences[4][1], test_labels,
+                                  all_average_confidences[2][1], num_classes, class_names)
+
     plot_class_confidences(0, all_average_confidences[:2], dataset_name, num_classes)
     plot_class_confidences(0, all_average_confidences[2:4], dataset_name, num_classes)
     plot_class_confidences(4, all_average_confidences, dataset_name, num_classes)
@@ -252,9 +315,6 @@ if __name__ == '__main__':
 
 
 """TODOs
-  - Is convert_numpy_to_dataset correct? Are we properly transforming the EDM data?
-  - Why does AugmentedSubset throw out a warning?'
-  - Ensure reproducibility of the results.
   - Rerun the experiments using the pre-trained models I have on HPC.
-  - Add more % for EDM generated data (there is more of it so we can go below 1%)
+  - Visualize hardest samples from each class and samples of similar hardness to OG data.
 """
