@@ -1,4 +1,5 @@
 import argparse
+import copy
 import os
 
 import matplotlib.pyplot as plt
@@ -170,74 +171,76 @@ def visualize_edm_sample_hardness(dataset_name, synthetic_dataset, synthetic_con
         plot_and_save(closest_imgs, f"{class_names[c].capitalize()} - 20 Avg-like EDM Samples", "avg_like")
 
 
-def plot_class_confidences(base_index, results, dataset_name, num_classes):
-    base_conf = results[base_index][1]
-    base_labels = results[base_index][2]
+def compute_pruned_class_level_confidence(confidences, labels, remaining_count, num_classes, num_trials=10,
+                                          k_percentiles=(1.0, 0.5, 0.25, 0.1)):
+    assert confidences.shape == labels.shape
+    k_percentiles = sorted(k_percentiles, reverse=True)  # ensure 1.0 (100%) is first
+    all_k_results = {k: [] for k in k_percentiles}
+    all_k_labels = {k: [] for k in k_percentiles}
+    for _ in range(num_trials):
+        remaining_confidences, remaining_labels = [], []
+        for cls_idx in range(num_classes):
+            cls_indices = np.where(labels == cls_idx)[0]
+            n_to_keep = remaining_count[cls_idx]
+            selected_indices = np.random.choice(cls_indices, size=n_to_keep, replace=False)
+            remaining_confidences.append(confidences[selected_indices])
+            remaining_labels.append(np.full(n_to_keep, cls_idx))
+        remaining_confidences = np.concatenate(remaining_confidences)
+        remaining_labels = np.concatenate(remaining_labels)
 
-    # Compute class-level means
-    class_means = []
-    for c in range(num_classes):
-        class_mask = (base_labels == c)
-        class_mean = base_conf[class_mask].mean().item()
-        class_means.append(class_mean)
+        for k in k_percentiles:
+            k_confidences, k_labels = [], []
+            for cls_idx in range(num_classes):
+                cls_conf = remaining_confidences[remaining_labels == cls_idx]
+                n_k = max(1, int(len(cls_conf) * k))  # at least one sample
+                hardest_indices = np.argsort(cls_conf)[:n_k]  # bottom-k (hardest)
+                k_confidences.append(cls_conf[hardest_indices])
+                k_labels.append(np.full(n_k, cls_idx))
+            k_confidences = np.concatenate(k_confidences)
+            k_labels = np.concatenate(k_labels)
+            # Compute class-wise average confidence
+            class_avg_conf = np.zeros(num_classes)
+            for cls_idx in range(num_classes):
+                cls_conf = k_confidences[k_labels == cls_idx]
+                class_avg_conf[cls_idx] = cls_conf.mean()
+            all_k_results[k].append(class_avg_conf)
+            all_k_labels[k].append(k_labels)
+    mean_class_conf, std_class_conf = {}, {}
+    for k in k_percentiles:
+        trials = np.stack(all_k_results[k])  # shape: (num_trials, num_classes)
+        mean_class_conf[k] = np.nanmean(trials, axis=0)
+        std_class_conf[k] = np.nanstd(trials, axis=0)
+    return mean_class_conf, std_class_conf
 
-    class_means = np.array(class_means)
-    sort_idx = np.argsort(class_means)
 
-    plt.figure(figsize=(12, 6))
+def plot_class_confidences(base_index, results, dataset_name, num_classes, sort_idx):
+    plt.figure(figsize=(14, 7))
     color_map = ['blue', 'red', 'green', 'orange', 'black']
-    for i, (dataloader_name, confidences, labels_for_data) in enumerate(results):
-        per_class_means, per_class_tops = [], {}
-        for c in range(num_classes):
-            mask = (labels_for_data == c)
-            conf_vals = confidences[mask].numpy()
-            if len(conf_vals) == 0:
-                raise Exception  # This shouldn't happen, but is worth a sanity check.
-            sorted_conf = np.sort(conf_vals)
-            n = len(sorted_conf)
-            ks = []
-            if dataloader_name in ['Test', 'Test_SMOTE']:
-                ks.append(('25%', max(1, int(0.25 * n))))
-                ks.append(('50%', max(1, int(0.50 * n))))
-            elif dataloader_name in ['Training', 'Training_SMOTE']:
-                ks.append(('5%', max(1, int(0.05 * n))))
-                ks.append(('10%', max(1, int(0.10 * n))))
-            else:
-                ks.append(('50%', max(1, int(0.50 * n))))
-                ks.append(('25%', max(1, int(0.25 * n))))
-                ks.append(('10%', max(1, int(0.10 * n))))
-                ks.append(('5%', max(1, int(0.05 * n))))
+    line_styles = ['solid', 'dashed', 'dashdot', 'dotted', (0, (3, 5, 1, 5))]
 
-            per_class_means.append(np.mean(conf_vals))
-            for p, k in ks:
-                if p in per_class_tops.keys():
-                    per_class_tops[p].append(np.mean(sorted_conf[:k]))
-                else:
-                    per_class_tops[p] = [np.mean(sorted_conf[:k])]
-
-        per_class_means = np.array(per_class_means)[sort_idx]
-        for p in per_class_tops.keys():
-            per_class_tops[p] = np.array(per_class_tops[p])[sort_idx]
+    for i, (dataloader_name, (mean_class_conf, std_class_conf), _) in enumerate(results):
         x = np.arange(num_classes)
+        for j, k in enumerate(sorted(mean_class_conf.keys(), reverse=True)):  # plot larger subsets first
+            means_k = np.array(mean_class_conf[k])[sort_idx]
+            stds_k = np.array(std_class_conf[k])[sort_idx]
 
-        plt.plot(x, per_class_means, label=f'{dataloader_name} avg', color=color_map[i], linewidth=2)
-        line_styles = ['dashed', 'dashdot', 'dotted', 'dashed', 'dashdot', 'dotted']
-        if base_index == 0 or i == base_index:
-            for p_idx, p in enumerate(per_class_tops.keys()):
-                alpha = 0.3 + (p_idx + 1) * (0.8 - 0.3) / len(per_class_tops.keys())
-                plt.plot(x, per_class_tops[p], label=f'{dataloader_name} {p}', color=color_map[i],
-                         linestyle=line_styles[p_idx], alpha=alpha)
+            plt.plot(x, means_k, label=f'{dataloader_name} {int(k*100)}%', color=color_map[i],
+                     linestyle=line_styles[j % len(line_styles)], linewidth=2, alpha=0.9)
 
-    plt.title(f"Class-level confidences sorted by {results[base_index][0]}")
-    plt.xlabel("Sorted classes")
-    plt.ylabel("Confidence")
-    plt.legend(bbox_to_anchor=(1.22, 1.10), loc='upper right')
+            plt.fill_between(x, means_k - stds_k, means_k + stds_k,
+                             color=color_map[i], alpha=0.15, linewidth=0)
+
+    plt.title(f"Class-level confidences (sorted by {results[base_index][0]})")
+    plt.xlabel("Sorted class index")
+    plt.ylabel("Mean confidence ± std")
+    plt.legend(bbox_to_anchor=(1.02, 1.0), loc='upper left')
     plt.grid(True)
     plt.tight_layout()
 
     save_dir = os.path.join(ROOT, 'Figures', dataset_name)
     os.makedirs(save_dir, exist_ok=True)
     plt.savefig(os.path.join(save_dir, f"{results[base_index][0]}_confidence.pdf"), bbox_inches='tight')
+    plt.close()
 
 
 def main(dataset_name: str):
@@ -255,16 +258,17 @@ def main(dataset_name: str):
     ])
     training_dataset = AugmentedSubset(training_dataset, transform=new_training_transform)
 
-    training_smote_dataset, training_smote_labels = generate_smote_dataset(training_dataset, num_classes,
-                                                                           num_training_samples)
-    test_smote_dataset, test_smote_labels = generate_smote_dataset(test_dataset, num_classes, num_test_samples)
-
     synthetic_data = np.load(os.path.join(ROOT, f'GeneratedImages/{dataset_name}.npz'))
     image_key, label_key = synthetic_data.files
     synthetic_images = synthetic_data[image_key]
     synthetic_labels = synthetic_data[label_key]
     synthetic_dataset = convert_numpy_to_dataset(synthetic_images, synthetic_labels, config)
     print('Loaded synthetic data generated through EDM.')
+
+    samples_per_class = [np.sum(synthetic_labels == c) for c in range(num_classes)]
+    training_smote_dataset, training_smote_labels = generate_smote_dataset(training_dataset, num_classes,
+                                                                           samples_per_class)
+    test_smote_dataset, test_smote_labels = generate_smote_dataset(test_dataset, num_classes, samples_per_class)
 
     dataloader_names = ['Training', 'Training_SMOTE', 'Test', 'Test_SMOTE', 'EDM']
     loaders = [DataLoader(dataset, batch_size=5000, shuffle=False)
@@ -292,14 +296,32 @@ def main(dataset_name: str):
 
         labels = [training_labels, training_smote_labels, test_labels, test_smote_labels,
                   torch.from_numpy(synthetic_labels)]
-        all_average_confidences.append((dataloader_name, dataset_confidences, labels[dataloader_idx]))
+        all_average_confidences.append([dataloader_name, dataset_confidences, labels[dataloader_idx]])
 
     visualize_edm_sample_hardness(dataset_name, synthetic_dataset, all_average_confidences[4][1], test_labels,
                                   all_average_confidences[2][1], num_classes, class_names)
 
-    plot_class_confidences(0, all_average_confidences[:2], dataset_name, num_classes)
-    plot_class_confidences(0, all_average_confidences[2:4], dataset_name, num_classes)
-    plot_class_confidences(4, all_average_confidences, dataset_name, num_classes)
+    backup_all_average_confidences = copy.deepcopy(all_average_confidences)
+
+    for i in range(4):
+        num_samples = num_training_samples if i < 2 else num_test_samples
+        all_average_confidences[i][1] = compute_pruned_class_level_confidence(backup_all_average_confidences[i][1],
+                                                                              backup_all_average_confidences[i][2],
+                                                                              num_samples, num_classes)
+    all_average_confidences[4][1] = compute_pruned_class_level_confidence(backup_all_average_confidences[4][1],
+                                                                          backup_all_average_confidences[4][2],
+                                                                          num_training_samples, num_classes)
+    sort_idx = np.argsort(all_average_confidences[4][1][0][1.0])  # Sort by full 100% confidence
+    for i in range(2):
+        plot_class_confidences(0, [all_average_confidences[i]] + [all_average_confidences[4]], dataset_name,
+                               num_classes, sort_idx)
+
+    all_average_confidences[4][1] = compute_pruned_class_level_confidence(backup_all_average_confidences[4][1],
+                                                                          backup_all_average_confidences[4][2],
+                                                                          num_test_samples, num_classes)
+    for i in range(2, 4):
+        plot_class_confidences(0, [all_average_confidences[i]] + [all_average_confidences[4]], dataset_name,
+                               num_classes, sort_idx)
 
 
 if __name__ == '__main__':
@@ -316,5 +338,4 @@ if __name__ == '__main__':
 
 """TODOs
   - Rerun the experiments using the pre-trained models I have on HPC.
-  - Visualize hardest samples from each class and samples of similar hardness to OG data.
 """
