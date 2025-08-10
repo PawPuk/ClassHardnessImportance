@@ -1,4 +1,5 @@
 import argparse
+from math import floor
 import os.path
 
 import matplotlib.pyplot as plt
@@ -35,7 +36,6 @@ class Experiment2:
         self.NUM_EPOCHS = config['num_epochs']
         self.NUM_TRAINING_SAMPLES = config['num_training_samples']
 
-        self.results_save_dir = os.path.join(ROOT, 'Results/')
         self.figure_save_dir = os.path.join(ROOT, 'Figures/')
 
     def compute_imbalance_ratio_with_hardness(self, hardness_scores, labels):
@@ -52,7 +52,7 @@ class Experiment2:
                 hardness_of_classes[class_id] = np.mean(hardnesses_by_class[class_id])
         ratios = {class_id: class_hardness / sum(hardness_of_classes.values())
                   for class_id, class_hardness in hardness_of_classes.items()}
-        samples_per_class = np.array([int(round(ratio * sum(self.NUM_TRAINING_SAMPLES)))
+        samples_per_class = np.array([int(floor((1 - self.pruning_rate / 100) * ratio * sum(self.NUM_TRAINING_SAMPLES)))
                                       for class_id, ratio in ratios.items()])
 
         return samples_per_class
@@ -88,8 +88,9 @@ class Experiment2:
             # ideal_ratios[estimator_name] = per_class_counts[estimator_name][25]  # sanity check
             print(f'{best_combined_idx} is the best ratio for {estimator_name}.')
         # Hardness-Based Resampling Ratio computation
-        # ideal_ratios['HBRR'] = self.compute_imbalance_ratio_with_hardness(hardness_estimates['AUM'], labels)
-        ideal_ratios['HBRR'] = self.compute_imbalance_ratio_with_hardness(hardness_estimates['Confidence'], labels)  # sanity check
+        ideal_ratios['HBRR'] = self.compute_imbalance_ratio_with_hardness(hardness_estimates[self.hardness_estimator],
+                                                                          labels)
+        # ideal_ratios['HBRR'] = self.compute_imbalance_ratio_with_hardness(hardness_estimates['Confidence'], labels)
         return per_class_counts, pearson_scores, spearman_scores, ideal_ratios
 
     def measure_stability_of_resampling_ratios(self, pearson_scores, spearman_scores, ideal_ratios, hardness_estimates,
@@ -162,8 +163,7 @@ class Experiment2:
             else:
                 raise ValueError(f'{self.hardness_estimator} is not a supported hardness estimator.')
         else:
-            imbalance_ratio = per_class_counts[self.hardness_estimator][self.pruning_rate]
-            pruned_dataset = self.prune_dataset(labels, training_loader, imbalance_ratio = imbalance_ratio)
+            pruned_dataset = self.prune_dataset(labels, training_loader, imbalance_ratio=ideal_ratios['HBRR'])
 
         # This is required to shuffle the data.
         pruned_training_loader = DataLoader(pruned_dataset, batch_size=self.BATCH_SIZE, shuffle=True, num_workers=2)
