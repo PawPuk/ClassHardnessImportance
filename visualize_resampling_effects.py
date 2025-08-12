@@ -2,6 +2,7 @@ import argparse
 from collections import defaultdict
 import dill as pickle
 import os
+from statistics import mean, stdev
 from typing import Dict, List, Tuple
 
 import matplotlib.cm as cm
@@ -162,10 +163,12 @@ class ResamplingVisualizer:
                     row = {
                         'Strategy': strategy,
                         'Alpha': alpha,
-                        'max_min': metrics_dict['max_min'],
+                        'max_min_gap': metrics_dict['max_min_gap'],
                         'std_dev': metrics_dict['std_dev'],
                         'cv': metrics_dict['cv'],
-                        'quant_diff': metrics_dict['quant_diff']
+                        'quant_diff': metrics_dict['quant_diff'],
+                        'hard_easy': metrics_dict['hard_easy'],
+                        'avg_change': metrics_dict['avg_change']
                     }
                     rows.append(row)
             df = pd.DataFrame(rows)
@@ -175,7 +178,7 @@ class ResamplingVisualizer:
                 return ['\\textbf{' + f'{v:.4f}' + '}' if m else f'{v:.4f}' for v, m in zip(s, is_min)]
 
             styled_df = df.copy()
-            for col in ['max_min', 'std_dev', 'cv', 'quant_diff']:
+            for col in ['max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy', 'avg_change']:
                 styled_df[col] = bold_min(df[col])
             df.to_csv(os.path.join(save_path, f"{base_metric}_fairness_results.csv"), index=False)
             latex_str = styled_df.to_latex(index=False, escape=False)
@@ -348,18 +351,22 @@ class ResamplingVisualizer:
                                          if samples_per_class[cls] > np.mean(list(samples_per_class.values()))]
                     easy_class_values = [metric_values[cls] for cls in samples_per_class
                                          if samples_per_class[cls] <= np.mean(list(samples_per_class.values()))]
-                    fairness_results[base_metric][strategies][alpha]['max_min'] = (
+                    fairness_results[base_metric][strategies][alpha]['max_min_gap'] = (
                             max(metric_values) - min(metric_values)
                     )
                     fairness_results[base_metric][strategies][alpha]['std_dev'] = np.std(metric_values)
                     fairness_results[base_metric][strategies][alpha]['cv'] = (
-                            np.std(metric_values) / np.mean(metric_values)
+                            stdev(metric_values) / mean(metric_values)
                     )
                     fairness_results[base_metric][strategies][alpha]['quant_diff'] = (
                         np.percentile(metric_values, 90) - np.percentile(metric_values, 10)
                     )
                     fairness_results[base_metric][strategies][alpha]['hard_easy'] = abs(
-                        np.mean(hard_class_values) - np.mean(easy_class_values)
+                        mean(hard_class_values) - mean(easy_class_values)
+                    )
+                    base_values = list(results[base_metric][('none', 'none', 'unclean')][alpha].values())
+                    fairness_results[base_metric][strategies][alpha]['avg_change'] = (
+                        mean(base_values) - mean(metric_values)
                     )
         self.generate_fairness_table(fairness_results, results_dir)
         samples_per_class = self.load_class_distributions()
