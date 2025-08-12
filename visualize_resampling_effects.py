@@ -311,6 +311,7 @@ class ResamplingVisualizer:
 
     def main(self):
         results_dir = os.path.join(ROOT, "Results", self.dataset_name)
+        samples_per_class = load_results(os.path.join(self.hardness_save_dir, f'alpha_1', 'samples_per_class.pkl'))
         models = self.load_models()
         _, _, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
         # results[metric][(over, under, cleanliness)][alpha][class_id] -> int
@@ -343,6 +344,10 @@ class ResamplingVisualizer:
                         results[metric_name][strategies][alpha][class_id] = metric_results
                 for base_metric in ['Recall', 'F1', 'MCC', 'Precision']:
                     metric_values = list(results[base_metric][strategies][alpha].values())
+                    hard_class_values = [metric_values[cls] for cls in samples_per_class
+                                         if samples_per_class[cls] > np.mean(list(samples_per_class.values()))]
+                    easy_class_values = [metric_values[cls] for cls in samples_per_class
+                                         if samples_per_class[cls] <= np.mean(list(samples_per_class.values()))]
                     fairness_results[base_metric][strategies][alpha]['max_min'] = (
                             max(metric_values) - min(metric_values)
                     )
@@ -352,6 +357,9 @@ class ResamplingVisualizer:
                     )
                     fairness_results[base_metric][strategies][alpha]['quant_diff'] = (
                         np.percentile(metric_values, 90) - np.percentile(metric_values, 10)
+                    )
+                    fairness_results[base_metric][strategies][alpha]['hard_easy'] = abs(
+                        np.mean(hard_class_values) - np.mean(easy_class_values)
                     )
         self.generate_fairness_table(fairness_results, results_dir)
         samples_per_class = self.load_class_distributions()

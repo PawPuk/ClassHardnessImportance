@@ -14,6 +14,7 @@ from tqdm import tqdm
 from neural_networks import ResNet18LowRes
 from data import load_dataset
 from config import get_config, ROOT
+from utils import load_results
 
 
 class PerformanceVisualizer:
@@ -29,7 +30,7 @@ class PerformanceVisualizer:
         self.num_models = config['robust_ensemble_size']
 
         self.figure_save_dir = os.path.join(ROOT, 'Figures/', args.dataset_name)
-        self.results_dir = os.path.join(ROOT, "Results/", args.dataset_name)
+        self.results_dir = os.path.join(ROOT, "Results/")
         os.makedirs(self.figure_save_dir, exist_ok=True)
         os.makedirs(self.results_dir, exist_ok=True)
 
@@ -153,21 +154,58 @@ class PerformanceVisualizer:
                     self.evaluate_block(ensemble, test_loader, class_index, pruning_rate, results, pruning_strategy)
 
     def save_file(self, filename: str, data: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]]):
-        save_location = os.path.join(self.results_dir, filename)
+        save_location = os.path.join(self.results_dir, self.dataset_name, filename)
+        os.makedirs(save_location, exist_ok=True)
         with open(save_location, "wb") as file:
             pickle.dump(data, file)
 
-    def compute_fairness_metrics(self, results):
+    def plot_classwise_recall_vs_pruning(self, results):
+        clp_key = f"{self.pruning_type}_clp"
+        dlp_key = f"{self.pruning_type}_dlp"
+
+        pruning_rates = list(results[clp_key]['Recall'].keys())
+        zero_rate = 0.0 if 0.0 in pruning_rates else 0
+        pruning_rate_no_zero = [pr for pr in pruning_rates if pr != zero_rate]
+
+        fig, axes = plt.subplots(nrows=1, ncols=len(pruning_rate_no_zero), figsize=(4 * len(pruning_rate_no_zero), 8),
+                                 sharey=True)
+        for ax, pruning_rate in zip(axes, pruning_rate_no_zero):
+            clp_recalls = [np.mean(list(results[clp_key]['Recall'][pruning_rate][cls].values()))
+                           for cls in range(self.num_classes)]
+            dlp_recalls = [np.mean(list(results[dlp_key]['Recall'][pruning_rate][cls].values()))
+                           for cls in range(self.num_classes)]
+            sorted_classes = np.argsort(clp_recalls)[::-1]
+            clp_sorted = np.array(clp_recalls)[sorted_classes]
+            dlp_sorted = np.array(dlp_recalls)[sorted_classes]
+
+            ax.plot(clp_sorted, label=f'CLP (rate={pruning_rate})', color='blue')
+            ax.plot(dlp_sorted, label=f'DLP (rate={pruning_rate})', color='red')
+
+            ax.set_title(f'Class-wise Recall @ pruning_rate={pruning_rate}')
+            ax.set_ylabel('Recall')
+            ax.legend()
+            ax.grid(True, linestyle='--', alpha=0.6)
+
+        axes[-1].set_xlabel('Class (sorted by baseline recall)')
+        plt.tight_layout()
+        filename = f"class_level_recall_changes_investigation.pdf"
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.figure_save_dir, filename))
+
+    def compute_fairness_metrics(self, results, samples_per_class):
         fairness_results = {}
         for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
             fairness_results[pruning_strategy] = {
                 'max_min_gap': {},  # strategy -> pruning_rate -> ensemble_size -> float
-                'std_dev': {}
+                'std_dev': {},
+                'cv': {},
+                'quant_diff': {},
+                'hard_easy': {}
             }
 
             for pruning_rate in sorted(results[pruning_strategy]['Recall'].keys()):
-                fairness_results[pruning_strategy]['max_min_gap'][pruning_rate] = {}
-                fairness_results[pruning_strategy]['std_dev'][pruning_rate] = {}
+                for fairness_metric in 'max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy':
+                    fairness_results[pruning_strategy][fairness_metric][pruning_rate] = {}
 
                 for ensemble_size in range(1, self.num_models + 1):
                     recall_values = []
@@ -181,15 +219,25 @@ class PerformanceVisualizer:
 
                     max_min_gap = max(recall_values) - min(recall_values)
                     std_dev = np.std(recall_values)
+                    cv = np.std(recall_values) / np.mean(recall_values)
+                    quant_diff = np.percentile(recall_values, 90) - np.percentile(recall_values, 10)
+                    hard_class_recalls = [recall_values[cls] for cls in samples_per_class
+                                         if samples_per_class[cls] > np.mean(list(samples_per_class.values()))]
+                    easy_class_recalls = [recall_values[cls] for cls in samples_per_class
+                                         if samples_per_class[cls] <= np.mean(list(samples_per_class.values()))]
+                    hard_easy = abs(np.mean(hard_class_recalls) - np.mean(easy_class_recalls))
 
                     fairness_results[pruning_strategy]['max_min_gap'][pruning_rate][ensemble_size] = max_min_gap
                     fairness_results[pruning_strategy]['std_dev'][pruning_rate][ensemble_size] = std_dev
+                    fairness_results[pruning_strategy]['cv'][pruning_rate][ensemble_size] = cv
+                    fairness_results[pruning_strategy]['quant_diff'][pruning_rate][ensemble_size] = quant_diff
+                    fairness_results[pruning_strategy]['hard_easy'][pruning_rate][ensemble_size] = hard_easy
 
         return fairness_results
 
     def plot_fairness_stability(self, fairness_results):
         for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            for fairness_type in ['max_min_gap', 'std_dev']:
+            for fairness_type in ['max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy']:
                 # Extract data into a 2D matrix: rows = pruning rates, cols = ensemble sizes
                 pruning_rates = sorted(fairness_results[pruning_strategy][fairness_type].keys())
                 ensemble_sizes = sorted(next(iter(fairness_results[pruning_strategy][fairness_type].values())).keys())
@@ -224,32 +272,17 @@ class PerformanceVisualizer:
         ax2 = ax1.twinx()
 
         for strategy, style in pruning_strategies.items():
-            max_min_values = [
-                fairness_results[strategy]['max_min_gap'][rate][self.num_models]
-                for rate in pruning_rates
-            ]
-            std_dev_values = [
-                fairness_results[strategy]['std_dev'][rate][self.num_models]
-                for rate in pruning_rates
-            ]
+            max_min_values = [fairness_results[strategy]['quant_diff'][rate][self.num_models] for rate in pruning_rates]
+            std_dev_values = [fairness_results[strategy]['cv'][rate][self.num_models] for rate in pruning_rates]
 
-            # Plot max_min on left axis
-            ax1.plot(
-                x_labels, max_min_values,
-                label=f"Max-Min Gap ({style['label']})",
-                linestyle=style['linestyle'], color='tab:blue'
-            )
-
-            # Plot std_dev on right axis
-            ax2.plot(
-                x_labels, std_dev_values,
-                label=f"Std Dev ({style['label']})",
-                linestyle=style['linestyle'], color='tab:orange'
-            )
+            ax1.plot(x_labels, max_min_values, label=f"Quant Diff ({style['label']})", linestyle=style['linestyle'],
+                     color='tab:blue')
+            ax2.plot(x_labels, std_dev_values, label=f"CV ({style['label']})", linestyle=style['linestyle'],
+                     color='tab:orange')
 
         ax1.set_xlabel("Pruning Rate")
-        ax1.set_ylabel("Max-Min Gap", color='tab:blue')
-        ax2.set_ylabel("Std Dev", color='tab:orange')
+        ax1.set_ylabel("Quant Diff", color='tab:blue')
+        ax2.set_ylabel("CV", color='tab:orange')
         ax1.tick_params(axis='y', labelcolor='tab:blue')
         ax2.tick_params(axis='y', labelcolor='tab:orange')
 
@@ -266,7 +299,7 @@ class PerformanceVisualizer:
 
     def plot_fairness_change_heatmap(self, fairness_results):
         for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            for fairness_type in ['max_min_gap', 'std_dev']:
+            for fairness_type in ['max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy']:
                 pruning_rates = sorted(fairness_results[pruning_strategy][fairness_type].keys())
                 ensemble_sizes = list(range(1, self.num_models))  # from size 1 to N-1 (we compare i vs i+1)
                 heatmap_data = []
@@ -523,6 +556,7 @@ class PerformanceVisualizer:
             plt.savefig(os.path.join(self.figure_save_dir, f'{metric_name}_clp_vs_dlp.pdf'))
 
     def main(self):
+        samples_per_class = load_results(os.path.join(self.hardness_save_dir, f'alpha_1', 'samples_per_class.pkl'))
         models = self.load_models()
         print(f'Continuing with {self.num_models}.')
         pruned_percentages = self.compute_pruned_percentages(models)
@@ -533,9 +567,9 @@ class PerformanceVisualizer:
         _, _, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
 
         # Evaluate ensemble performance
-        if os.path.exists(os.path.join(self.results_dir, "ensemble_results.pkl")):
+        if os.path.exists(os.path.join(self.results_dir, self.dataset_name, "ensemble_results.pkl")):
             print('Loading pre-computed ensemble results.')
-            with open(os.path.join(self.results_dir, "ensemble_results.pkl"), 'rb') as f:
+            with open(os.path.join(self.results_dir, self.dataset_name, "ensemble_results.pkl"), 'rb') as f:
                 results = pickle.load(f)
         else:
             results = {}
@@ -578,7 +612,8 @@ class PerformanceVisualizer:
                         results[pruning_strategy]['Precision'][pruning_rate][class_id][model_idx] = precision
                         results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx] = recall
 
-        fairness_results = self.compute_fairness_metrics(results)
+        self.plot_classwise_recall_vs_pruning(results)
+        fairness_results = self.compute_fairness_metrics(results, samples_per_class)
         self.plot_fairness_stability(fairness_results)
         self.plot_fairness_dual_axis(fairness_results)
         self.plot_fairness_change_heatmap(fairness_results)
