@@ -318,45 +318,30 @@ class Visualizer:
                 results[metric_name].append((num_ensemble_models, differences, relative_differences))
         return results
 
-    def visualize_stability_of_resampling(self, results):
+    def visualize_stability_of_resampling(self, results, num_models):
         metrics = list(results.keys())
         ensemble_sizes = {metric: [entry[0] for entry in results[metric]] for metric in metrics}
         differences = {metric: [entry[1] for entry in results[metric]] for metric in metrics}
-        relative_differences = {metric: [entry[2] for entry in results[metric]] for metric in metrics}
 
         def compute_stats(diff_list):
-            max_vals = [np.max(diff) for diff in diff_list]
-            min_vals = [np.min(diff) for diff in diff_list]
-            avg_vals = [np.mean(diff) for diff in diff_list]
-            return max_vals, min_vals, avg_vals
+            avg_vals = np.array([np.mean(diff) for diff in diff_list])
+            std_vals = np.array([np.std(diff) for diff in diff_list])
+            return avg_vals, std_vals
 
-        for metric in metrics:
-            max_diffs, min_diffs, avg_diffs = compute_stats(differences[metric])
+        group1 = ('DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting')
+        group2 = ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
+        for i, group in enumerate([group1, group2]):
             plt.figure(figsize=(10, 6))
-            plt.plot(ensemble_sizes[metric], max_diffs, label=f'Max Diff', linestyle='-', marker='o')
-            plt.plot(ensemble_sizes[metric], min_diffs, label=f'Min Diff', linestyle='--', marker='x')
-            plt.plot(ensemble_sizes[metric], avg_diffs, label=f'Avg Diff', linestyle=':', marker='s')
-            plt.title(f"Based on {metric.upper()}")
+            for metric in group:
+                avg_diffs, std_diffs = compute_stats(differences[metric])
+                plt.plot(ensemble_sizes[metric], avg_diffs, label=f'{metric}', marker='s')
+                # plt.fill_between(ensemble_sizes[metric], avg_diffs - std_diffs, avg_diffs + std_diffs, alpha=0.2)
             plt.xlabel('Number of Models (j) in Ensemble During Hardness Estimation')
-            plt.xticks(range(1, 20, 2))
-            plt.ylabel("Absolute Difference in Class-Wise SXample Count for Resampling after Adding a Model")
+            plt.xticks(np.arange(1, num_models))
+            plt.ylabel("Absolute Difference in Class-Wise Sample Count for Resampling")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
-            plt.savefig(os.path.join(self.figures_save_dir, f'absolute_differences_{metric}.pdf'))
-            plt.close()
-
-            max_rel_diffs, min_rel_diffs, avg_rel_diffs = compute_stats(relative_differences[metric])
-            plt.figure(figsize=(10, 6))
-            plt.plot(ensemble_sizes[metric], max_rel_diffs, label=f'Max Rel Diff', linestyle='-', marker='o')
-            plt.plot(ensemble_sizes[metric], min_rel_diffs, label=f'Min Rel Diff', linestyle='--', marker='x')
-            plt.plot(ensemble_sizes[metric], avg_rel_diffs, label=f'Avg Rel Diff', linestyle=':', marker='s')
-            plt.title(f"Based on {metric.upper()}")
-            plt.xlabel('Number of Models (j) in Ensemble During Hardness Estimation')
-            plt.xticks(range(1, 20, 2))
-            plt.ylabel("Relative Difference in Class-Wise Sample Count for Resampling after Adding a Model")
-            plt.legend()
-            plt.grid(True, linestyle='--', alpha=0.6)
-            plt.savefig(os.path.join(self.figures_save_dir, f'relative_differences_{metric}.pdf'))
+            plt.savefig(os.path.join(self.figures_save_dir, f'absolute_differences_group{i+1}.pdf'))
             plt.close()
 
     def save_hardness_estimates(self, hardness_estimates):
@@ -379,7 +364,8 @@ class Visualizer:
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
         if 'iConfidence' not in hardness_estimates.keys():
             self.compute_instance_scores(hardness_estimates, training_loader)
-        self.plot_instance_level_hardness_distributions(hardness_estimates)
+        if 'probs' in hardness_estimates.keys():
+            self.plot_instance_level_hardness_distributions(hardness_estimates)
 
         print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')
         for key in hardness_estimates.keys():
@@ -395,7 +381,7 @@ class Visualizer:
         self.compute_overlap_of_pruned_indices_across_hardness_estimators(pruned_indices)
 
         differences = self.compute_effect_of_ensemble_size_on_resampling(hardness_estimates, training_loader.dataset)
-        self.visualize_stability_of_resampling(differences)
+        self.visualize_stability_of_resampling(differences, num_models)
         self.save_hardness_estimates(hardness_estimates)
 
 

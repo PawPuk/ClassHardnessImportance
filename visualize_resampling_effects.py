@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -152,6 +153,35 @@ class ResamplingVisualizer:
             self.save_file(result_dir, "resampling_results.pkl", results)
         return results
 
+    @staticmethod
+    def generate_fairness_table(fairness_results, save_path):
+        for base_metric, results in fairness_results.items():
+            rows = []
+            for strategy, alpha_dict in results.items():
+                for alpha, metrics_dict in alpha_dict.items():
+                    row = {
+                        'Strategy': strategy,
+                        'Alpha': alpha,
+                        'max_min': metrics_dict['max_min'],
+                        'std_dev': metrics_dict['std_dev'],
+                        'cv': metrics_dict['cv'],
+                        'quant_diff': metrics_dict['quant_diff']
+                    }
+                    rows.append(row)
+            df = pd.DataFrame(rows)
+
+            def bold_min(s):
+                is_min = s == s.min()
+                return ['\\textbf{' + f'{v:.4f}' + '}' if m else f'{v:.4f}' for v, m in zip(s, is_min)]
+
+            styled_df = df.copy()
+            for col in ['max_min', 'std_dev', 'cv', 'quant_diff']:
+                styled_df[col] = bold_min(df[col])
+            df.to_csv(os.path.join(save_path, f"{base_metric}_fairness_results.csv"), index=False)
+            latex_str = styled_df.to_latex(index=False, escape=False)
+            with open(os.path.join(save_path, f"{base_metric}_fairness_results.tex"), "w") as f:
+                f.write(latex_str)
+
     def load_class_distributions(self) -> Dict[int, Dict[int, int]]:
         class_distributions = {}
         for root, dirs, files in os.walk(self.hardness_save_dir):
@@ -230,7 +260,7 @@ class ResamplingVisualizer:
             norm = plt.Normalize(min(alpha_values), max(alpha_values))
             grey_shade = cm.Greys(0.5 + 0.5 * norm(int(alpha)))
             reordered_values = [results[base_metric][strategy][alpha][class_id] for class_id in class_order]
-            plt.plot(range(len(class_order)), reordered_values, color=grey_shade, lw=2, linestyle = '--',
+            plt.plot(range(len(class_order)), reordered_values, color=grey_shade, lw=2, linestyle='--',
                      label=f'"α={alpha}"')
 
         plt.axvspan(0, number_of_easy_classes - 0.5, color='green', alpha=0.15)
@@ -286,8 +316,13 @@ class ResamplingVisualizer:
         # results[metric][(over, under, cleanliness)][alpha][class_id] -> int
         results = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
         results = self.obtain_results(results_dir, models, test_loader, results)
+        fairness_results = {'Recall': {}, 'F1': {}, 'MCC': {}, 'Precision': {}}
         for strategies in results['Tp'].keys():
+            for base_metric in ['Recall', 'F1', 'MCC', 'Precision']:
+                fairness_results[base_metric][strategies] = {}
             for alpha in results['Tp'][strategies]:
+                for base_metric in ['Recall', 'F1', 'MCC', 'Precision']:
+                    fairness_results[base_metric][strategies][alpha] = {}
                 for class_id in range(self.num_classes):
                     Tp = results['Tp'][strategies][alpha][class_id]
                     Fp = results['Fp'][strategies][alpha][class_id]
@@ -306,7 +341,19 @@ class ResamplingVisualizer:
                     for (metric_name, metric_results) in [('F1', F1), ('MCC', MCC), ('Precision', precision),
                                                           ('Average Accuracy', accuracy), ('Recall', recall)]:
                         results[metric_name][strategies][alpha][class_id] = metric_results
-
+                for base_metric in ['Recall', 'F1', 'MCC', 'Precision']:
+                    metric_values = list(results[base_metric][strategies][alpha].values())
+                    fairness_results[base_metric][strategies][alpha]['max_min'] = (
+                            max(metric_values) - min(metric_values)
+                    )
+                    fairness_results[base_metric][strategies][alpha]['std_dev'] = np.std(metric_values)
+                    fairness_results[base_metric][strategies][alpha]['cv'] = (
+                            np.std(metric_values) / np.mean(metric_values)
+                    )
+                    fairness_results[base_metric][strategies][alpha]['quant_diff'] = (
+                        np.percentile(metric_values, 90) - np.percentile(metric_values, 10)
+                    )
+        self.generate_fairness_table(fairness_results, results_dir)
         samples_per_class = self.load_class_distributions()
         number_of_easy_classes, alpha_values = self.visualize_resampling_results(samples_per_class)
 
@@ -317,7 +364,7 @@ class ResamplingVisualizer:
             for strategy in results['Tp'].keys():
                 self.plot_all_accuracies_sorted(results, class_order, base_metric, number_of_easy_classes, strategy,
                                                 alpha_values)
-                print(f'{"-"*70}\n\tResults of {strategy} for {base_metric}:\n{"-"*70}')
+                print(f'{"-" * 70}\n\tResults of {strategy} for {base_metric}:\n{"-" * 70}')
                 self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes, strategy,
                                          alpha_values)
 
