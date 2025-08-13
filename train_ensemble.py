@@ -1,7 +1,5 @@
-import csv
 import os
 import pickle
-import time
 
 import numpy as np
 import torch
@@ -15,13 +13,13 @@ from utils import set_reproducibility, get_latest_model_index
 
 
 class ModelTrainer:
-    def __init__(self, training_set_size, training_loader, test_loader, dataset_name, pruning_type='none',
+    def __init__(self, training_set_size, training_loaders, test_loader, dataset_name, pruning_type='none',
                  save_probe_models=True, estimate_hardness=False, clean_data=False):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
         :param training_set_size: Specified the size of the training set
-        :param training_loader: DataLoader for the training dataset.
+        :param training_loaders: List of DataLoaders for the training datasets.
         :param test_loader: DataLoader for the test dataset.
         :param dataset_name: The name of the dataset being used.
         :param pruning_type: Type of pruning being applied (default: 'none').
@@ -30,7 +28,7 @@ class ModelTrainer:
         :param clean_data: Allows differentiating between models trained on clean and noisy data while saving.
         """
         self.training_set_size = training_set_size
-        self.training_loader = training_loader
+        self.training_loaders = training_loaders
         self.test_loader = test_loader
         self.pruning_type = pruning_type
         self.dataset_name = dataset_name
@@ -42,21 +40,24 @@ class ModelTrainer:
 
         # Incorporate dataset_name and pruning_type into directories to prevent overwriting
         self.num_epochs = self.config['num_epochs']
+        self.dataset_count = self.config['num_datasets']
         self.save_dir = str(os.path.join(self.config['save_dir'], pruning_type, f"{self.clean_data}{dataset_name}"))
         self.timings_dir = str(os.path.join(self.config['timings_dir'], pruning_type,
                                             f"{self.clean_data}{dataset_name}"))
         os.makedirs(self.save_dir, exist_ok=True)
         os.makedirs(self.timings_dir, exist_ok=True)
 
-    def compute_current_seed(self, current_model_index):
+    def compute_current_seed(self, current_dataset_index, current_model_index):
         base_seed = self.config['probe_base_seed']
         seed_step = self.config['probe_seed_step']
-        seed = base_seed + current_model_index * seed_step
+        dataset_step = self.config['probe_dataset_step']
+
+        seed = base_seed + current_dataset_index * dataset_step + current_model_index * seed_step
         return seed
 
     @staticmethod
     def estimate_instance_hardness(batch_indices, inputs, outputs, labels, predicted, hardness_estimates, epoch,
-                                   remembering):
+                                   remembering, dataset_model_id):
         for index_within_batch, (i, x, logits, label) in enumerate(zip(batch_indices, inputs, outputs, labels)):
             i = i.item()  # TODO: Maybe change the output of __iter__ rather than doing the .item() here.
             correct_label = label.item()
@@ -66,22 +67,22 @@ class ModelTrainer:
             correct_logit = logits[correct_label].item()
             probs = torch.nn.functional.softmax(logits, dim=0)
             # Confidence
-            hardness_estimates['Confidence'][i][epoch] = correct_logit
+            hardness_estimates[dataset_model_id]['Confidence'][i][epoch] = correct_logit
             # AUM
             max_other_logit = torch.max(torch.cat((logits[:correct_label], logits[correct_label + 1:]))).item()
-            hardness_estimates['AUM'][i][epoch] = correct_logit - max_other_logit
+            hardness_estimates[dataset_model_id]['AUM'][i][epoch] = correct_logit - max_other_logit
             # DataIQ
             p_y = probs[correct_label].item()
-            hardness_estimates['DataIQ'][i][epoch] = p_y * (1 - p_y)
+            hardness_estimates[dataset_model_id]['DataIQ'][i][epoch] = p_y * (1 - p_y)
             # Cross-Entropy Loss
             label_tensor = torch.tensor([correct_label], device=logits.device)
             loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), label_tensor).item()
-            hardness_estimates['Loss'][i][epoch] = loss
+            hardness_estimates[dataset_model_id]['Loss'][i][epoch] = loss
             # Forgetting
             if predicted_label == correct_label:
                 remembering[i] = True
             elif predicted_label != correct_label and remembering[i]:
-                hardness_estimates['Forgetting'][i] += 1
+                hardness_estimates[dataset_model_id]['Forgetting'][i] += 1
                 remembering[i] = False
 
     def evaluate_model(self, model, criterion):
@@ -103,9 +104,11 @@ class ModelTrainer:
         avg_loss = running_loss / total
         return avg_loss, accuracy
 
-    def train_model(self, current_model_index, latest_model_index, hardness_estimates):
+    def train_model(self, current_dataset_index, current_model_index, latest_model_indices, hardness_estimates):
         """Train a single model."""
-        seed = self.compute_current_seed(current_model_index + latest_model_index + 1)
+        dataset_model_id = (current_dataset_index, current_model_index)
+        latest_model_index = latest_model_indices[current_dataset_index]
+        seed = self.compute_current_seed(current_dataset_index, current_model_index + latest_model_index + 1)
         set_reproducibility(seed)
 
         model = ResNet18LowRes(num_classes=self.config['num_classes']).cuda()
@@ -115,16 +118,16 @@ class ModelTrainer:
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=self.config['lr_decay_milestones'], gamma=0.2)
 
         for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:   # [epoch_index][sample_index]
-            hardness_estimates[estimator] = [[None for _ in range(self.num_epochs)]
-                                             for _ in range(self.training_set_size)]
-        hardness_estimates['Forgetting'] = [0 for _ in range(self.training_set_size)]
+            hardness_estimates[dataset_model_id][estimator] = [[None for _ in range(self.num_epochs)]
+                                                               for _ in range(self.training_set_size)]
+        hardness_estimates[dataset_model_id]['Forgetting'] = [0 for _ in range(self.training_set_size)]
         remembering = [False for _ in range(self.training_set_size)]
 
         for epoch in range(self.config['num_epochs']):
             model.train()
             running_loss, correct_train, total_train = 0.0, 0, 0
 
-            for inputs, labels, indices in self.training_loader:
+            for inputs, labels, indices in self.training_loaders[current_dataset_index]:
                 inputs, labels = inputs.cuda(), labels.cuda()
                 optimizer.zero_grad()
                 outputs = model(inputs)
@@ -139,7 +142,7 @@ class ModelTrainer:
 
                 if self.estimate_hardness:
                     self.estimate_instance_hardness(indices, inputs, outputs, labels, predicted, hardness_estimates,
-                                                    epoch, remembering)
+                                                    epoch, remembering, dataset_model_id)
             scheduler.step()
 
             avg_train_loss = running_loss / total_train
@@ -152,19 +155,21 @@ class ModelTrainer:
 
             # Optionally save the model at a specific epoch
             if self.save_probe_models and epoch + 1 == self.config['save_epoch']:
-                save_path = os.path.join(self.save_dir,
-                                         f'model_{current_model_index + latest_model_index + 1}_epoch_{epoch + 1}.pth')
+                save_path = os.path.join(self.save_dir, f'dataset_{current_dataset_index}_model_'
+                                                        f'{current_model_index + latest_model_index + 1}'
+                                                        f'_epoch_{epoch + 1}.pth')
                 torch.save(model.state_dict(), save_path)
                 print(f'Model {current_model_index + latest_model_index + 1} ({self.dataset_name}, '
                       f'{self.pruning_type} dataset) saved at epoch {self.config["save_epoch"]}.')
 
         # Save model after full training
-        final_save_path = os.path.join(self.save_dir,
-                                       f'model_{current_model_index + latest_model_index + 1}_epoch_'
-                                       f'{self.config["num_epochs"]}.pth')
+        final_save_path = os.path.join(self.save_dir, f'dataset_{current_dataset_index}'
+                                                      f'_model_{current_model_index + latest_model_index + 1}'
+                                                      f'_epoch_{self.config["num_epochs"]}.pth')
         torch.save(model.state_dict(), final_save_path)
-        print(f'Model {current_model_index + latest_model_index + 1} ({self.dataset_name}, {self.pruning_type} dataset) '
-              f'saved after full training at epoch {self.config["num_epochs"]}.')
+        print(f'Dataset {current_dataset_index} Model {current_model_index + latest_model_index + 1} '
+              f'({self.dataset_name}, {self.pruning_type} dataset) saved after full training at epoch '
+              f'{self.config["num_epochs"]}.')
 
     @staticmethod
     def load_previous_hardness_estimates(path):
@@ -175,9 +180,9 @@ class ModelTrainer:
             return prior_hardness_estimates
         else:
             print(f"{path} does not exist or is empty. Initializing new data.")
-            return {'Confidence': [], 'AUM': [], 'DataIQ': [], 'Forgetting': [], 'Loss': []}
+            return {}
 
-    def save_results(self, hardness_estimates):
+    def save_results(self, hardness_estimates, dataset_model_id):
         """
         The purpose of this function is to enable easier generation of results. If we already spent a lot of
         resources on training an ensemble, we don't want it to go to waste just because the ensemble is not large
@@ -187,9 +192,7 @@ class ModelTrainer:
         os.makedirs(hardness_save_dir, exist_ok=True)
         path = os.path.join(hardness_save_dir, 'hardness_estimates.pkl')
         old_hardness_estimates = self.load_previous_hardness_estimates(path)
-
-        for estimator in hardness_estimates.keys():
-            old_hardness_estimates[estimator].append(hardness_estimates[estimator])
+        old_hardness_estimates[dataset_model_id] = hardness_estimates[dataset_model_id]
 
         with open(path, "wb") as file:
             print(f'Saving updated hardness estimates.')
@@ -197,48 +200,24 @@ class ModelTrainer:
 
     def train_ensemble(self):
         """Train an ensemble of models and measure the timing."""
-        timings = []
 
-        latest_model_index = get_latest_model_index(self.save_dir, self.config['num_epochs'])
-        num_models = self.config['robust_ensemble_size'] if \
-            self.config['robust_ensemble_size'] < self.config['num_models'] else self.config['num_models']
+        latest_model_indices = get_latest_model_index(self.save_dir, self.config['num_epochs'], self.dataset_count)
+        num_models_to_train_per_dataset = self.config['num_models_per_dataset']
 
-        print(f"Starting training ensemble of {num_models} models on {self.dataset_name}.")
-        print(f"Number of samples in the training loader: {len(self.training_loader.dataset)}")
+        print(f"Starting training {self.dataset_count} ensembles of {num_models_to_train_per_dataset} models on "
+              f"{self.dataset_name}.")
+        print(f"Number of samples in the training loader: {len(self.training_loaders[0].dataset)}")
         print(f"Number of samples in the test loader: {len(self.test_loader.dataset)}")
         print('-'*20)
 
-        for model_id in tqdm(range(num_models)):
-            hardness_estimates = {}
-            start_time = time.time()
-            self.train_model(model_id, latest_model_index, hardness_estimates)
-            training_time = time.time() - start_time
-            timings.append((model_id + latest_model_index + 1, training_time))
+        for dataset_id in tqdm(range(self.dataset_count)):
+            for model_id in tqdm(range(num_models_to_train_per_dataset)):
+                for _ in range(latest_model_indices[dataset_id] + 1, num_models_to_train_per_dataset):
+                    hardness_estimates = {(dataset_id, model_id): {}}
+                    self.train_model(dataset_id, model_id, latest_model_indices, hardness_estimates)
 
-            if self.estimate_hardness:
-                for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:
-                    hardness_estimates[estimator] = np.mean(hardness_estimates[estimator], axis=1)
-                self.save_results(hardness_estimates)
-
-        # Calculate mean and standard deviation of the timings
-        timing_values = [timing[1] for timing in timings]
-        mean_time = np.mean(timing_values)
-        std_time = np.std(timing_values)
-
-        # Save the timings to a CSV file
-        timings_file_path = os.path.join(self.timings_dir, 'ensemble_timings.csv')
-        file_exists = os.path.exists(timings_file_path)
-        with open(timings_file_path, 'a', newline='') as csvfile:
-            csvwriter = csv.writer(csvfile)
-            # Write the header
-            if not file_exists:
-                csvwriter.writerow(['Model ID', 'Training Time (seconds)'])
-            # Write the timings for each model
-            for model_id, timing in timings:
-                csvwriter.writerow([model_id, f'{timing:.2f}'])
-            # Write the average and standard deviation
-            csvwriter.writerow(['Average', f'{mean_time:.2f}'])
-            csvwriter.writerow(['Std Dev', f'{std_time:.2f}'])
-
-        print(f'Average time per model: {mean_time:.2f} seconds')
-        print(f'Standard deviation of timings: {std_time:.2f} seconds')
+                    if self.estimate_hardness:
+                        for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:
+                            hardness_estimates[(dataset_id, model_id)][estimator] = np.mean(
+                                hardness_estimates[(dataset_id, model_id)][estimator], axis=1)
+                        self.save_results(hardness_estimates, (dataset_id, model_id))

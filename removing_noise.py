@@ -15,7 +15,7 @@ class NoiseRemover:
         self.dataset = dataset
 
         self.BATCH_SIZE = self.config['batch_size']
-        self.ROBUST_NUM_MODELS = self.config['robust_ensemble_size']
+        self.NUM_MODELS_FOR_HARDNESS = self.config['num_models_for_hardness']
         self.TOTAL_SAMPLES = sum(self.config['num_training_samples'])
         self.NUM_EPOCHS = self.config['num_epochs']
 
@@ -150,10 +150,11 @@ class NoiseRemover:
         plt.savefig(os.path.join(self.figure_save_dir, "lowest_AUM_samples.pdf"))
 
     def clean(self):
-        aum_scores_over_models = load_hardness_estimates('unclean', self.dataset_name, 'AUM')
+        hardness_estimates = load_hardness_estimates('unclean', self.dataset_name)
+        aum_scores_over_models = [hardness_estimates[model_id]['AUM'] for model_id in range(len(hardness_estimates))]
         self.compute_and_visualize_stability_of_noise_removal(aum_scores_over_models)
 
-        aum_scores = np.mean(np.array(aum_scores_over_models[:self.ROBUST_NUM_MODELS]), axis=0)
+        aum_scores = np.mean(np.array(aum_scores_over_models[:self.NUM_MODELS_FOR_HARDNESS]), axis=0)
         elbow_index = self.plot_cumulative_distribution(aum_scores)
         sorted_indices = np.argsort(aum_scores)
 

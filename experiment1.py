@@ -1,11 +1,15 @@
 import argparse
 
+from config import get_config
 from data import load_dataset
 from train_ensemble import ModelTrainer
 from utils import set_reproducibility
 
 
 def main(dataset_name: str, remove_noise: bool):
+    if get_config(dataset_name)['num_datasets'] != 1:
+        raise Exception(f"This code requires `get_config(dataset_name)['num_datasets']` to be set to 1, not "
+                        f"{get_config(dataset_name)['num_datasets']}.")
     training_loader, training_set, test_loader, _ = load_dataset(dataset_name, remove_noise, True, True)
     training_set_size = len(training_set)
 

@@ -30,6 +30,7 @@ class Experiment3:
         self.num_models = self.config['num_models']
         self.mean = self.config['mean']
         self.std = self.config['std']
+        self.dataset_count = self.config['num_datasets']
 
         self.hardness_save_dir = os.path.join(ROOT, f"Results/{self.data_cleanliness}{self.dataset_name}/")
         self.figure_save_dir = os.path.join(ROOT, f"Figures/{self.dataset_name}_alpha{self.alpha}/")
@@ -37,9 +38,11 @@ class Experiment3:
             os.makedirs(save_dir, exist_ok=True)
 
     def load_hardness_estimates(self):
-        hardness_over_models = np.array(load_hardness_estimates(self.data_cleanliness, self.dataset_name,
-                                                                self.hardness_estimator))
-        hardness_of_ensemble = np.mean(hardness_over_models[:self.config['robust_ensemble_size']], axis=0)
+        hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name).values()
+        hardness_over_models = [hardness_estimates[model_id][self.hardness_estimator]
+                                for model_id in range(len(hardness_estimates))]
+
+        hardness_of_ensemble = np.mean(hardness_over_models[:self.config['num_models_for_hardness']], axis=0)
         return hardness_of_ensemble
 
     def compute_sample_allocation(self, hardness_scores, dataset):
@@ -107,18 +110,21 @@ class Experiment3:
             pickle.dump(samples_per_class, file)
 
         high_is_hard = self.hardness_estimator in ['Confidence', 'AUM']
-        resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
-                                   self.undersampling_strategy, hardnesses_by_class, high_is_hard, self.dataset_name,
-                                   self.num_models, self.mean, self.std)
-        resampled_dataset = resampler.resample_data(samples_per_class)
-        labels = [lbl for _, lbl, _ in resampled_dataset]
-        actual_counts = np.bincount(np.array(labels))
-        for cls in range(self.num_classes):
-            assert actual_counts[cls] == samples_per_class[cls], \
-                f"Mismatch for class {cls}: allocated {samples_per_class[cls]}, got {actual_counts[cls]}"
+        actual_counts, resampled_loaders = None, []
+        for resampled_dataset_id in range(self.dataset_count):
+            resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
+                                       self.undersampling_strategy, hardnesses_by_class, high_is_hard,
+                                       self.dataset_name, self.num_models, self.mean, self.std)
+            resampled_dataset = resampler.resample_data(samples_per_class)
+            # Sanity check below
+            labels = [lbl for _, lbl, _ in resampled_dataset]
+            actual_counts = np.bincount(np.array(labels))
+            for cls in range(self.num_classes):
+                assert actual_counts[cls] == samples_per_class[cls], \
+                    f"Mismatch for class {cls}: allocated {samples_per_class[cls]}, got {actual_counts[cls]}"
 
-        augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
-        resampled_loader = self.get_dataloader(augmented_resampled_dataset, shuffle=True)
+            augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
+            resampled_loaders.append(self.get_dataloader(augmented_resampled_dataset, shuffle=True))
         test_loader = self.get_dataloader(test_dataset, shuffle=False)
 
         print("Samples per class after resampling in training set:")
@@ -127,8 +133,8 @@ class Experiment3:
 
         model_save_dir = (f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_alpha_{self.alpha}_"
                           f"hardness_{self.hardness_estimator}")
-        trainer = ModelTrainer(len(training_dataset), resampled_loader, test_loader, self.dataset_name, model_save_dir,
-                               False, clean_data=self.data_cleanliness == 'clean')
+        trainer = ModelTrainer(len(training_dataset), resampled_loaders, test_loader, self.dataset_name,
+                               model_save_dir, False, clean_data=self.data_cleanliness == 'clean')
         trainer.train_ensemble()
 
 

@@ -1,3 +1,4 @@
+from collections import defaultdict
 import os
 import pickle
 import random
@@ -19,17 +20,18 @@ def set_reproducibility(seed=42):
     torch.backends.cudnn.deterministic = True
 
 
-def get_latest_model_index(save_dir, num_epochs):
+def get_latest_model_index(save_dir, num_epochs, max_dataset_count):
     """Find the latest model index from saved files in the save directory. This makes it easier to add more models
     to the ensemble, as we don't have to retrain from scratch."""
-    max_index = -1
+    max_indices = defaultdict(lambda: -1)
     if os.path.exists(save_dir):
         for filename in os.listdir(save_dir):
-            match = re.search(rf'model_(\d+)_epoch_{num_epochs}\.pth$', filename)
+            match = re.search(rf'dataset_(\d+)model_(\d+)_epoch_{num_epochs}\.pth$', filename)
             if match:
-                index = int(match.group(1))
-                max_index = max(max_index, index)
-    return max_index
+                dataset_idx = int(match.group(1))
+                model_idx = int(match.group(2))
+                max_indices[dataset_idx] = max(max_indices[dataset_idx], model_idx)
+    return [max_indices[i] for i in range(max_dataset_count)]
 
 
 def load_results(path):
@@ -37,10 +39,7 @@ def load_results(path):
         return pickle.load(file)
 
 
-def load_hardness_estimates(data_cleanliness, dataset_name, estimator_name=None):
+def load_hardness_estimates(data_cleanliness, dataset_name):
     path = os.path.join(ROOT, f'Results/{data_cleanliness}{dataset_name}', 'hardness_estimates.pkl')
     hardness_estimates = load_results(path)
-    if estimator_name is None:
-        return hardness_estimates
-    else:
-        return hardness_estimates[estimator_name]
+    return hardness_estimates
