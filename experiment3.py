@@ -111,14 +111,18 @@ class Experiment3:
                                    self.undersampling_strategy, hardnesses_by_class, high_is_hard, self.dataset_name,
                                    self.num_models, self.mean, self.std)
         resampled_dataset = resampler.resample_data(samples_per_class)
+        labels = [lbl for _, lbl, _ in resampled_dataset]
+        actual_counts = np.bincount(np.array(labels))
+        for cls in range(self.num_classes):
+            assert actual_counts[cls] == samples_per_class[cls], \
+                f"Mismatch for class {cls}: allocated {samples_per_class[cls]}, got {actual_counts[cls]}"
 
         augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
-
         resampled_loader = self.get_dataloader(augmented_resampled_dataset, shuffle=True)
         test_loader = self.get_dataloader(test_dataset, shuffle=False)
 
         print("Samples per class after resampling in training set:")
-        for class_id, count in samples_per_class.items():
+        for class_id, count in enumerate(actual_counts):
             print(f"  Class {class_id}: {count}")
 
         model_save_dir = (f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_alpha_{self.alpha}_"
@@ -135,9 +139,9 @@ if __name__ == "__main__":
     parser.add_argument('--dataset_name', type=str, required=True,
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN).")
     parser.add_argument('--oversampling', type=str, required=True,
-                        choices=['random', 'easy', 'hard', 'SMOTE', 'DDPM', 'rEDM', 'hEDM', 'eEDM', 'none'],
+                        choices=['random', 'easy', 'hard', 'SMOTE', 'DDPM', 'rEDM', 'hEDM', 'aEDM', 'none'],
                         help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, '
-                             '`SMOTE`, `DDPM`, `rEDM`, `hEDM`, `eEDM`, and `none`).')
+                             '`SMOTE`, `DDPM`, `rEDM`, `hEDM`, `aEDM`, and `none`).')
     parser.add_argument('--undersampling', type=str, required=True, choices=['easy', 'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, `prune_extreme`, and `none`).')

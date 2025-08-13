@@ -295,8 +295,8 @@ class DataResampling:
             return lambda oversample_targets: self.EDM(oversample_targets, 'random')
         elif self.oversampling_strategy == 'hEDM':
             return lambda oversample_targets: self.EDM(oversample_targets, 'hard')
-        elif self.oversampling_strategy == 'eEDM':
-            return lambda oversample_targets: self.EDM(oversample_targets, 'easy')
+        elif self.oversampling_strategy == 'aEDM':
+            return lambda oversample_targets: self.EDM(oversample_targets, 'average')
         elif self.oversampling_strategy == 'none':
             return None
         else:
@@ -364,7 +364,7 @@ class DataResampling:
                     resampled_indices.extend(current_indices[class_add_indices])
             else:
                 resampled_indices.extend(current_indices)
-        if self.oversampling_strategy in ['DDPM', 'rEDM', 'hEDM', 'eEDM']:
+        if self.oversampling_strategy in ['DDPM', 'rEDM', 'hEDM', 'aEDM']:
             oversample_targets = {
                 class_id: desired_counts[class_id] - current_counts[class_id]
                 for class_id in range(self.num_classes)
@@ -376,7 +376,7 @@ class DataResampling:
             hard_classes_data = torch.cat(hard_classes_data, dim=0)
             hard_classes_labels = torch.cat(hard_classes_labels, dim=0)
 
-        if self.oversampling_strategy in ['SMOTE', 'DDPM', 'rEDM', 'hEDM', 'eEDM']:
+        if self.oversampling_strategy in ['SMOTE', 'DDPM', 'rEDM', 'hEDM', 'aEDM']:
             print(f'Proceeding with {len(hard_classes_data)} data samples from hard classes (real + synthetic data).')
             existing_data, existing_labels = self.extract_data_labels()
 
