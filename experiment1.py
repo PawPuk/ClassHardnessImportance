@@ -13,7 +13,7 @@ def main(dataset_name: str, remove_noise: bool):
     training_loader, training_set, test_loader, _ = load_dataset(dataset_name, remove_noise, True, True)
     training_set_size = len(training_set)
 
-    trainer = ModelTrainer(training_set_size, training_loader, test_loader, dataset_name, estimate_hardness=True,
+    trainer = ModelTrainer(training_set_size, [training_loader], test_loader, dataset_name, estimate_hardness=True,
                            clean_data=remove_noise)
 
     trainer.train_ensemble()

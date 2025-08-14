@@ -211,13 +211,11 @@ class ModelTrainer:
         print('-'*20)
 
         for dataset_id in tqdm(range(self.dataset_count)):
-            for model_id in tqdm(range(num_models_to_train_per_dataset)):
-                for _ in range(latest_model_indices[dataset_id] + 1, num_models_to_train_per_dataset):
-                    hardness_estimates = {(dataset_id, model_id): {}}
-                    self.train_model(dataset_id, model_id, latest_model_indices, hardness_estimates)
-
-                    if self.estimate_hardness:
-                        for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:
-                            hardness_estimates[(dataset_id, model_id)][estimator] = np.mean(
-                                hardness_estimates[(dataset_id, model_id)][estimator], axis=1)
-                        self.save_results(hardness_estimates, (dataset_id, model_id))
+            for model_id in tqdm(range(latest_model_indices[dataset_id] + 1, num_models_to_train_per_dataset)):
+                hardness_estimates = {(dataset_id, model_id): {}}
+                self.train_model(dataset_id, model_id, latest_model_indices, hardness_estimates)
+                if self.estimate_hardness:
+                    for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:
+                        hardness_estimates[(dataset_id, model_id)][estimator] = np.mean(
+                            hardness_estimates[(dataset_id, model_id)][estimator], axis=1)
+                    self.save_results(hardness_estimates, (dataset_id, model_id))

@@ -27,7 +27,7 @@ class Experiment3:
         self.num_classes = self.config['num_classes']
         self.num_epochs = self.config['num_epochs']
         self.num_samples = sum(self.config['num_training_samples'])
-        self.num_models = self.config['num_models']
+        self.num_models_for_hardness = self.config['num_models_for_hardness']
         self.mean = self.config['mean']
         self.std = self.config['std']
         self.dataset_count = self.config['num_datasets']
@@ -38,11 +38,11 @@ class Experiment3:
             os.makedirs(save_dir, exist_ok=True)
 
     def load_hardness_estimates(self):
-        hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name).values()
+        hardness_estimates = list(load_hardness_estimates(self.data_cleanliness, self.dataset_name).values())
         hardness_over_models = [hardness_estimates[model_id][self.hardness_estimator]
                                 for model_id in range(len(hardness_estimates))]
 
-        hardness_of_ensemble = np.mean(hardness_over_models[:self.config['num_models_for_hardness']], axis=0)
+        hardness_of_ensemble = np.mean(hardness_over_models[:self.num_models_for_hardness], axis=0)
         return hardness_of_ensemble
 
     def compute_sample_allocation(self, hardness_scores, dataset):
@@ -111,17 +111,18 @@ class Experiment3:
 
         high_is_hard = self.hardness_estimator in ['Confidence', 'AUM']
         actual_counts, resampled_loaders = None, []
-        for resampled_dataset_id in range(self.dataset_count):
+        for _ in range(self.dataset_count):
             resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
                                        self.undersampling_strategy, hardnesses_by_class, high_is_hard,
-                                       self.dataset_name, self.num_models, self.mean, self.std)
+                                       self.dataset_name, self.num_models_for_hardness, self.mean, self.std)
             resampled_dataset = resampler.resample_data(samples_per_class)
             # Sanity check below
             labels = [lbl for _, lbl, _ in resampled_dataset]
             actual_counts = np.bincount(np.array(labels))
-            for cls in range(self.num_classes):
-                assert actual_counts[cls] == samples_per_class[cls], \
-                    f"Mismatch for class {cls}: allocated {samples_per_class[cls]}, got {actual_counts[cls]}"
+            if self.undersampling_strategy != 'none' and self.oversampling_strategy != 'none':
+                for cls in range(self.num_classes):
+                    assert actual_counts[cls] == samples_per_class[cls], \
+                        f"Mismatch for class {cls}: allocated {samples_per_class[cls]}, got {actual_counts[cls]}"
 
             augmented_resampled_dataset = self.perform_data_augmentation(resampled_dataset)
             resampled_loaders.append(self.get_dataloader(augmented_resampled_dataset, shuffle=True))
