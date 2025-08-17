@@ -1,31 +1,45 @@
+"""This is the second important module that allows training the ensembles on pruned subdatasets."""
+
 import argparse
-from math import floor
 import os.path
+from typing import Dict, List, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-import torch
 from torch.utils.data import DataLoader
 
 from data_pruning import DataPruning
 from train_ensemble import ModelTrainer
 from config import get_config, ROOT
-from data import load_dataset
-from utils import load_hardness_estimates, load_results, set_reproducibility
+from data import AugmentedSubset, IndexedDataset, load_dataset, perform_data_augmentation
+from utils import compute_sample_allocation_after_resampling, load_hardness_estimates, set_reproducibility
 
 
 class Experiment2:
-    def __init__(self, pruning_strategy: str, dataset_name: str, pruning_type: str, pruning_rate: int,
-                 hardness_estimator: str):
+    """Encapsulates all the necessary methods to perform the pruning experiments."""
+    def __init__(self, pruning_strategy: str, dataset_name: str, pruning_rate: int, hardness_estimator: str,
+                 oversampling_strategy: str):
+        """Initialize the Experiment2 class with configuration specific to the current experiment.
+
+        :param pruning_strategy: Specifies the pruning strategy. The only viable options are `clp` and `dlp`. The former
+        indicates that pruning will be performed at class level ensuring balanced pruned subdatasets. The latter
+        indicates dataset-level pruning and requires `oversampling_strategy` to be specified. Ths is because dlp
+        operates by first performing clp and then applying hardness-based resampling on the pruned subdataset.
+        :param dataset_name: Name of the dataset.
+        :param pruning_rate: An integer specifying the percentage of samples that will be pruned from the dataset.
+        :param hardness_estimator: Name of the hardness estimator that will be used to compute the resampling ratios,
+        which specifies how many samples to keep in each class after hardness-based resampling.
+        :param oversampling_strategy: Name of the oversampling strategy for dlp.
+        """
         set_reproducibility()
 
         self.dataset_name = dataset_name
         self.pruning_strategy = pruning_strategy
-        self.pruning_type = pruning_type
         self.pruning_rate = pruning_rate
         self.hardness_estimator = hardness_estimator
+        self.oversampling_strategy = oversampling_strategy
 
         # Constants taken from config
         config = get_config(dataset_name)
@@ -34,35 +48,31 @@ class Experiment2:
         self.MODEL_DIR = config['save_dir']
         self.NUM_CLASSES = config['num_classes']
         self.NUM_EPOCHS = config['num_epochs']
-        self.NUM_TRAINING_SAMPLES = config['num_training_samples']
+        self.NUM_TRAINING_SAMPLES = sum(config['num_training_samples'])
+        self.DATASET_COUNT = config['num_datasets']
+        self.NUM_MODELS_FOR_HARDNESS = config['num_models_for_hardness']
 
         self.figure_save_dir = os.path.join(ROOT, 'Figures/')
 
-    def compute_imbalance_ratio_with_hardness(self, hardness_scores, labels):
-        hardnesses_by_class, hardness_of_classes = {class_id: [] for class_id in range(self.NUM_CLASSES)}, {}
-        estimates = np.mean(np.array(hardness_scores), axis=0)
-
-        for i, label in enumerate(labels):
-            hardnesses_by_class[label].append(estimates[i])
-
-        for class_id in range(self.NUM_CLASSES):
-            if self.hardness_estimator in ['AUM', 'Confidence', 'iAUM', 'iConfidence']:
-                hardness_of_classes[class_id] = 1 / np.mean(hardnesses_by_class[class_id])
-            else:
-                hardness_of_classes[class_id] = np.mean(hardnesses_by_class[class_id])
-        ratios = {class_id: class_hardness / sum(hardness_of_classes.values())
-                  for class_id, class_hardness in hardness_of_classes.items()}
-        samples_per_class = np.array([int(floor((1 - self.pruning_rate / 100) * ratio * sum(self.NUM_TRAINING_SAMPLES)))
-                                      for class_id, ratio in ratios.items()])
-
-        return samples_per_class
-
-    def investigate_resampling_ratios(self, hardness_estimates, labels, thresholds):
+    def investigate_resampling_ratios(self, hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]],
+                                      labels: List[int], thresholds: List[int]
+                                      ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]], Dict[str, List[int]]]:
+        """The resampling ratios can be obtained through various means. Currently, we are computing them using the
+        formulations from compute_imbalance_ratio_with_hardness() method, but they can be also obtained through simple
+        pruning. If we perform dataset-level pruning focusing on removing easy sample we inadvertently produce
+        imbalanced pruned subdatasets. This imbalance could be also used as resampling ratio. The idea behind this
+        method was to check if the resampling ratios computed through this pruning approach are stable across pruning
+        thresholds - if they are (and they are) then it gives them legitimacy. However, pursuing this direction requires
+        more work and is related to modifying the hardness-based resampling by focusing on the algorithm that produces
+        resampling_ratios. This is interesting future direction but beyond our current scope.
+        """
         per_class_counts, pearson_scores, spearman_scores, ideal_ratios, window_size = {}, {}, {}, {}, 5
-        for estimator_name in hardness_estimates.keys():
+        for estimator_name in hardness_estimates[(0, 0)].keys():
             if estimator_name == 'probs':
                 continue
-            estimates = np.mean(np.array(hardness_estimates[estimator_name]), axis=0)
+            hardness_over_models = [hardness_estimates[(0, model_id)][estimator_name]
+                                    for model_id in range(len(hardness_estimates))]
+            estimates = np.mean(np.array(hardness_over_models[:self.NUM_MODELS_FOR_HARDNESS]), axis=0)
             sorted_indices = np.argsort(estimates)
             num_samples = len(estimates)
             per_class_counts[estimator_name] = []
@@ -85,17 +95,23 @@ class Experiment2:
             combined_avg = (pearson_avg + spearman_avg) / 2
             best_combined_idx = combined_avg.idxmax()
             ideal_ratios[estimator_name] = per_class_counts[estimator_name][best_combined_idx]
-            # ideal_ratios[estimator_name] = per_class_counts[estimator_name][25]  # sanity check
             print(f'{best_combined_idx} is the best ratio for {estimator_name}.')
+        hardness_over_models = [hardness_estimates[(0, model_id)][self.hardness_estimator]
+                                for model_id in range(len(hardness_estimates))]
+        estimates = list(np.mean(np.array(hardness_over_models[:self.NUM_MODELS_FOR_HARDNESS]), axis=0))
         # Hardness-Based Resampling Ratio computation
-        ideal_ratios['HBRR'] = self.compute_imbalance_ratio_with_hardness(hardness_estimates[self.hardness_estimator],
-                                                                          labels)
-        # ideal_ratios['HBRR'] = self.compute_imbalance_ratio_with_hardness(hardness_estimates['Confidence'], labels)
-        return per_class_counts, pearson_scores, spearman_scores, ideal_ratios
+        ideal_ratios['HBRR'], _ = compute_sample_allocation_after_resampling(estimates, labels, self.NUM_CLASSES,
+                                                                             self.NUM_TRAINING_SAMPLES,
+                                                                             self.hardness_estimator, self.pruning_rate)
+        return pearson_scores, spearman_scores, ideal_ratios
 
-    def measure_stability_of_resampling_ratios(self, pearson_scores, spearman_scores, ideal_ratios, hardness_estimates,
-                                               thresholds):
-        for estimator_name in hardness_estimates.keys():
+    def measure_stability_of_resampling_ratios(self, pearson_scores: Dict[str, List[float]],
+                                               spearman_scores: Dict[str, List[float]],
+                                               ideal_ratios: Dict[str, List[int]],
+                                               hardness_estimates:  Dict[Tuple[int, int], Dict[str, List[float]]],
+                                               thresholds: List[int]):
+        """Produces the visualizations for the stability experiments performed in investigate_resampling_ratios()."""
+        for estimator_name in hardness_estimates[(0, 0)].keys():
             if estimator_name == 'probs':
                 continue
             plt.figure(figsize=(8, 5))
@@ -112,14 +128,14 @@ class Experiment2:
             plt.close()
 
         ideal_ratios_df = pd.DataFrame(ideal_ratios)
-        correlation_matrix = ideal_ratios_df.corr(method='pearson')  # or 'spearman'
+        correlation_matrix = ideal_ratios_df.corr()
         fig = plt.figure(figsize=(10, 8))
         sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm')
         plt.title("Pearson Correlation Matrix of Ideal Resampling Ratios")
         fig.savefig(os.path.join(self.figure_save_dir, f"unclean{self.dataset_name}",
                                  "resampling_ratio_pearson_correlation_matrix.pdf"))
         plt.close()
-        correlation_matrix = ideal_ratios_df.corr(method='spearman')  # or 'spearman'
+        correlation_matrix = ideal_ratios_df.corr(method='spearman')
         fig = plt.figure(figsize=(10, 8))
         sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm')
         plt.title("Spearman Correlation Matrix of Ideal Resampling Ratios")
@@ -127,50 +143,39 @@ class Experiment2:
                                  "resampling_ratio_spearman_correlation_matrix.pdf"))
         plt.close()
 
-    def prune_dataset(self, labels, training_loader, hardness_estimates = None, high_is_hard = None,
-                      imbalance_ratio = None):
-        pruner = DataPruning(hardness_estimates, self.pruning_rate, self.dataset_name, high_is_hard, imbalance_ratio)
-
+    def prune_dataset(self, labels: List[int], training_dataset: Union[AugmentedSubset, IndexedDataset],
+                      imbalance_ratio: List[int]) -> AugmentedSubset:
+        """Produce the pruned dataset through DataPruning"""
+        pruner = DataPruning(self.pruning_rate, self.dataset_name, imbalance_ratio)
         if self.pruning_strategy == 'dlp':
-            remaining_indices = pruner.dataset_level_pruning(labels)
+            pruned_subdataset = pruner.resampling_pruned_subdataset(self.oversampling_strategy, labels,
+                                                                    training_dataset)
         elif self.pruning_strategy == 'clp':
-            remaining_indices = pruner.class_level_pruning(labels)
+            pruned_subdataset = pruner.class_level_pruning(labels, training_dataset)
         else:
             raise ValueError('Wrong value of the parameter `pruning_strategy`.')
-
-        # Create a new pruned dataset
-        pruned_dataset = torch.utils.data.Subset(training_loader.dataset, remaining_indices)
-
-        return pruned_dataset
+        augmented_subdataset = perform_data_augmentation(pruned_subdataset, self.dataset_name)
+        return augmented_subdataset
 
     def run_experiment(self):
-        training_loader, training_dataset, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
-        labels = np.array([label for _, label, _ in training_dataset])
+        """Main method for running the experiments."""
+        _, training_dataset, test_loader, _ = load_dataset(self.dataset_name)
+        labels = [training_dataset[idx][1].item() for idx in range(len(training_dataset))]
 
         hardness_estimates = load_hardness_estimates('unclean', self.dataset_name)
-        thresholds = np.arange(0, 100, 1)
-        per_class_counts, pearson_scores, spearman_scores, ideal_ratios = self.investigate_resampling_ratios(
-            hardness_estimates, labels, thresholds)
+        thresholds = [i for i in range(1, 100, 1)]
+        pearson_scores, spearman_scores, ideal_ratios = self.investigate_resampling_ratios(hardness_estimates, labels,
+                                                                                           thresholds)
         self.measure_stability_of_resampling_ratios(pearson_scores, spearman_scores, ideal_ratios, hardness_estimates,
                                                     thresholds)
-        if self.pruning_type == 'easy':
-            if self.hardness_estimator in ['DataIQ', 'iDataIQ', 'Forgetting', 'Loss', 'iLoss', 'EL2N']:
-                pruned_dataset = self.prune_dataset(labels, training_loader,
-                                                    hardness_estimates[self.hardness_estimator], True)
-            elif self.hardness_estimator in ['Confidence', 'iConfidence', 'AUM', 'iAUM']:
-                pruned_dataset = self.prune_dataset(labels, training_loader,
-                                                    hardness_estimates[self.hardness_estimator], False)
-            else:
-                raise ValueError(f'{self.hardness_estimator} is not a supported hardness estimator.')
-        else:
-            pruned_dataset = self.prune_dataset(labels, training_loader, imbalance_ratio=ideal_ratios['HBRR'])
+        pruned_training_loaders = []
+        for _ in range(self.DATASET_COUNT):
+            pruned_dataset = self.prune_dataset(labels, training_dataset, ideal_ratios['HBRR'])
+            pruned_training_loaders.append(DataLoader(pruned_dataset, batch_size=self.BATCH_SIZE, shuffle=True,
+                                                      num_workers=2))
 
-        # This is required to shuffle the data.
-        pruned_training_loader = DataLoader(pruned_dataset, batch_size=self.BATCH_SIZE, shuffle=True, num_workers=2)
-
-        pruning_type = f"{self.pruning_type}_{self.pruning_strategy}{self.pruning_rate}"
-        trainer = ModelTrainer(len(training_dataset), pruned_training_loader, test_loader, self.dataset_name,
-                               pruning_type, False)
+        trainer = ModelTrainer(len(training_dataset), pruned_training_loaders, test_loader, self.dataset_name,
+                               f"{self.pruning_strategy}{self.pruning_rate}", False)
         trainer.train_ensemble()
 
 
@@ -180,16 +185,19 @@ if __name__ == "__main__":
                         help='Choose pruning strategy: clp (fixed class level pruning) or dlp (data level pruning)')
     parser.add_argument('--dataset_name', type=str, choices=['CIFAR10', 'CIFAR100'],
                         help='Specify the dataset name (default: CIFAR10)')
-    parser.add_argument('--pruning_type', type=str, choices=['easy', 'random'],
-                        help='Specify if the pruning is to be performed on easy or random samples.')
     parser.add_argument('--pruning_rate', type=int,
                         help='Percentage of data samples that will be removed during data pruning (use integers).')
     parser.add_argument('--hardness_estimator', type=str, default='AUM',
                         help='Specifies which hardness estimator to use for pruning.')
+    parser.add_argument('--oversampling_strategy', type=str, choices=['random', 'SMOTE', 'holdout'],
+                        help='Specifies what oversampling to use (only applicable for dlp)')
 
     args = parser.parse_args()
 
     # Initialize and run the experiment
-    experiment = Experiment2(args.pruning_strategy, args.dataset_name,  args.pruning_type, args.pruning_rate,
-                             args.hardness_estimator)
+    experiment = Experiment2(args.pruning_strategy, args.dataset_name, args.pruning_rate, args.hardness_estimator,
+                             args.oversampling_strategy)
     experiment.run_experiment()
+
+
+# TODO: Implement holdout oversampling

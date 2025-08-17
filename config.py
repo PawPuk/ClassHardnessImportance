@@ -1,5 +1,19 @@
-import os
+"""
+The config module: Provides configuration information for training and visualization.
 
+Important parts:
+* ROOT is set to '.' by default.
+* The information in dataset_configs can be modified for custom training setting.
+* get_config() is a crucial function from this module that allows access to the dataset_configs from other files.
+"""
+
+import os
+from typing import Dict, List, Tuple, Union
+
+import torch
+
+
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 ROOT = '.'
 
 dataset_configs = {
@@ -21,7 +35,7 @@ dataset_configs = {
         'safe_pruning_ratios': [48.8, 74.22, 29.08, 10.64, 45.8, 31.44, 54.92, 58.36, 67.28, 63.66],
         'class_names': ['plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck'],
         'num_datasets': 4,
-        'num_models_per_dataset': 5,
+        'num_models_per_dataset': 4,
         'num_models_for_hardness': 10
     },
     'CIFAR100': {
@@ -51,15 +65,20 @@ dataset_configs = {
             'streetcar', 'sunflower', 'sweet_pepper', 'table', 'tank', 'telephone', 'television', 'tiger', 'tractor',
             'train', 'trout', 'tulip', 'turtle', 'wardrobe', 'whale', 'willow_tree', 'wolf', 'woman', 'worm'],
         'num_datasets': 4,
-        'num_models_per_dataset': 5,
+        'num_models_per_dataset': 4,
         'num_models_for_hardness': 10
     }
 }
 
 
-def get_config(dataset_name):
+def get_config(dataset_name: str) -> Dict[str, Union[int, float, str, List[int], List[float], List[str], Tuple[
+                                     float, float, float]]]:
     """
     Fetch the appropriate configuration based on the dataset name.
+
+    :param dataset_name: Name of the dataset.
+
+    :return: Dictionary containing all the configuration information for the specified dataset
     """
     if dataset_name in dataset_configs:
         config = dataset_configs[dataset_name]
