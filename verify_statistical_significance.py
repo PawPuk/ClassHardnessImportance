@@ -1,7 +1,13 @@
+"""This is the first visualization module that focuses on the results of experiment1.py.
+
+Main purpose:
+* Compute instant metrics (iConfidence, iAUM, iLoss, iDataIQ, and EL2N)
+* Measure stability and robustness of hardness estimates to the changes in ensemble size."""
+
 import argparse
 from itertools import combinations
 import os
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from matplotlib.cm import get_cmap
 import matplotlib.pyplot as plt
@@ -9,19 +15,28 @@ import numpy as np
 import pickle
 import seaborn as sns
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import torchvision
 from tqdm import tqdm
 
-from config import get_config, ROOT
+from config import DEVICE, get_config, ROOT
 from data import AugmentedSubset, load_dataset
 from neural_networks import ResNet18LowRes
-from utils import get_latest_model_index, load_hardness_estimates
+from utils import compute_sample_allocation_after_resampling, load_hardness_estimates, restructure_hardness_dictionary
 
 
 class Visualizer:
-    def __init__(self, dataset_name, remove_noise):
+    """Encapsulates all the necessary methods to perform the visualization and computation of `instant` hardness
+    estimates."""
+    def __init__(self, dataset_name: str, remove_noise: bool):
+        """Initialize the Visualizer class responsible for visualizing the robustness of hardness estimates produced by
+        experiment1.py in regard to the ensemble size.
+
+        :param dataset_name: Name of the dataset
+        :param remove_noise: If experiment1.py was run with this parameter raised than it also has to be raised here.
+        Otherwise, keep it as it.
+
+        """
         self.dataset_name = dataset_name
         self.data_cleanliness = 'clean' if remove_noise else 'unclean'
 
@@ -31,6 +46,8 @@ class Visualizer:
         self.num_training_samples = sum(config['num_training_samples'])
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
+        self.num_models_per_dataset = config['num_models_per_dataset']
+        self.num_datasets = config['num_datasets']
 
         self.results_save_dir = os.path.join(ROOT, 'Results/', f'{self.data_cleanliness}{dataset_name}')
         self.figures_save_dir = os.path.join(ROOT, 'Figures/', f'{self.data_cleanliness}{dataset_name}')
@@ -38,11 +55,9 @@ class Visualizer:
             os.makedirs(save_dir, exist_ok=True)
 
         self.pruning_thresholds = np.array([10, 20, 30, 40, 50])
-        model_save_dir = os.path.join(config['save_dir'], 'none', f'{self.data_cleanliness}{dataset_name}')
-        self.num_models = get_latest_model_index(model_save_dir, self.num_epochs) + 1
 
     def load_model(self, model_id: int, probe=False) -> ResNet18LowRes:
-        model = ResNet18LowRes(num_classes=self.num_classes).cuda()
+        model = ResNet18LowRes(num_classes=self.num_classes).to(DEVICE)
         epoch = self.save_epoch if probe else self.num_epochs
         model_path = os.path.join(self.model_dir, 'none', f"{self.data_cleanliness}{args.dataset_name}",
                                   f'model_{model_id}_epoch_{epoch}.pth')
@@ -55,59 +70,69 @@ class Visualizer:
 
         return model
 
-    def compute_instance_scores(self, hardness_estimates: Dict[str, List[List[float]]], dataloader: DataLoader):
+    def compute_instance_scores(self, hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]],
+                                dataloader: DataLoader):
         """
         Compute instance-level hardness scores using the final trained model.
 
         Each maps to a list of per-sample scores, ordered according to dataset indices.
         """
-        for new_hardness_estimate in ['iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N', 'probs']:
-            hardness_estimates[new_hardness_estimate] = [[0.0 for _ in range(self.num_training_samples)]
-                                                         for _ in range(self.num_models)]
-        for model_id in tqdm(range(self.num_models), desc='Iterating through models.'):
+        for model_id in tqdm(range(self.num_models_per_dataset), desc='Iterating through models.'):
+            for new_hardness_estimate in ['iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N', 'probs']:
+                hardness_estimates[(0, model_id)][new_hardness_estimate] = []
             model = self.load_model(model_id)
             probe_model = self.load_model(model_id, probe=True)
             model.eval()
             probe_model.eval()
-            features = []
             with torch.no_grad():
-                for inputs, labels, indices in dataloader:
+                for inputs, labels, _ in dataloader:
                     inputs, labels = inputs.cuda(), labels.cuda()
-                    outputs, latent_inputs = model(inputs, True)
-                    probe_outputs, _ = probe_model(inputs, True)
-                    features.append(latent_inputs)
+                    outputs = model(inputs)
+                    probe_outputs = probe_model(inputs)
                     _, predicted = torch.max(outputs.data, 1)
-                    for x, label, i, logits, probe_logits in zip(inputs, labels, indices, outputs, probe_outputs):
-                        i = i.item()
-                        correct_label = label.item()
+                    for x, y, logits, probe_logits in zip(inputs, labels, outputs, probe_outputs):
+                        y_hat = y.item()
                         logits = logits.detach()
                         probe_logits = probe_logits.detach()
-                        correct_logit = logits[correct_label].item()
+                        correct_logit = logits[y_hat].item()
                         probs = torch.nn.functional.softmax(logits, dim=0)
                         probe_probs = torch.nn.functional.softmax(probe_logits, dim=0)
 
-                        hardness_estimates['probs'][model_id][i] = probs[correct_label].item()
+                        hardness_estimates[(0, model_id)]['probs'].append(probs[y_hat].item())
                         # iConfidence
-                        hardness_estimates['iConfidence'][model_id][i] = correct_logit
+                        hardness_estimates[(0, model_id)]['iConfidence'].append(correct_logit)
                         # iAUM
-                        max_other_logit = torch.max(torch.cat((logits[:correct_label],
-                                                               logits[correct_label + 1:]))).item()
-                        hardness_estimates['iAUM'][model_id][i] = correct_logit - max_other_logit
+                        max_other_logit = torch.max(torch.cat((logits[:y_hat], logits[y_hat + 1:]))).item()
+                        aum = correct_logit - max_other_logit
+                        hardness_estimates[(0, model_id)]['iAUM'].append(aum)
                         # iDataIQ
-                        p_y = probs[correct_label].item()
-                        hardness_estimates['iDataIQ'][model_id][i] = p_y * (1 - p_y)
+                        p_y = probs[y_hat].item()
+                        uncertainty = p_y * (1 - p_y)
+                        hardness_estimates[(0, model_id)]['iDataIQ'].append(uncertainty)
                         # iLoss
-                        label_tensor = torch.tensor([correct_label], device=logits.device)
+                        label_tensor = torch.tensor([y_hat], device=logits.device)
                         loss = torch.nn.functional.cross_entropy(logits.unsqueeze(0), label_tensor).item()
-                        hardness_estimates['iLoss'][model_id][i] = loss
+                        hardness_estimates[(0, model_id)]['iLoss'].append(loss)
                         # EL2N
-                        one_hot = F.one_hot(label, num_classes=self.num_classes).float()
+                        one_hot = torch.nn.functional.one_hot(y, num_classes=self.num_classes).float()
                         el2n = torch.norm(probe_probs - one_hot).item()
-                        hardness_estimates['EL2N'][model_id][i] = el2n
+                        hardness_estimates[(0, model_id)]['EL2N'].append(el2n)
 
-    def plot_instance_level_hardness_distributions(self, hardness_estimates):
-        values = np.array(hardness_estimates['probs'])
-        values = np.mean(values, axis=0)
+    def save_hardness_estimates(self, hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]]):
+        """Save the updated hardness estimates."""
+        hardness_save_dir = os.path.join(ROOT, f"Results/{self.data_cleanliness}{self.dataset_name}/")
+        path = os.path.join(hardness_save_dir, 'hardness_estimates.pkl')
+        with open(path, "wb") as file:
+            print(f'Saving updated hardness estimates.')
+            # noinspection PyTypeChecker
+            pickle.dump(hardness_estimates, file)
+
+    def plot_instance_level_hardness_distributions(self,
+                                                   hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]]):
+        """The purpose of this visualization is to see the distribution of `probs`. This is required to validate the
+        equivalence of iLoss and iDataIQ results."""
+        values = [hardness_estimates[(0, model_id)]['probs'] for model_id in range(len(hardness_estimates))]
+        values = np.mean(np.array(values), axis=0)
         sorted_vals = np.sort(values)
         plt.figure(figsize=(8, 5))
         plt.plot(sorted_vals)
@@ -118,86 +143,108 @@ class Visualizer:
         plt.tight_layout()
         plt.savefig(os.path.join(self.figures_save_dir, f"sorted_hardness_probs.pdf"))
         plt.close()
-        del hardness_estimates['probs']
 
-    def get_pruned_indices(self, hardness_estimates: Dict[str, List[List[float]]]) -> \
-            Dict[str, Dict[str, List[List[List[int]]]]]:
+    def get_pruned_indices(self, hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]]
+                           ) -> Dict[str, Dict[str, List[List[List[List[int]]]]]]:
         """Extract the indices of data samples that would have been pruned if a threshold (from self.pruning_thresholds)
         was applied to different hardness estimates computed using ensembles of various sizes. This allows us to measure
         the reliability of those hardness estimates (e.g., how many models in the ensemble they need to output
-        consistent pruning indices).
+        consistent pruning indices). We repeat the results for `self.num_datasets` random subensemble to add robustness
+        to our findings.
         """
-        results = {'easy': {}, 'hard': {}}
-
-        for metric_name, metric_scores in tqdm(hardness_estimates.items(), desc='Computing pruned indices.'):
+        pruned_indices = {'easy': {}, 'hard': {}}
+        restructured_hardness_estimates = restructure_hardness_dictionary(hardness_estimates)
+        for metric_name, metric_scores in tqdm(restructured_hardness_estimates.items(),
+                                               desc='Computing pruned indices.'):
             metric_scores = np.array(metric_scores)
-            results['easy'][metric_name], results['hard'][metric_name] = [], []
-
+            pruned_indices['easy'][metric_name], pruned_indices['hard'][metric_name] = [], []
             for thresh in self.pruning_thresholds:
                 prune_count = int((thresh / 100) * self.num_training_samples)
-                metric_easy_results, metric_hard_results = [], []
+                pruned_indices['easy'][metric_name].append([])
+                pruned_indices['hard'][metric_name].append([])
+                max_ensemble_size = len(metric_scores)
+                # Iterate through different subensemble sizes
+                for subensemble_size in range(1, max_ensemble_size // 2 + 1):
+                    pruned_indices['easy'][metric_name][thresh].append([])
+                    pruned_indices['hard'][metric_name][thresh].append([])
+                    for _ in range(self.num_datasets):
+                        # Produce random subensemble
+                        subensemble_indices = np.random.choice(range(max_ensemble_size), subensemble_size,
+                                                               replace=False)
+                        subensemble_scores = metric_scores[np.array([subensemble_indices])]
+                        # Compute the average hardness score of each sample as a function of the ensemble size
+                        avg_hardness_scores = np.mean(subensemble_scores, axis=0)
+                        # For AUM & Confidence, hard samples have lower values (opposite for other hardness estimators).
+                        if metric_name in ['AUM', 'Confidence', 'iAUM', 'iConfidence']:
+                            sorted_indices = np.argsort(-avg_hardness_scores)
+                        else:
+                            sorted_indices = np.argsort(avg_hardness_scores)
+                        pruned_easy_indices = sorted_indices[:prune_count]
+                        pruned_hard_indices = sorted_indices[-prune_count:]
+                        pruned_indices['easy'][metric_name][thresh][subensemble_size - 1].append(
+                            pruned_easy_indices.tolist())
+                        pruned_indices['hard'][metric_name][thresh][subensemble_size - 1].append(
+                            pruned_hard_indices.tolist())
+        return pruned_indices
 
-                for num_ensemble_models in range(1, self.num_models + 1):
-                    # Compute the average hardness score of each sample as a function of the ensemble size
-                    avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
-                    # For AUM and Confidence, hard samples have lower values (opposite for other hardness estimators).
-                    if metric_name in ['AUM', 'Confidence', 'iAUM', 'iConfidence']:
-                        sorted_indices = np.argsort(-avg_hardness_scores)
-                    else:
-                        sorted_indices = np.argsort(avg_hardness_scores)
-                    pruned_easy_indices = sorted_indices[:prune_count]
-                    pruned_hard_indices = sorted_indices[-prune_count:]
-                    metric_easy_results.append(pruned_easy_indices.tolist())
-                    metric_hard_results.append(pruned_hard_indices.tolist())
-                results['easy'][metric_name].append(metric_easy_results)
-                results['hard'][metric_name].append(metric_hard_results)
+    def compute_stability_of_pruning(self, pruned_indices: Dict[str, Dict[str, List[List[List[List[int]]]]]],
+                                     num_subensembles: int, num_pruning_thresholds: int
+                                     ) -> Dict[str, Dict[str, List[List[List[float]]]]]:
+        """Computes the stability of the pruning indices by measuring the percentage change between two sets of pruned
+        indices, where one was obtained using j models and another using j+1 models."""
+        metric_names = list(pruned_indices['easy'].keys())
 
-        return results
-
-    @staticmethod
-    def compute_stability_of_pruning(results):
-        metric_names = list(results['easy'].keys())
-        num_pruning_thresholds = len(results['easy']['Confidence'])
-        num_models = len(results['easy']['Confidence'][0])
         stability_results = {
             hardness_type: {
-                metric_name: np.zeros((num_pruning_thresholds, num_models - 1)) for metric_name in metric_names
+                metric_name: [[[] for _ in range(num_subensembles - 1)] for _ in range(num_pruning_thresholds)]
+                for metric_name in metric_names
             } for hardness_type in ['easy', 'hard']
         }
+
         for metric_name in metric_names:
             for hardness_type in ['hard', 'easy']:
-                metric_results = results[hardness_type][metric_name]
                 for i in range(num_pruning_thresholds):
-                    for j in range(num_models - 1):
-                        set1 = set(metric_results[i][j])  # Pruned indices for ensemble with j models
-                        set2 = set(metric_results[i][j + 1])  # Pruned indices for ensemble with j + 1 models
-                        changed = len(set2 - set1) / len(set1)
-                        stability_results[hardness_type][metric_name][i][j] = changed * 100
-        return stability_results, num_models, num_pruning_thresholds
+                    for j in range(num_subensembles - 1):
+                        for subensemble_idx in range(self.num_datasets):
+                            set1 = set(pruned_indices[hardness_type][metric_name][i][j][subensemble_idx])
+                            set2 = set(pruned_indices[hardness_type][metric_name][i][j + 1][subensemble_idx])
+                            changed = len(set2 - set1) / len(set1)
+                            stability_results[hardness_type][metric_name][i][j].append(changed * 100)
+        return stability_results
 
-    def visualize_stability_of_pruning(self, stability_results, num_models, num_pruning_thresholds):
+    def visualize_stability_of_pruning_via_heatmap(self, num_subensembles: int, num_pruning_thresholds: int,
+                                                   stability_results: Dict[str, Dict[str, List[List[List[float]]]]]):
+        """This visualization is a heatmap showing the stability of pruned indices as a function of ensemble size and
+        pruning rate. We used it in the TPAMI paper. This only portrays the average stability (hard to put std here)."""
+
+        def custom_format(val):
+            """Helper function that modifies the format in which values are reported for visual clarity."""
+            if val >= 10:
+                return f"{int(round(val))}"
+            elif round(val) == 10 and val >= 9.95:
+                return f"{int(round(val))}"
+            elif 1 < val < 10:
+                return f"{val:.1f}"
+            elif round(val) == 1 and val > 0.99:
+                return f"{val:.1f}"
+            else:
+                return f"{round(val, 2):.2f}"[1:]
+
         metric_names = list(stability_results['easy'].keys())
-        vmin, vmax = 0, 100  # Ensure all heatmaps share the same scale
+        v_min, v_max = 0, 100  # Ensure all heatmaps share the same scale
 
         for metric_name in metric_names:
             for hardness_type in ['hard', 'easy']:
-                # Format the annotation values
-                def custom_format(val):
-                    if val >= 10:
-                        return f"{int(round(val))}"
-                    elif round(val) == 10 and val >= 9.95:
-                        return f"{int(round(val))}"
-                    elif 1 < val < 10:
-                        return f"{val:.1f}"
-                    elif round(val) == 1 and val > 0.99:
-                        return f"{val:.1f}"
-                    else:
-                        return f"{round(val, 2):.2f}"[1:]
+                # Convert 3D list (threshold × ensemble_size × subensembles) into a 2D array of averages
+                avg_matrix = np.zeros((num_pruning_thresholds, num_subensembles - 1))
+                for i in range(num_pruning_thresholds):
+                    for j in range(num_subensembles - 1):
+                        avg_matrix[i, j] = np.mean(stability_results[hardness_type][metric_name][i][j])
 
                 # Create figure and plot the heatmap
                 plt.figure(figsize=(10, 6))
-                sns.heatmap(stability_results[hardness_type][metric_name], annot=True, fmt='.2f', cmap='coolwarm',
-                            cbar_kws={'label': 'Jaccard Overlap'}, vmin=vmin, vmax=vmax)  # Set color scale
+                sns.heatmap(avg_matrix, annot=True, fmt='.2f', cmap='coolwarm',
+                            cbar_kws={'label': 'Jaccard Overlap'}, vmin=v_min, vmax=v_max)  # Set color scale
 
                 # Adjust the annotation format
                 for text in plt.gca().texts:
@@ -206,13 +253,19 @@ class Visualizer:
                 plt.title(f'{hardness_type.capitalize()} PCR Based on {metric_name.upper()}')
                 plt.xlabel('Ensemble size during hardness estimation')
                 plt.ylabel('Pruning threshold (%)')
-                plt.xticks(np.arange(num_models - 1) + 0.5, np.arange(1, num_models))
+                plt.xticks(np.arange(num_subensembles - 1) + 0.5, np.arange(1, num_subensembles))
                 plt.yticks(np.arange(num_pruning_thresholds) + 0.5, self.pruning_thresholds)
                 plt.savefig(os.path.join(self.figures_save_dir,
                                          f'pruning_{hardness_type}_stability_based_on_{metric_name}.pdf'))
                 plt.close()
 
-    def plot_stability_summary_across_metrics(self, stability_results, num_models, num_pruning_thresholds):
+    def visualize_stability_of_pruning_via_plots(self, num_subensembles: int, num_pruning_thresholds: int,
+                                                 stability_results: Dict[str, Dict[str, List[List[List[float]]]]]):
+        """This visualization shows the Pruning Change Rate (PCR) across ensemble sizes. High PCR indicate that adding a
+        model to the ensemble will significantly change the pruned indices. This is a more visually appealing version of
+        the heatmap from visualize_stability_of_pruning, however it conveys information for only selected pruning rates.
+        """
+
         metric_groups = [
             ('DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting'),
             ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
@@ -226,38 +279,56 @@ class Visualizer:
                 plt.figure(figsize=(10, 6))
                 for idx, metric_name in enumerate(group):
                     for tidx, threshold in enumerate(thresholds):
-                        values = stability_results[hardness_type][metric_name][threshold]  # shape: [num_models - 1]
+                        avg_values = np.mean(np.array(stability_results[hardness_type][metric_name][threshold]), axis=1)
+                        std = np.std(np.array(stability_results[hardness_type][metric_name][threshold]), axis=1)
                         label = f"{metric_name} ({threshold_labels[tidx]})"
-                        plt.plot(np.arange(1, num_models), values, label=label, color=colors(idx),
+                        plt.plot(np.arange(1, num_subensembles), avg_values, label=label, color=colors(idx),
                                  linestyle='-' if tidx == 0 else '--', marker='o' if tidx == 0 else '^')
+                        plt.fill_between(np.arange(1, num_subensembles), avg_values - std, avg_values + std,
+                                         color=colors(idx), alpha=0.15, linewidth=0)
 
-                plt.xlabel('Ensemble size during hardness estimation')
-                plt.ylabel('PCR (%)')
+                plt.xlabel('Ensemble size M passed to PCR')
+                plt.ylabel('Pruning Change Rate (PCR)')
                 plt.title(f'{hardness_type.capitalize()} PCR (Group {group_id + 1})')
-                plt.xticks(np.arange(1, num_models))
+                plt.xticks(np.arange(1, num_subensembles))
                 plt.grid(alpha=0.3)
                 plt.legend(title='Metric (Threshold)', ncol=2)
                 save_name = f"stability_lineplot_{hardness_type}_group{group_id + 1}.pdf"
                 plt.savefig(os.path.join(self.figures_save_dir, save_name))
                 plt.close()
 
-    def compute_overlap_of_pruned_indices_across_hardness_estimators(self, results):
-        def plot_overlap(metric_pairs, hardness_type, filename_suffix):
+    def visualize_overlap_between_pruned_indices(self, num_pruning_thresholds: int,
+                                                 pruned_indices: Dict[str, Dict[str, List[List[List[List[int]]]]]]):
+        """This visualization shows the overlap between the pruned indices in the hope of estimating the harm caused by
+        inappropriate choice of hardness estimator. Higher overlap indicates that changing hardness estimator has
+        negligible impact on pruning."""
+        def plot_overlap(metric_pairs: List[Tuple[str, str]], hardness_type: str, filename_suffix: str):
+            """Helper function for procuring this particular plot"""
+            colors = get_cmap("tab10")
             plt.figure(figsize=(10, 6))
-            for metric1, metric2 in metric_pairs:
-                overlaps = []
-                for thresh_idx, thresh in enumerate(self.pruning_thresholds):
-                    set1 = set(results[hardness_type][metric1][thresh_idx][-1])  # Using full ensemble
-                    set2 = set(results[hardness_type][metric2][thresh_idx][-1])
-                    intersection = len(set1 & set2)
-                    union = len(set1 | set2)
-                    overlap = intersection / union if union > 0 else 0.0
-                    overlaps.append(overlap)
+            for idx, (metric1, metric2) in enumerate(metric_pairs):
+                overlaps, overlaps_std = [], []
+                for thresh_idx in range(num_pruning_thresholds):
+                    subensemble_overlaps = []
+                    for subensemble_idx in range(self.num_datasets):
+                        # Compute the overlap only for the largest subensembles (-1 part).
+                        set1 = set(pruned_indices[hardness_type][metric1][thresh_idx][-1][subensemble_idx])
+                        set2 = set(pruned_indices[hardness_type][metric2][thresh_idx][-1][subensemble_idx])
+                        intersection = len(set1 & set2)
+                        union = len(set1 | set2)
+                        overlap = intersection / union if union > 0 else 0.0
+                        subensemble_overlaps.append(overlap)
+                    overlaps.append(np.mean(subensemble_overlaps))
+                    overlaps_std.append(np.std(subensemble_overlaps))
 
-                plt.plot(self.pruning_thresholds, overlaps, label=f"{metric1} vs {metric2}", marker='o')
+                overlaps, overlaps_std = np.array(overlaps), np.array(overlaps_std)
+                plt.plot(self.pruning_thresholds, overlaps, label=f"{metric1} vs {metric2}", marker='o',
+                         color=colors(idx))
+                plt.fill_between(self.pruning_thresholds, overlaps - overlaps_std, overlaps + overlaps_std,
+                                 color=colors(idx), alpha=0.15, linewidth=0)
 
-            plt.xlabel(f"Pruning {hardness_type} rate (% of samples removed)")
-            plt.ylabel("Overlap percentage")
+            plt.xlabel(f"Pruning threshold percentages")
+            plt.ylabel("Jaccard Overlap")
             plt.title(f"{self.dataset_name} ({hardness_type})")
             plt.legend(title="Metric pairs", bbox_to_anchor=(1.01, 1), loc='upper left')
             plt.grid(alpha=0.3)
@@ -265,9 +336,9 @@ class Visualizer:
             plt.savefig(os.path.join(self.figures_save_dir, f'overlap_{hardness_type}_{filename_suffix}.pdf'))
             plt.close()
 
-        group1 = ('DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting')
-        group2 = ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
-        direct_pairs = list(zip(('DataIQ', 'Loss', 'AUM', 'Confidence'), ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence')))
+        group1 = ['DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting']
+        group2 = ['iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N']
+        direct_pairs = list(zip(['DataIQ', 'Loss', 'AUM', 'Confidence'], ['iDataIQ', 'iLoss', 'iAUM', 'iConfidence']))
 
         group1_pairs = list(combinations(group1, 2))
         group2_pairs = list(combinations(group2, 2))
@@ -277,112 +348,106 @@ class Visualizer:
             plot_overlap(group2_pairs, hardness, 'group2')
             plot_overlap(direct_pairs, hardness, 'paired')
 
-    def compute_effect_of_ensemble_size_on_resampling(self, hardness_estimates, dataset):
-        results = {}
-        for metric_name, metric_scores in tqdm(hardness_estimates.items(),
+    def compute_effect_of_ensemble_size_on_resampling(self, labels: List[int],
+                                                      hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]]
+                                                      ) -> Dict[str, List[List[float]]]:
+        """This computes the changes to the sample count in each class after resampling when comparing resampling
+        performed using hardness estimated obtained from j and j+1 models. The format of the output is
+        abs_diffs[estimator_name][subensemble_size][0] = absolute difference averaged over classes
+        """
+        abs_diffs = {}
+        for estimator_name in tqdm(hardness_estimates[(0, 0)].keys(),
                                                desc='Computing effect of ensemble size on resampling.'):
-            metric_scores = np.array(metric_scores)
-            results[metric_name] = []
-            for num_ensemble_models in range(1, self.num_models):
-                curr_avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models], axis=0)
-                next_avg_hardness_scores = np.mean(metric_scores[:num_ensemble_models + 1], axis=0)
-                curr_class_results = [[] for _ in range(self.num_classes)]
-                next_class_results = [[] for _ in range(self.num_classes)]
-                curr_class_hardness, next_class_hardness = {}, {}
+            hardness_over_models = [hardness_estimates[(0, model_id)][estimator_name]
+                                    for model_id in range(len(hardness_estimates))]
+            max_ensemble_size = len(hardness_over_models)
+            abs_diffs[estimator_name] = []
+            # We don't add 1 here to have the same size of the X-axis as in the previous visualizations.
+            for subensemble_size in range(1, max_ensemble_size // 2):
+                abs_diffs[estimator_name].append([])
+                for _ in range(self.num_datasets):
+                    curr_subensemble_indices = np.random.choice(range(max_ensemble_size), subensemble_size,
+                                                                replace=False)
+                    next_subensemble_indices = np.random.choice(range(max_ensemble_size), subensemble_size + 1,
+                                                                replace=False)
+                    curr_subensemble_estimates = np.array(hardness_over_models)[np.array([curr_subensemble_indices])]
+                    next_subensemble_estimates = np.array(hardness_over_models)[np.array([next_subensemble_indices])]
+                    curr_avg_hardness_scores = np.mean(curr_subensemble_estimates, axis=0)
+                    next_avg_hardness_scores = np.mean(next_subensemble_estimates, axis=0)
+                    curr_samples_per_class, _ = compute_sample_allocation_after_resampling(curr_avg_hardness_scores,
+                                                                                           labels,
+                                                                                           self.num_classes,
+                                                                                           self.num_training_samples,
+                                                                                           estimator_name)
+                    next_samples_per_class, _ = compute_sample_allocation_after_resampling(next_avg_hardness_scores,
+                                                                                           labels,
+                                                                                           self.num_classes,
+                                                                                           self.num_training_samples,
+                                                                                           estimator_name)
+                    differences = np.mean([abs(next_samples_per_class[k] - curr_samples_per_class[k])
+                                           for k in range(self.num_classes)])
+                    abs_diffs[estimator_name][subensemble_size].append(differences)
+        return abs_diffs
 
-                for i, (_, label, _) in enumerate(dataset):
-                    curr_class_results[label].append(curr_avg_hardness_scores[i])
-                    next_class_results[label].append(next_avg_hardness_scores[i])
-                for label in range(self.num_classes):
-                    # For AUM, high values indicate easier samples so inversion is necessary
-                    if metric_name in ['Confidence', 'AUM', 'iConfidence', 'iAUM']:
-                        curr_class_hardness[label] = 1 / np.mean(curr_class_results[label])
-                        next_class_hardness[label] = 1 / np.mean(next_class_results[label])
-                    else:
-                        curr_class_hardness[label] = np.mean(curr_class_results[label])
-                        next_class_hardness[label] = np.mean(next_class_results[label])
-
-                curr_ratios = {class_id: curr_hardness / sum(curr_class_hardness.values())
-                               for class_id, curr_hardness in curr_class_hardness.items()}
-                next_ratios = {class_id: next_hardness / sum(next_class_hardness.values())
-                               for class_id, next_hardness in next_class_hardness.items()}
-
-                curr_samples_per_class = {class_id: int(round(curr_ratio * self.num_training_samples))
-                                          for class_id, curr_ratio in curr_ratios.items()}
-                next_samples_per_class = {class_id: int(round(next_ratio * self.num_training_samples))
-                                          for class_id, next_ratio in next_ratios.items()}
-
-                differences = [abs(next_samples_per_class[k] - curr_samples_per_class[k])
-                               for k in range(self.num_classes)]
-                relative_differences = [differences[k] / curr_samples_per_class[k] for k in range(self.num_classes)]
-                results[metric_name].append((num_ensemble_models, differences, relative_differences))
-        return results
-
-    def visualize_stability_of_resampling(self, results, num_models):
-        metrics = list(results.keys())
-        ensemble_sizes = {metric: [entry[0] for entry in results[metric]] for metric in metrics}
-        differences = {metric: [entry[1] for entry in results[metric]] for metric in metrics}
-
-        def compute_stats(diff_list):
-            avg_vals = np.array([np.mean(diff) for diff in diff_list])
-            std_vals = np.array([np.std(diff) for diff in diff_list])
-            return avg_vals, std_vals
+    def visualize_stability_of_resampling(self, abs_diffs: Dict[str, List[List[float]]], num_subensembles: int):
+        """This visualization measures the checks the stability of hardness estimates by focusing on the changes to the
+        resampling ratios. In other words, what is the average change in per-class sample count after resampling if we
+        had access to one more model for hardness estimation."""
 
         group1 = ('DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting')
         group2 = ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
+        colors = get_cmap("tab10")
+
         for i, group in enumerate([group1, group2]):
             plt.figure(figsize=(10, 6))
-            for metric in group:
-                avg_diffs, std_diffs = compute_stats(differences[metric])
-                plt.plot(ensemble_sizes[metric], avg_diffs, label=f'{metric}', marker='s')
-                # plt.fill_between(ensemble_sizes[metric], avg_diffs - std_diffs, avg_diffs + std_diffs, alpha=0.2)
-            plt.xlabel('Number of Models (j) in Ensemble During Hardness Estimation')
-            plt.xticks(np.arange(1, num_models))
-            plt.ylabel("Absolute Difference in Class-Wise Sample Count for Resampling")
+            for idx, estimator_name in enumerate(group):
+                avg_diffs = np.mean(np.array(abs_diffs[estimator_name]), axis=1)
+                std_diffs = np.std(np.array(abs_diffs[estimator_name]), axis=1)
+                plt.plot(np.arange(1, num_subensembles), avg_diffs, label=f'{estimator_name}', marker='s',
+                         color=colors(idx))
+                plt.fill_between(np.arange(1, num_subensembles), avg_diffs - std_diffs, avg_diffs + std_diffs,
+                                 color=colors(idx), alpha=0.2, linewidth=0)
+            plt.xlabel('Ensemble size M passed to Absolute Difference')
+            plt.xticks(np.arange(1, num_subensembles))
+            plt.ylabel("Average Absolute Difference across all classes")
             plt.legend()
             plt.grid(True, linestyle='--', alpha=0.6)
             plt.savefig(os.path.join(self.figures_save_dir, f'absolute_differences_group{i+1}.pdf'))
             plt.close()
 
-    def save_hardness_estimates(self, hardness_estimates):
-        hardness_save_dir = os.path.join(ROOT, f"Results/{self.data_cleanliness}{self.dataset_name}/")
-        path = os.path.join(hardness_save_dir, 'hardness_estimates.pkl')
-        with open(path, "wb") as file:
-            print(f'Saving updated hardness estimates.')
-            pickle.dump(hardness_estimates, file)
-
     def main(self):
+        """Main method for producing the visualizations."""
         config = get_config(self.dataset_name)
-        _, training_dataset, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean', False, False)
+        _, training_dataset, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean')
+
+        # We want to work with normalized but unaugmented images in this module.
         new_training_transform = torchvision.transforms.Compose([
             torchvision.transforms.ToPILImage(),
             torchvision.transforms.ToTensor(),
             torchvision.transforms.Normalize(config['mean'], config['std']),
         ])
         training_dataset = AugmentedSubset(training_dataset, transform=new_training_transform)
+        labels = [training_dataset[idx][1].item() for idx in range(len(training_dataset))]
         training_loader = torch.utils.data.DataLoader(training_dataset, batch_size=1000, shuffle=False)
+
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
-        if 'iConfidence' not in hardness_estimates.keys():
+        if 'probs' not in hardness_estimates.keys():
             self.compute_instance_scores(hardness_estimates, training_loader)
-        if 'probs' in hardness_estimates.keys():
-            self.plot_instance_level_hardness_distributions(hardness_estimates)
+            self.save_hardness_estimates(hardness_estimates)
+        self.plot_instance_level_hardness_distributions(hardness_estimates)
 
-        print('All of the below should have the same dimensions. Otherwise, there is something wrong with the code.')
-        for key in hardness_estimates.keys():
-            print(f'Shape of hardness estimated via {key}: {len(hardness_estimates[key])}, '
-                  f'{len(hardness_estimates[key][0])}')
-        print()
-
-        # pruned_indices[hardness_type][metric_name][pruning_threshold][num_ensemble_models][pruned_indices]
+        # pruned_indices[hardness_type][metric_name][pruning_threshold][subensemble_size][subensemble][pruned_indices]
         pruned_indices = self.get_pruned_indices(hardness_estimates)
-        stability_results, num_models, num_pruning_thresholds = self.compute_stability_of_pruning(pruned_indices)
-        self.visualize_stability_of_pruning(stability_results, num_models, num_pruning_thresholds)
-        self.plot_stability_summary_across_metrics(stability_results, num_models, num_pruning_thresholds)
-        self.compute_overlap_of_pruned_indices_across_hardness_estimators(pruned_indices)
+        num_pruning_thresholds = len(pruned_indices['easy']['Confidence'])
+        num_subensembles = len(pruned_indices['easy']['Confidence'][0])
 
-        differences = self.compute_effect_of_ensemble_size_on_resampling(hardness_estimates, training_loader.dataset)
-        self.visualize_stability_of_resampling(differences, num_models)
-        self.save_hardness_estimates(hardness_estimates)
+        stability_results = self.compute_stability_of_pruning(pruned_indices, num_subensembles, num_pruning_thresholds)
+        self.visualize_stability_of_pruning_via_heatmap(num_subensembles, num_pruning_thresholds, stability_results)
+        self.visualize_stability_of_pruning_via_plots(num_subensembles, num_pruning_thresholds, stability_results)
+        self.visualize_overlap_between_pruned_indices(num_pruning_thresholds, pruned_indices)
+
+        absolute_differences = self.compute_effect_of_ensemble_size_on_resampling(labels, hardness_estimates)
+        self.visualize_stability_of_resampling(absolute_differences, num_subensembles)
 
 
 if __name__ == '__main__':
@@ -393,9 +458,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     Visualizer(args.dataset_name, args.remove_noise).main()
-
-"""
-1. (+) Change the visualization from heatmaps to plots (maybe do both).
-2. (+) Find a way to make the overlap_of_pruned_indices figure clear.
-3. (+) Modify EL2N to use the probe network
-"""
