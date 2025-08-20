@@ -25,7 +25,7 @@ class ResNet18LowRes(nn.Module):
         # Adjust the final fully connected layer for the number of classes (e.g., CIFAR-10 or CIFAR-100)
         self.fc = nn.Linear(512, num_classes)
 
-    def forward(self, x, latent=False):
+    def forward(self, x):
         # Modified first convolution layer
         x = self.conv1(x)
         x = self.bn1(x)
@@ -43,7 +43,4 @@ class ResNet18LowRes(nn.Module):
 
         x = self.fc(latent_x)
 
-        if latent:
-            return x, latent_x
-        else:
-            return x
+        return x

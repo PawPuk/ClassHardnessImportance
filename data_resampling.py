@@ -27,7 +27,7 @@ class DataResampling:
     def __init__(self, dataset: Union[AugmentedSubset, IndexedDataset], num_classes: int, oversampling_strategy: str,
                  undersampling_strategy: str, hardness_by_class: Dict[int, List[float]], high_is_hard: bool,
                  dataset_name: str, num_models_for_hardness: int, mean: Tuple[float, float, float],
-                 std: Tuple[float, float, float]):
+                 std: Tuple[float, float, float], holdout_set: Union[None, AugmentedSubset] = None):
         """Initialize the DataResampling class.
 
         :param dataset: The hardness-based resampling will be applied to this dataset
@@ -40,6 +40,7 @@ class DataResampling:
         :param num_models_for_hardness: Number of models from the trained ensemble that will be used to estimate hardness
         :param mean: The mean of the dataset used for normalization
         :param std: The std of the dataset used for normalization
+        :param holdout_set: Contains the real data samples that were held out during pruning
 
         """
         self.dataset = dataset
@@ -52,6 +53,7 @@ class DataResampling:
         self.num_models_for_hardness = num_models_for_hardness
         self.mean = mean
         self.std = std
+        self.holdout_set = holdout_set
 
     def prune_easy(self, desired_count: int, hardness_scores: List[float]) -> List[int]:
         """Prune based on hardness focusing on the removal of easy samples."""
@@ -63,9 +65,8 @@ class DataResampling:
 
     @staticmethod
     def random_oversample(desired_count: int, hardness_scores: List[float]) -> List[int]:
-        """Perform random oversampling to match the desired count."""
+        """Perform random oversampling to match the desired count (we allow replacement)."""
         additional_indices = random.choices(range(len(hardness_scores)), k=desired_count - len(hardness_scores))
-        # TODO: Why random choices? We've been using different way to generate random sampling so far.
         return list(range(len(hardness_scores))) + additional_indices
 
     def oversample_easy(self, desired_count: int, hardness_scores: List[float]) -> List[int]:
@@ -189,6 +190,20 @@ class DataResampling:
 
         return avg_confidences
 
+    def extract_original_data_and_labels(self, oversample_targets: Dict[int , int]
+                                         ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Extract the original data samples and labels from classes that we want to perform oversampling on. We will
+        later add the oversampled samples onto these samples to create the final resampled dataset."""
+        original_data, original_labels = [], []
+        for idx in range(len(self.dataset)):
+            image, label, _ = self.dataset[idx]
+            if label.item() in oversample_targets:
+                original_data.append(image)
+                original_labels.append(label)
+        original_data = torch.stack(original_data)
+        original_labels = torch.stack(original_labels)
+        return original_data, original_labels
+
     def EDM(self, oversample_targets: Dict[int, int], strategy: str) -> Tuple[torch.Tensor, torch.Tensor]:  # noqa
         """Perform oversampling using synthetic samples generated via EDM (they need to be downloaded from
         https://github.com/wzekai99/DM-Improves-AT?tab=readme-ov-file and put in appropriate directory though)."""
@@ -238,11 +253,39 @@ class DataResampling:
 
         # Convert synthetic images to tensors
         all_synthetic_images = torch.cat(all_synthetic_images)
-        original_data_samples = torch.stack([self.dataset[idx][0] for idx in range(len(self.dataset))])
-        original_labels = torch.stack([self.dataset[idx][1] for idx in range(len(self.dataset))])
+        original_data_samples, original_labels = self.extract_original_data_and_labels(oversample_targets)
 
         all_images = torch.cat([original_data_samples, all_synthetic_images])
         all_labels = torch.cat([original_labels, torch.tensor(all_synthetic_labels)])
+
+        return all_images, all_labels
+
+    def holdout_oversample(self, oversample_targets: Dict[int, int]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Perform random oversampling to match the desired count using the holdout set."""
+
+        holdout_images = [self.holdout_set[idx][0] for idx in range(len(self.holdout_set))]
+        print(f'There is a total of {len(holdout_images)} holdout images.')
+        holdout_labels = [self.holdout_set[idx][1] for idx in range(len(self.holdout_set))]
+        holdout_per_class = defaultdict(list)
+        for i, label in enumerate(holdout_labels):
+            if label.item() in oversample_targets.keys():
+                holdout_per_class[label.item()].append(holdout_images[i])
+
+        resampled_holdout_images, resampled_holdout_labels = [], []
+        for class_id in oversample_targets.keys():
+            needed_count = oversample_targets[class_id]
+            class_holdout_images = holdout_per_class[class_id]
+            print(f'Sampling {needed_count} images from {len(class_holdout_images)} images.')
+            selected_indices = random.sample(range(len(class_holdout_images)), needed_count)
+            selected_images = torch.stack([class_holdout_images[i] for i in selected_indices])
+            resampled_holdout_images.append(selected_images)
+            resampled_holdout_labels.extend([class_id for _ in range(needed_count)])
+
+        all_synthetic_images = torch.cat(resampled_holdout_images)
+        original_data_samples, original_labels = self.extract_original_data_and_labels(oversample_targets)
+
+        all_images = torch.cat([original_data_samples, all_synthetic_images])
+        all_labels = torch.cat([original_labels, torch.tensor(resampled_holdout_labels)])
 
         return all_images, all_labels
 
@@ -270,6 +313,8 @@ class DataResampling:
             return lambda oversample_targets: self.EDM(oversample_targets, 'hard')
         elif self.oversampling_strategy == 'aEDM':
             return lambda oversample_targets: self.EDM(oversample_targets, 'average')
+        elif self.oversampling_strategy == 'holdout':
+            return lambda oversample_targets: self.holdout_oversample(oversample_targets)
         elif self.oversampling_strategy == 'none':
             return None
         else:
@@ -315,7 +360,7 @@ class DataResampling:
                 # This part is only used for sanity check tests (comparison with experiment1.py)
                 resampled_indices.extend(current_indices)
 
-        if self.oversampling_strategy in ['rEDM', 'hEDM', 'aEDM']:
+        if self.oversampling_strategy in ['rEDM', 'hEDM', 'aEDM', 'holdout']:
             oversample_targets = {
                 class_id: desired_counts[class_id] - current_counts[class_id]
                 for class_id in range(self.num_classes)
@@ -327,7 +372,7 @@ class DataResampling:
             hard_classes_data = torch.cat(hard_classes_data)
             hard_classes_labels = torch.cat(hard_classes_labels)
 
-        if self.oversampling_strategy in ['SMOTE', 'rEDM', 'hEDM', 'aEDM']:
+        if self.oversampling_strategy in ['SMOTE', 'rEDM', 'hEDM', 'aEDM', 'holdout']:
             print(f'Proceeding with {len(hard_classes_data)} data samples from hard classes (real + synthetic data).')
             original_data_samples = torch.stack([self.dataset[idx][0] for idx in range(len(self.dataset))])
             original_labels = torch.stack([self.dataset[idx][1] for idx in range(len(self.dataset))])

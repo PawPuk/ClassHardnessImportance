@@ -151,7 +151,7 @@ class Experiment2:
             pruned_subdataset = pruner.resampling_pruned_subdataset(self.oversampling_strategy, labels,
                                                                     training_dataset)
         elif self.pruning_strategy == 'clp':
-            pruned_subdataset = pruner.class_level_pruning(labels, training_dataset)
+            pruned_subdataset, _ = pruner.class_level_pruning(labels, training_dataset)
         else:
             raise ValueError('Wrong value of the parameter `pruning_strategy`.')
         augmented_subdataset = perform_data_augmentation(pruned_subdataset, self.dataset_name)
@@ -175,7 +175,8 @@ class Experiment2:
                                                       num_workers=2))
 
         trainer = ModelTrainer(len(training_dataset), pruned_training_loaders, test_loader, self.dataset_name,
-                               f"{self.pruning_strategy}{self.pruning_rate}", False)
+                               f"{self.oversampling_strategy}{self.pruning_strategy}{self.pruning_rate}",
+                               False)
         trainer.train_ensemble()
 
 

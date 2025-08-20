@@ -52,6 +52,7 @@ def load_hardness_estimates(data_cleanliness: str, dataset_name: str) -> Dict[Tu
     hardness_estimates = load_results(path)
     return hardness_estimates
 
+
 def compute_sample_allocation_after_resampling(hardness_scores: List[float], labels: List[int], num_classes: int,
                                                num_training_samples: int, hardness_estimator: str,
                                                pruning_rate: int = 0, alpha: int = 1
@@ -96,3 +97,14 @@ def compute_sample_allocation_after_resampling(hardness_scores: List[float], lab
                 samples_per_class[class_id] = average_sample_count - int(alpha * absolute_difference)
 
     return samples_per_class, hardnesses_by_class
+
+
+def restructure_hardness_dictionary(hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]]
+                                    ) -> Dict[str, List[List[float]]]:
+    """Used to change the structure of hardness_estimates (put the hardness estimator as the first key and model_idx as
+    the second key)."""
+    out = defaultdict(list)
+    for _, estimates_by_estimator_name in hardness_estimates.items():
+        for metric_name, estimates in estimates_by_estimator_name.items():
+            out[metric_name].append(estimates)  # use only the second int
+    return dict(out)

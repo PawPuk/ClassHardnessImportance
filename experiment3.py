@@ -5,6 +5,7 @@ import os
 import pickle
 
 import numpy as np
+import tqdm
 
 from config import get_config, ROOT
 from data import get_dataloader, load_dataset, perform_data_augmentation
@@ -73,7 +74,7 @@ class Experiment3:
 
         high_is_hard = self.hardness_estimator not in ['Confidence', 'AUM']
         actual_counts, resampled_loaders = None, []
-        for _ in range(self.dataset_count):
+        for _ in tqdm.tqdm(range(self.dataset_count)):
             resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
                                        self.undersampling_strategy, hardnesses_by_class, high_is_hard,
                                        self.dataset_name, self.num_models_for_hardness, self.mean, self.std)

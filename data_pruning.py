@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from torch.nn import functional
 from torch.utils.data import DataLoader, Subset
+import tqdm
 
 from config import DEVICE, get_config, ROOT
 from data import AugmentedSubset, get_dataloader, IndexedDataset
@@ -95,7 +96,7 @@ class DataPruning:
         plt.close()
 
     def class_level_pruning(self, labels: List[int], training_dataset: Union[AugmentedSubset, IndexedDataset]
-                            ) -> AugmentedSubset:
+                            ) -> Tuple[AugmentedSubset, AugmentedSubset]:
         """
         Remove the specified percentage of samples from each class. Ensures that the class distribution remains
         balanced.
@@ -103,7 +104,8 @@ class DataPruning:
         :param labels: List of labels for each data sample in the original dataset.
         :param training_dataset: Original training dataset
 
-        :return: Balanced pruned subdataset.
+        :return: Balanced subdataset, containing the remaining samples, and the pruned_dataset containing the pruned
+        samples.
         """
         subdataset_indices = []
 
@@ -115,13 +117,16 @@ class DataPruning:
             subdataset_indices.extend(global_indices[class_remaining_indices])
         subdataset = AugmentedSubset(Subset(training_dataset, subdataset_indices))
 
+        pruned_indices = list(set(range(len(training_dataset))) - set(subdataset_indices))
+        pruned_dataset = AugmentedSubset(Subset(training_dataset, pruned_indices))
+
         self.fig_save_dir = os.path.join(self.fig_save_dir, 'random_clp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
         self.res_save_dir = os.path.join(self.res_save_dir, 'random_clp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
         self.plot_class_level_sample_distribution(subdataset_indices, 'clp', labels)
 
-        return subdataset
+        return subdataset, pruned_dataset
 
     def compute_el2n_scores(self, model: ResNet18LowRes, dataloader: DataLoader) -> Tuple[List[float], List[int]]:
         """
@@ -133,7 +138,7 @@ class DataPruning:
 
         :return: List of EL2N scores and the labels of each data sample
         """
-        sample_el2n, labels = [], []
+        sample_el2n, all_labels = [], []
 
         model.eval()
         with torch.no_grad():
@@ -144,13 +149,13 @@ class DataPruning:
 
                 for i in range(len(inputs)):
                     label = labels[i].item()
-                    labels.append(label)
+                    all_labels.append(label)
 
                     prob = probs[i]
                     one_hot = functional.one_hot(torch.tensor(label), num_classes=self.num_classes).float().to(DEVICE)
                     el2n = torch.norm(prob - one_hot).item()
                     sample_el2n.append(el2n)
-        return sample_el2n, labels
+        return sample_el2n, all_labels
 
     def compute_class_level_scores(self, el2n_scores: List[List[float]], labels: List[int]) -> Dict[int, List[float]]:
         """
@@ -184,33 +189,19 @@ class DataPruning:
 
         :return: Imbalanced pruned subdataset
         """
-        subdataset_indices = self.class_level_pruning(labels, training_dataset)
-        subdataset = AugmentedSubset(Subset(training_dataset, subdataset_indices))
+        subdataset, pruned_dataset = self.class_level_pruning(labels, training_dataset)
         sub_dataloader = get_dataloader(subdataset, 1000)
-        trainer = ModelTrainer(len(subdataset_indices), sub_dataloader, None, self.dataset_name)
+        trainer = ModelTrainer(len(subdataset), [sub_dataloader], None, self.dataset_name,
+                               stop_at_probe=True)
         el2n_scores, sub_labels = [], None
-        for model_id in range(self.num_models_per_dataset):
+        for model_id in tqdm.tqdm(range(self.num_models_per_dataset)):
             model = trainer.train_model(0, model_id, [-1], None)
             scores, sub_labels = self.compute_el2n_scores(model, sub_dataloader)
             el2n_scores.append(scores)
         class_level_hardness = self.compute_class_level_scores(el2n_scores, sub_labels)
         resampler = DataResampling(subdataset, self.num_classes, oversampling_strategy,
                                    'easy', class_level_hardness, True,
-                                   self.dataset_name, self.num_models_for_hardness, self.mean, self.std)
+                                   self.dataset_name, self.num_models_for_hardness, self.mean, self.std, pruned_dataset)
         resampled_dataset = resampler.resample_data(self.imbalance_ratio)
 
         return resampled_dataset
-
-"""
-(+) 1. Convert subdataset_indices into a subdataset
-(+) 2. Load num_models_for_hardness, mean and std
-(+) 3. Make experiment2.py load training_dataset without data augmentation and apply it after pruning
-(+) 4. Make this class return pruned subdatasets rather than the indices.
-(+) 5. Compute hardness_by_class
-(+) 6. Convert the computation of resampling ratios to use hardness estimates computed from subdataset (use EL2N)
-(+) 7. Convert imbalance_ratio to dictionary or make resample_data take lists
-(+) 8. Merge compute_sample_allocation() from experiment3.py with compute_imbalance_ratio_with_hardness() from 
-        experiment2.py.
-(+) 9. What if the hardness estimates are negative (during the computation of resampling ratios)?
-            - for each data sample add min(hardness_estimates) if the min is negative... do this at class-level tho.
-"""

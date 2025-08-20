@@ -2,7 +2,7 @@
 
 import os
 import random
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Sized, Tuple, Union
 
 import numpy as np
 import torch
