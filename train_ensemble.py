@@ -19,8 +19,8 @@ from utils import set_reproducibility, get_latest_model_index
 class ModelTrainer:
     """Allows training ensembles of models as well as estimating hardness."""
     def __init__(self, training_set_size: int, training_loaders: List[DataLoader], test_loader: Union[DataLoader, None],
-                 dataset_name: str, pruning_type: str='none', save_probe_models: bool=True, stop_at_probe: bool=False,
-                 estimate_hardness: bool=False, clean_data: bool=False):
+                 dataset_name: str, pruning_type: str = 'none', save_probe_models: bool = True,
+                 stop_at_probe: bool = False, estimate_hardness: bool = False, clean_data: bool = False):
         """
         Initialize the ModelTrainer class with configuration specific to the dataset.
 
@@ -71,7 +71,7 @@ class ModelTrainer:
     @staticmethod
     def estimate_instance_hardness(batch_indices: torch.Tensor, inputs: torch.Tensor, outputs: torch.Tensor,
                                    labels: torch.Tensor, predicted: torch.Tensor, hardness_estimates: Dict[
-                                   Tuple[int, int], Dict[str, List[Union[float, List[Union[None, float]]]]]],
+                                           Tuple[int, int], Dict[str, List[Union[float, List[Union[None, float]]]]]],
                                    epoch: int, remembering: List[bool], dataset_model_id: Tuple[int, int]):
         """Used to produce model-based hardness estimates of every data sample in the given batch."""
         for index_within_batch, (i, x, logits, correct_label) in enumerate(zip(batch_indices, inputs, outputs, labels)):

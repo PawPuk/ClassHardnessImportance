@@ -61,7 +61,7 @@ class Experiment3:
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
         hardness_over_models = [hardness_estimates[(0, model_id)][self.hardness_estimator]
                                 for model_id in range(len(hardness_estimates))]
-        hardness_estimates = np.mean(np.array(hardness_over_models[:self.num_models_for_hardness]), axis=0)
+        hardness_estimates = list(np.mean(np.array(hardness_over_models[:self.num_models_for_hardness]), axis=0))
 
         samples_per_class, hardnesses_by_class = compute_sample_allocation_after_resampling(hardness_estimates, labels,
                                                                                             self.num_classes,

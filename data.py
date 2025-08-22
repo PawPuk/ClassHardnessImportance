@@ -2,7 +2,7 @@
 
 import os
 import random
-from typing import Dict, List, Sized, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -65,6 +65,7 @@ class AugmentedSubset(torch.utils.data.Dataset):
         for idx in range(len(self)):
             yield self[idx]
 
+
 def perform_data_augmentation(dataset: AugmentedSubset, dataset_name: str) -> AugmentedSubset:
     """Applies data augmentation to the dataset. It firstly converts the images from Tensor to PIL to ensure the whole
     process is intact. This is useful in scenarios where we initially load the training dataset without applying data
@@ -103,6 +104,7 @@ def get_transform(dataset_name: str, apply_augmentation: bool, config: Dict[str,
     ])
     return train_transform, test_transform
 
+
 def get_dataloader(dataset, batch_size: int, shuffle: bool = False):
     """Create a DataLoader with deterministic worker initialization."""
     def worker_init_fn(worker_id):
@@ -114,9 +116,9 @@ def get_dataloader(dataset, batch_size: int, shuffle: bool = False):
 
 
 def load_dataset(dataset_name: str, remove_noise: bool = False, shuffle: bool = False, apply_augmentation: bool = False
-                 ) -> Tuple[DataLoader[Union[IndexedDataset, AugmentedSubset]],
-                      Union[IndexedDataset, AugmentedSubset], DataLoader[IndexedDataset], IndexedDataset]:
-    """Allows to load dataset, remove label nosie from it, and gives precise control over shuffling and augmentation.
+                 ) -> Tuple[DataLoader[Union[IndexedDataset, AugmentedSubset]], Union[
+        IndexedDataset, AugmentedSubset], DataLoader[IndexedDataset], IndexedDataset]:
+    """Allows to load dataset, remove label noise from it, and gives precise control over shuffling and augmentation.
     Currently only supports CIFAR10 and CIFAR100.
 
     :param dataset_name: Specifies name of the dataset to load (only accepts `CIFAR10` and `CIFAR100`).

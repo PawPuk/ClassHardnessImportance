@@ -60,7 +60,7 @@ class Visualizer:
         model = ResNet18LowRes(num_classes=self.num_classes).to(DEVICE)
         epoch = self.save_epoch if probe else self.num_epochs
         model_path = os.path.join(self.model_dir, 'none', f"{self.data_cleanliness}{args.dataset_name}",
-                                  f'model_{model_id}_epoch_{epoch}.pth')
+                                  f'dataset_0_model_{model_id}_epoch_{epoch}.pth')
 
         if os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path))
@@ -278,12 +278,12 @@ class Visualizer:
             for hardness_type in ['hard', 'easy']:
                 plt.figure(figsize=(10, 6))
                 for idx, metric_name in enumerate(group):
-                    for tidx, threshold in enumerate(thresholds):
+                    for t_idx, threshold in enumerate(thresholds):
                         avg_values = np.mean(np.array(stability_results[hardness_type][metric_name][threshold]), axis=1)
                         std = np.std(np.array(stability_results[hardness_type][metric_name][threshold]), axis=1)
-                        label = f"{metric_name} ({threshold_labels[tidx]})"
+                        label = f"{metric_name} ({threshold_labels[t_idx]})"
                         plt.plot(np.arange(1, num_subensembles), avg_values, label=label, color=colors(idx),
-                                 linestyle='-' if tidx == 0 else '--', marker='o' if tidx == 0 else '^')
+                                 linestyle='-' if t_idx == 0 else '--', marker='o' if t_idx == 0 else '^')
                         plt.fill_between(np.arange(1, num_subensembles), avg_values - std, avg_values + std,
                                          color=colors(idx), alpha=0.15, linewidth=0)
 
@@ -356,8 +356,8 @@ class Visualizer:
         abs_diffs[estimator_name][subensemble_size][0] = absolute difference averaged over classes
         """
         abs_diffs = {}
-        for estimator_name in tqdm(hardness_estimates[(0, 0)].keys(),
-                                               desc='Computing effect of ensemble size on resampling.'):
+        for estimator_name in tqdm(hardness_estimates[(0, 0)].keys(), desc='Computing effect of ensemble size on '
+                                                                           'resampling.'):
             hardness_over_models = [hardness_estimates[(0, model_id)][estimator_name]
                                     for model_id in range(len(hardness_estimates))]
             max_ensemble_size = len(hardness_over_models)
@@ -372,8 +372,8 @@ class Visualizer:
                                                                 replace=False)
                     curr_subensemble_estimates = np.array(hardness_over_models)[np.array([curr_subensemble_indices])]
                     next_subensemble_estimates = np.array(hardness_over_models)[np.array([next_subensemble_indices])]
-                    curr_avg_hardness_scores = np.mean(curr_subensemble_estimates, axis=0)
-                    next_avg_hardness_scores = np.mean(next_subensemble_estimates, axis=0)
+                    curr_avg_hardness_scores = list(np.mean(curr_subensemble_estimates, axis=0))
+                    next_avg_hardness_scores = list(np.mean(next_subensemble_estimates, axis=0))
                     curr_samples_per_class, _ = compute_sample_allocation_after_resampling(curr_avg_hardness_scores,
                                                                                            labels,
                                                                                            self.num_classes,

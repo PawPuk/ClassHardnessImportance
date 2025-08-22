@@ -13,7 +13,7 @@ import torch
 from config import ROOT
 
 
-def set_reproducibility(seed: int=42):
+def set_reproducibility(seed: int = 42):
     """Crucial for ensuring code reproducibility."""
     np.random.seed(seed)
     random.seed(seed)
@@ -68,7 +68,7 @@ def compute_sample_allocation_after_resampling(hardness_scores: List[float], lab
     # Compute average hardness of each class.
     means_hardness_by_class = {class_id: np.mean(vals) for class_id, vals in hardnesses_by_class.items()}
 
-    # Add offset in case some of the classes have negative hardness values to not get nonsensical resampling ratios.
+    # Add offset in case some classes have negative hardness values to not get nonsensical resampling ratios.
     if min(means_hardness_by_class.values()) < 0:
         offset = -min(means_hardness_by_class.values())
         for class_id in range(num_classes):
