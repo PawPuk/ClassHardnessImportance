@@ -2,14 +2,22 @@
 
 Main purpose:
 * Compute instant metrics (iConfidence, iAUM, iLoss, iDataIQ, and EL2N)
-* Measure stability and robustness of hardness estimates to the changes in ensemble size."""
+* Measure stability and robustness of hardness estimates to the changes in ensemble size.
+
+Important information:
+* Make sure that `num_models_per_dataset` from config.py is set to the same number as when running experiment1.py!
+* The `num_datasets` from config.py can be set to a different value than it was during experiment1.py (in fact it's
+advised). Back then we set it to one as there is only one original version of the dataset. Here, this variable is used
+to determine the number of subensembles that will be used to compute the means for various visualizations. That is
+because we do not use all the trained models. We take a collection of random subensembles for robustness.
+"""
 
 import argparse
 from itertools import combinations
 import os
 from typing import Dict, List, Tuple
 
-from matplotlib.cm import get_cmap
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pickle
@@ -35,7 +43,6 @@ class Visualizer:
         :param dataset_name: Name of the dataset
         :param remove_noise: If experiment1.py was run with this parameter raised than it also has to be raised here.
         Otherwise, keep it as it.
-
         """
         self.dataset_name = dataset_name
         self.data_cleanliness = 'clean' if remove_noise else 'unclean'
@@ -57,6 +64,7 @@ class Visualizer:
         self.pruning_thresholds = np.array([10, 20, 30, 40, 50])
 
     def load_model(self, model_id: int, probe=False) -> ResNet18LowRes:
+        """Used to load pretrained models."""
         model = ResNet18LowRes(num_classes=self.num_classes).to(DEVICE)
         epoch = self.save_epoch if probe else self.num_epochs
         model_path = os.path.join(self.model_dir, 'none', f"{self.data_cleanliness}{args.dataset_name}",
@@ -156,22 +164,24 @@ class Visualizer:
         restructured_hardness_estimates = restructure_hardness_dictionary(hardness_estimates)
         for metric_name, metric_scores in tqdm(restructured_hardness_estimates.items(),
                                                desc='Computing pruned indices.'):
+            if metric_name == 'probs':
+                continue
             metric_scores = np.array(metric_scores)
             pruned_indices['easy'][metric_name], pruned_indices['hard'][metric_name] = [], []
-            for thresh in self.pruning_thresholds:
+            for thresh_i, (thresh) in enumerate(self.pruning_thresholds):
                 prune_count = int((thresh / 100) * self.num_training_samples)
                 pruned_indices['easy'][metric_name].append([])
                 pruned_indices['hard'][metric_name].append([])
                 max_ensemble_size = len(metric_scores)
                 # Iterate through different subensemble sizes
                 for subensemble_size in range(1, max_ensemble_size // 2 + 1):
-                    pruned_indices['easy'][metric_name][thresh].append([])
-                    pruned_indices['hard'][metric_name][thresh].append([])
+                    pruned_indices['easy'][metric_name][thresh_i].append([])
+                    pruned_indices['hard'][metric_name][thresh_i].append([])
                     for _ in range(self.num_datasets):
                         # Produce random subensemble
                         subensemble_indices = np.random.choice(range(max_ensemble_size), subensemble_size,
                                                                replace=False)
-                        subensemble_scores = metric_scores[np.array([subensemble_indices])]
+                        subensemble_scores = metric_scores[subensemble_indices]
                         # Compute the average hardness score of each sample as a function of the ensemble size
                         avg_hardness_scores = np.mean(subensemble_scores, axis=0)
                         # For AUM & Confidence, hard samples have lower values (opposite for other hardness estimators).
@@ -181,9 +191,9 @@ class Visualizer:
                             sorted_indices = np.argsort(avg_hardness_scores)
                         pruned_easy_indices = sorted_indices[:prune_count]
                         pruned_hard_indices = sorted_indices[-prune_count:]
-                        pruned_indices['easy'][metric_name][thresh][subensemble_size - 1].append(
+                        pruned_indices['easy'][metric_name][thresh_i][subensemble_size - 1].append(
                             pruned_easy_indices.tolist())
-                        pruned_indices['hard'][metric_name][thresh][subensemble_size - 1].append(
+                        pruned_indices['hard'][metric_name][thresh_i][subensemble_size - 1].append(
                             pruned_hard_indices.tolist())
         return pruned_indices
 
@@ -272,7 +282,7 @@ class Visualizer:
         ]
         thresholds = [0, num_pruning_thresholds - 1]  # First and last pruning threshold
         threshold_labels = ['10%', '50%']
-        colors = get_cmap("tab10")  # Enough distinct colors
+        colors = matplotlib.colormaps["tab10"]
 
         for group_id, group in enumerate(metric_groups):
             for hardness_type in ['hard', 'easy']:
@@ -304,7 +314,7 @@ class Visualizer:
         negligible impact on pruning."""
         def plot_overlap(metric_pairs: List[Tuple[str, str]], hardness_type: str, filename_suffix: str):
             """Helper function for procuring this particular plot"""
-            colors = get_cmap("tab10")
+            colors = matplotlib.colormaps["tab10"]
             plt.figure(figsize=(10, 6))
             for idx, (metric1, metric2) in enumerate(metric_pairs):
                 overlaps, overlaps_std = [], []
@@ -370,8 +380,8 @@ class Visualizer:
                                                                 replace=False)
                     next_subensemble_indices = np.random.choice(range(max_ensemble_size), subensemble_size + 1,
                                                                 replace=False)
-                    curr_subensemble_estimates = np.array(hardness_over_models)[np.array([curr_subensemble_indices])]
-                    next_subensemble_estimates = np.array(hardness_over_models)[np.array([next_subensemble_indices])]
+                    curr_subensemble_estimates = np.array(hardness_over_models)[curr_subensemble_indices]
+                    next_subensemble_estimates = np.array(hardness_over_models)[next_subensemble_indices]
                     curr_avg_hardness_scores = list(np.mean(curr_subensemble_estimates, axis=0))
                     next_avg_hardness_scores = list(np.mean(next_subensemble_estimates, axis=0))
                     curr_samples_per_class, _ = compute_sample_allocation_after_resampling(curr_avg_hardness_scores,
@@ -396,7 +406,7 @@ class Visualizer:
 
         group1 = ('DataIQ', 'Loss', 'AUM', 'Confidence', 'Forgetting')
         group2 = ('iDataIQ', 'iLoss', 'iAUM', 'iConfidence', 'EL2N')
-        colors = get_cmap("tab10")
+        colors = matplotlib.colormaps["tab10"]
 
         for i, group in enumerate([group1, group2]):
             plt.figure(figsize=(10, 6))
@@ -431,7 +441,7 @@ class Visualizer:
         training_loader = torch.utils.data.DataLoader(training_dataset, batch_size=1000, shuffle=False)
 
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
-        if 'probs' not in hardness_estimates.keys():
+        if 'probs' not in hardness_estimates[(0, 0)].keys():
             self.compute_instance_scores(hardness_estimates, training_loader)
             self.save_hardness_estimates(hardness_estimates)
         self.plot_instance_level_hardness_distributions(hardness_estimates)

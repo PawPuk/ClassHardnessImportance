@@ -69,10 +69,17 @@ class ModelTrainer:
         return seed
 
     @staticmethod
-    def estimate_instance_hardness(batch_indices: torch.Tensor, inputs: torch.Tensor, outputs: torch.Tensor,
-                                   labels: torch.Tensor, predicted: torch.Tensor, hardness_estimates: Dict[
-                                           Tuple[int, int], Dict[str, List[Union[float, List[Union[None, float]]]]]],
-                                   epoch: int, remembering: List[bool], dataset_model_id: Tuple[int, int]):
+    def estimate_instance_hardness(
+            batch_indices: torch.Tensor,
+            inputs: torch.Tensor,
+            outputs: torch.Tensor,
+            labels: torch.Tensor,
+            predicted: torch.Tensor,
+            hardness_estimates: Dict[Tuple[int, int], Dict[str, List[Union[float, List[Union[None, float]]]]]],
+            epoch: int,
+            remembering: List[bool],
+            dataset_model_id: Tuple[int, int]
+    ):
         """Used to produce model-based hardness estimates of every data sample in the given batch."""
         for index_within_batch, (i, x, logits, correct_label) in enumerate(zip(batch_indices, inputs, outputs, labels)):
             i = i.item()

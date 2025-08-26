@@ -1,65 +1,87 @@
+"""This si the second visualization module that focuses on the results of experiment2.py
+
+Main purpose:
+*
+
+Important information:
+* Ensure that `num_models_per_dataset` and `num-datasets` from config.py have the same values as they did during
+running experiment2.py!
+
+"""
 import argparse
 import os
 import pickle
-from statistics import mean, stdev
-from typing import Dict, List
+from typing import Dict, List, Tuple, Union
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
+from fiona.crs import defaultdict
 from scipy.stats import pearsonr, spearmanr
 import seaborn as sns
-import torch
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
-from neural_networks import ResNet18LowRes
 from data import load_dataset
 from config import get_config, ROOT
-from utils import load_results
+from utils import (compute_fairness_metrics, generate_fairness_table, load_results, obtain_results,
+                   plot_fairness_dual_axis, plot_fairness_stability)
 
 
 class PerformanceVisualizer:
-    def __init__(self, dataset_name, pruning_type):
+    """Encapsulates all the necessary methods to perform the visualization pertaining to the results of
+    experiment2.py"""
+    def __init__(self, dataset_name):
+        """Initialize the Visualizer class responsible for visualizing the improvement in fairness from using different
+        hardness-based resampling techniques on the controlled pruning case study (experiment2.py).
+
+        :param dataset_name: Name of the dataset
+        """
         self.dataset_name = dataset_name
-        self.pruning_type = pruning_type
 
         config = get_config(args.dataset_name)
         self.num_classes = config['num_classes']
         self.num_epochs = config['num_epochs']
         self.num_training_samples = config['num_training_samples']
         self.num_test_samples = config['num_test_samples']
-        self.num_models = config['robust_ensemble_size']
+        self.num_models_per_dataset = config['num_models_per_dataset']
+        self.num_datasets = config['num_datasets']
 
         self.figure_save_dir = os.path.join(ROOT, 'Figures/', args.dataset_name)
         self.results_dir = os.path.join(ROOT, "Results/")
         os.makedirs(self.figure_save_dir, exist_ok=True)
         os.makedirs(self.results_dir, exist_ok=True)
 
-    def load_models(self) -> Dict[str, Dict[int, List[str]]]:
+    def load_models(self) -> Dict[str, Dict[int, List[List[str]]]]:
+        """Used to load pretrained models."""
         models_dir = os.path.join(ROOT, "Models/")
-        models_by_rate, pruning_rate = {f'{self.pruning_type}_clp': {}, f'{self.pruning_type}_dlp': {}}, None
+        models_by_rate, pruning_rate = defaultdict(lambda: defaultdict(list)), None
 
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
+        for pruning_strategy in ['clp', 'randomdlp', 'holdoutdlp', 'SMOTEdlp']:
             # Walk through each folder in the Models directory
             for root, dirs, files in os.walk(models_dir):
                 # Ensure the dataset name matches exactly (avoid partial matches like "cifar10" in "cifar100")
                 if f"{pruning_strategy}" in root and os.path.basename(root) == f'unclean{self.dataset_name}':
                     pruning_rate = int(root.split(pruning_strategy)[1].split("/")[0])
-                    models_by_rate[pruning_strategy].setdefault(pruning_rate, [])
+
                     for file in files:
-                        if file.endswith(".pth") and "_epoch_200" in file:
+                        if file.endswith(".pth") and f"_epoch_{self.num_epochs}" in file:
+                            dataset_index = int(file.split("_")[1])
+                            model_index = int(file.split("_")[3])
+                            if dataset_index >= self.num_datasets or model_index >= self.num_models_per_dataset:
+                                raise Exception('The `num_datasets` and `num_models_per_dataset` in config.py needs to '
+                                                'have the same values as it when running experiment3.py.')
+
                             model_path = os.path.join(root, file)
                             models_by_rate[pruning_strategy][pruning_rate].append(model_path)
-            if len(models_by_rate[pruning_strategy][pruning_rate]) < self.num_models:
-                self.num_models = len(models_by_rate[pruning_strategy][pruning_rate])
+                    if len(models_by_rate[pruning_strategy][pruning_rate]) > 0:
+                        print(f"Loaded {len(models_by_rate[pruning_strategy][pruning_rate])} x "
+                              f"{len(models_by_rate[pruning_strategy][pruning_rate])}  models for pruning strategy "
+                              f"{pruning_strategy} and pruning rate {pruning_rate}.")
 
             # Load models trained on the full dataset (no pruning)
             full_dataset_dir = os.path.join(models_dir, "none", f'unclean{self.dataset_name}')
             if os.path.exists(full_dataset_dir):
-                models_by_rate[pruning_strategy][0] = []  # Use `0` to represent models without pruning
                 for file in os.listdir(full_dataset_dir):
-                    if file.endswith(".pth") and "_epoch_200" in file:
+                    if file.endswith(".pth") and f"_epoch_{self.num_epochs}" in file:
                         model_path = os.path.join(full_dataset_dir, file)
                         models_by_rate[pruning_strategy][0].append(model_path)
 
@@ -67,18 +89,18 @@ class PerformanceVisualizer:
 
         return models_by_rate
 
-    def compute_pruned_percentages(self, models_by_rate: Dict[str, Dict[int, List[str]]]) -> Dict[str, Dict[
-                                                                                              int, List[float]]]:
+    def compute_pruned_percentages(self, models_by_rate: Dict[str, Dict[int, List[List[str]]]]
+                                   ) -> Dict[str, Dict[int, List[float]]]:
         """Computes the percentage of samples that were pruned per class for each of the pruning rate and pruning
         strategy."""
         pruned_percentages = {}
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
+        for pruning_strategy in models_by_rate.keys():
             pruning_rates = models_by_rate[pruning_strategy].keys()
             pruned_percentages[pruning_strategy] = {pruning_rate: [] for pruning_rate in pruning_rates}
 
             # Iterate over each pruning rate in models_by_rate
             for pruning_rate in pruning_rates:
-                if pruning_rate != 0:
+                if int(pruning_rate) != 0:
                     pkl_path = os.path.join(ROOT, "Results", pruning_strategy + str(pruning_rate), self.dataset_name,
                                             f"class_level_sample_counts.pkl")
                     with open(pkl_path, "rb") as file:
@@ -95,10 +117,22 @@ class PerformanceVisualizer:
         return pruned_percentages
 
     def plot_pruned_percentages(self, pruned_percentages: Dict[int, List[float]]):
+        """Visualizes the differences between pruned samples for class- and dataset-level pruning for the top-5 easiest
+        and hardest classes."""
         plt.figure(figsize=(10, 6))
 
         pruning_rates = sorted(pruned_percentages.keys())
+        class_means = {}
         for class_idx in range(self.num_classes):
+            class_pruning_percentages = [pruned_percentages[pr][class_idx] for pr in pruning_rates]
+            class_means[class_idx] = np.mean(class_pruning_percentages)
+
+        sorted_classes = sorted(class_means.items(), key=lambda x: x[1])
+        easiest = [cls_idx for cls_idx, _ in sorted_classes[-5:]]
+        hardest = [cls_idx for cls_idx, _ in sorted_classes[:5]]
+
+        selected_classes = easiest + hardest
+        for class_idx in selected_classes:
             class_pruning_percentages = [pruned_percentages[pruning_rate][class_idx] for pruning_rate in pruning_rates]
             plt.plot(pruning_rates, class_pruning_percentages, marker='o')
 
@@ -107,339 +141,78 @@ class PerformanceVisualizer:
         plt.grid(True)
         plt.savefig(os.path.join(self.figure_save_dir, f'class_vs_dataset_pruning_values.pdf'))
 
-    def evaluate_block(self, ensemble: List[str], test_loader: DataLoader, class_index: int, pruning_rate: int,
-                       results: Dict[str, Dict[str, Dict[int, Dict[int, Dict]]]], pruning_strategy: str):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        for model_idx, model_path in enumerate(ensemble):
-            model_state = torch.load(model_path)
-            if model_idx == self.num_models:
-                continue
-            Tp, Fp, Fn, Tn = 0, 0, 0, 0
-            model = ResNet18LowRes(self.num_classes)
-            model.load_state_dict(model_state)
-            model = model.to(device)
-            model.eval()
-
-            with torch.no_grad():
-                for images, labels, _ in test_loader:
-                    images, labels = images.to(device), labels.to(device)
-                    outputs = model(images)
-                    _, predicted = outputs.max(1)
-
-                    for pred, label in zip(predicted, labels):
-                        if label == class_index:
-                            if pred.item() == class_index:
-                                Tp += 1
-                            else:
-                                Fn += 1
-                        else:
-                            if pred.item() == class_index:
-                                Fp += 1
-                            else:
-                                Tn += 1
-
-            results[pruning_strategy]['Tp'][pruning_rate][class_index][model_idx] = Tp
-            results[pruning_strategy]['Fp'][pruning_rate][class_index][model_idx] = Fp
-            results[pruning_strategy]['Fn'][pruning_rate][class_index][model_idx] = Fn
-            results[pruning_strategy]['Tn'][pruning_rate][class_index][model_idx] = Tn
-
-    def evaluate_ensemble(self, models_by_rate: Dict[str, Dict[int, List[str]]], test_loader: DataLoader,
-                          results: Dict[str, Dict[str, Dict]]):
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            for pruning_rate, ensemble in tqdm(models_by_rate[pruning_strategy].items(),
-                                               desc=f'Iterating over pruning rates ({pruning_strategy}).'):
-                for metric_name in ['Tp', 'Fp', 'Fn', 'Tn']:
-                    results[pruning_strategy][metric_name][pruning_rate] = {class_id: {}
-                                                                            for class_id in range(self.num_classes)}
-                for class_index in tqdm(range(self.num_classes), desc='Iterating over classes'):
-                    self.evaluate_block(ensemble, test_loader, class_index, pruning_rate, results, pruning_strategy)
-
-    def save_file(self, filename: str, data: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]]):
-        save_location = os.path.join(self.results_dir, self.dataset_name, filename)
-        os.makedirs(save_location, exist_ok=True)
-        with open(save_location, "wb") as file:
-            pickle.dump(data, file)
-
-    def plot_classwise_recall_vs_pruning(self, results):
-        clp_key = f"{self.pruning_type}_clp"
-        dlp_key = f"{self.pruning_type}_dlp"
-
-        pruning_rates = list(results[clp_key]['Recall'].keys())
+    def plot_classwise_recall_vs_pruning(
+            self,
+            results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]]
+    ):
+        """This visualization goes through all pruning rates and for which visually compares the per-class recall,
+        averaged across datasets and models, across different pruning strategies. The idea is to introduce another way
+        to compare the effect of different pruning strategies on performance on easy and hard classes - lower/higher
+        performance on easy/hard classes for clp-based results than dlp-based ones."""
+        pruning_rates = list(results['Recall']['clp'].keys())
         zero_rate = 0.0 if 0.0 in pruning_rates else 0
-        pruning_rate_no_zero = [pr for pr in pruning_rates if pr != zero_rate]
+        pruning_rate_no_zero = sorted([pr for pr in pruning_rates if pr != zero_rate])
+        colors = matplotlib.colormaps["tab10"]
 
-        fig, axes = plt.subplots(nrows=1, ncols=len(pruning_rate_no_zero), figsize=(4 * len(pruning_rate_no_zero), 8),
-                                 sharey=True)
+        fig, axes = plt.subplots(ncols=len(pruning_rate_no_zero), figsize=(4 * len(pruning_rate_no_zero), 8),
+                                 sharey='all')
         for ax, pruning_rate in zip(axes, pruning_rate_no_zero):
-            clp_recalls = [np.mean(list(results[clp_key]['Recall'][pruning_rate][cls].values()))
+            clp_recalls = [np.mean(list(results['Recall']['clp'][pruning_rate][cls]))
                            for cls in range(self.num_classes)]
-            dlp_recalls = [np.mean(list(results[dlp_key]['Recall'][pruning_rate][cls].values()))
-                           for cls in range(self.num_classes)]
+            random_dlp_recalls = [np.mean(list(results['Recall']['randomdlp'][pruning_rate][cls]))
+                                  for cls in range(self.num_classes)]
+            SMOTE_dlp_recalls = [np.mean(list(results['Recall']['SMOTEdlp'][pruning_rate][cls]))  # noqa
+                                  for cls in range(self.num_classes)]
+            holdout_dlp_recalls = [np.mean(list(results['Recall']['holdoutdlp'][pruning_rate][cls]))
+                                  for cls in range(self.num_classes)]
+
             sorted_classes = np.argsort(clp_recalls)[::-1]
             clp_sorted = np.array(clp_recalls)[sorted_classes]
-            dlp_sorted = np.array(dlp_recalls)[sorted_classes]
+            random_dlp_sorted = np.array(random_dlp_recalls)[sorted_classes]
+            SMOTE_dlp_sorted = np.array(SMOTE_dlp_recalls)[sorted_classes]  # noqa
+            holdout_dlp_sorted = np.array(holdout_dlp_recalls)[sorted_classes]
 
-            ax.plot(clp_sorted, label=f'CLP (rate={pruning_rate})', color='blue')
-            ax.plot(dlp_sorted, label=f'DLP (rate={pruning_rate})', color='red')
+            ax.plot(clp_sorted, label=f'CLP (rate={pruning_rate})', color=colors(0))
+            ax.plot(random_dlp_sorted, label=f'random DLP (rate={pruning_rate})', color=colors(1))
+            ax.plot(SMOTE_dlp_sorted, label=f'SMOTE DLP (rate={pruning_rate})', color=colors(2))
+            ax.plot(holdout_dlp_sorted, label=f'holdout DLP (rate={pruning_rate})', color=colors(3))
 
             ax.set_title(f'Class-wise Recall @ pruning_rate={pruning_rate}')
-            ax.set_ylabel('Recall')
             ax.legend()
             ax.grid(True, linestyle='--', alpha=0.6)
 
-        axes[-1].set_xlabel('Class (sorted by baseline recall)')
+        fig.supxlabel('Class (sorted by baseline recall)')
+        # axes[0].set_ylabel('Recall')
+        fig.supulabel('Recall')
         plt.tight_layout()
         filename = f"class_level_recall_changes_investigation.pdf"
-        plt.tight_layout()
         plt.savefig(os.path.join(self.figure_save_dir, filename))
 
-    def compute_fairness_metrics(self, results, samples_per_class):
-        fairness_results = {}
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            fairness_results[pruning_strategy] = {
-                'max_min_gap': {},  # strategy -> pruning_rate -> ensemble_size -> float
-                'std_dev': {},
-                'cv': {},
-                'quant_diff': {},
-                'hard_easy': {},
-                'avg_change': {}
-            }
-            for pruning_rate in sorted(results[pruning_strategy]['Recall'].keys()):
-                for fairness_metric in 'max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy', 'avg_change':
-                    fairness_results[pruning_strategy][fairness_metric][pruning_rate] = {}
+    def compute_and_plot_recall_correlations_across_ensemble_sizes(
+            self,
+            results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]]
+    ):
+        """This visualization measures the Spearman Rank and Pearson correlations between the class-level recall values
+         averaged over i x i ensemble and (i+1) x (i+1) ensemble - (num_datasets) x (num_models_per_dataset). The idea
+         is to see if we have to use more models datasets to ensure statistical significance of class-level recalls."""
+        def compute_mean_recall(class_id, size):
+            """Helper function"""
+            return np.mean([results['Recall'][pruning_strategy][pruning_rate][class_id][d][m]
+                            for d in range(size) for m in range(size)])
 
-                for ensemble_size in range(1, self.num_models + 1):
-                    recall_values = []
-                    for class_id in range(self.num_classes):
-                        # Mean recall over ensemble_size models for a given class
-                        mean_recall = np.mean([
-                            results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx]
-                            for model_idx in range(ensemble_size)
-                        ])
-                        recall_values.append(mean_recall)
+        for pruning_strategy in results['Recall'].keys():
+            sorted_pruning_rates = sorted(results['Recall'][pruning_strategy].keys())
+            pearson_matrix, spearman_matrix, pearson_pval_matrix, spearman_pval_matrix = [], [], [], []
+            for pruning_rate in sorted_pruning_rates:
+                pearson_row, spearman_row, pearson_pval_row, spearman_pval_row = [], [], [], []
+                for i in range(1, min(self.num_datasets, self.num_models_per_dataset)):
+                    # Recalls for ensemble of size i x i
+                    recall_i = [compute_mean_recall(c, i) for c in range(self.num_classes)]
+                    # Recalls for ensemble of size (i + 1) x (i + 1)
+                    recall_ip1 = [compute_mean_recall(c, i + 1) for c in range(self.num_classes)]
 
-                    max_min_gap = max(recall_values) - min(recall_values)
-                    std_dev = np.std(recall_values)
-                    cv = stdev(recall_values) / mean(recall_values)
-                    quant_diff = np.percentile(recall_values, 90) - np.percentile(recall_values, 10)
-                    hard_class_recalls = [recall_values[cls] for cls in samples_per_class
-                                         if samples_per_class[cls] > np.mean(list(samples_per_class.values()))]
-                    easy_class_recalls = [recall_values[cls] for cls in samples_per_class
-                                         if samples_per_class[cls] <= np.mean(list(samples_per_class.values()))]
-                    hard_easy = abs(mean(hard_class_recalls) - mean(easy_class_recalls))
-                    base_values = [mean([results[pruning_strategy]['Recall'][0][class_id][model_idx]
-                                        for model_idx in range(ensemble_size)])
-                                   for class_id in range(self.num_classes)]
-                    avg_change = mean(base_values) - mean(recall_values)
-
-                    fairness_results[pruning_strategy]['max_min_gap'][pruning_rate][ensemble_size] = max_min_gap
-                    fairness_results[pruning_strategy]['std_dev'][pruning_rate][ensemble_size] = std_dev
-                    fairness_results[pruning_strategy]['cv'][pruning_rate][ensemble_size] = cv
-                    fairness_results[pruning_strategy]['quant_diff'][pruning_rate][ensemble_size] = quant_diff
-                    fairness_results[pruning_strategy]['hard_easy'][pruning_rate][ensemble_size] = hard_easy
-                    fairness_results[pruning_strategy]['avg_change'][pruning_rate][ensemble_size] = avg_change
-
-        return fairness_results
-
-
-    def generate_fairness_table(self, fairness_results, save_path):
-        rows = []
-        for pruning_strategy, metrics_dict in fairness_results.items():
-            for pruning_rate in metrics_dict['max_min_gap']:
-                row = {
-                    'Pruning Strategy': pruning_strategy,
-                    'Pruning Rate': pruning_rate,
-                    'max_min_gap': metrics_dict['max_min_gap'][pruning_rate][self.num_models],
-                    'std_dev': metrics_dict['std_dev'][pruning_rate][self.num_models],
-                    'cv': metrics_dict['cv'][pruning_rate][self.num_models],
-                    'quant_diff': metrics_dict['quant_diff'][pruning_rate][self.num_models],
-                    'hard_easy': metrics_dict['hard_easy'][pruning_rate][self.num_models],
-                    'avg_change': metrics_dict['avg_change'][pruning_rate][self.num_models]
-                }
-                rows.append(row)
-        df = pd.DataFrame(rows)
-
-        def quantize(s):
-            return [f'{v:.4f}' for v in s]
-
-        styled_df = df.copy()
-        for col in ['max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy', 'avg_change']:
-            styled_df[col] = quantize(df[col])
-        df.to_csv(os.path.join(save_path, f"pruning_fairness_results.csv"), index=False)
-        latex_str = styled_df.to_latex(index=False, escape=False)
-        with open(os.path.join(save_path, f"pruning_fairness_results.tex"), "w") as f:
-            f.write(latex_str)
-
-    def plot_fairness_stability(self, fairness_results):
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            for fairness_type in ['max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy', 'avg_change']:
-                # Extract data into a 2D matrix: rows = pruning rates, cols = ensemble sizes
-                pruning_rates = sorted(fairness_results[pruning_strategy][fairness_type].keys())
-                ensemble_sizes = sorted(next(iter(fairness_results[pruning_strategy][fairness_type].values())).keys())
-
-                heatmap_data = np.array([
-                    [fairness_results[pruning_strategy][fairness_type][rate][size]
-                     for size in ensemble_sizes]
-                    for rate in pruning_rates
-                ])
-
-                plt.figure(figsize=(10, 6))
-                sns.heatmap(heatmap_data, annot=True, fmt=".3f", cmap="viridis",
-                            xticklabels=ensemble_sizes, yticklabels=[f"{r}%" for r in pruning_rates])
-                plt.title(f"{fairness_type.replace('_', ' ').title()} Heatmap ({pruning_strategy})")
-                plt.xlabel("Ensemble Size")
-                plt.ylabel("Pruning Rate")
-                filename = f"{fairness_type}_stability_{pruning_strategy}.pdf"
-                plt.tight_layout()
-                plt.savefig(os.path.join(self.figure_save_dir, filename))
-                plt.close()
-
-    def plot_fairness_dual_axis(self, fairness_results):
-        pruning_strategies = {
-            f'{self.pruning_type}_clp': {'label': 'CLP', 'linestyle': '-'},
-            f'{self.pruning_type}_dlp': {'label': 'DLP', 'linestyle': '--'}
-        }
-
-        pruning_rates = sorted(next(iter(fairness_results.values()))['max_min_gap'].keys())
-        x_labels = [f"{r}" for r in pruning_rates]
-
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-        ax2 = ax1.twinx()
-
-        for strategy, style in pruning_strategies.items():
-            max_min_values = [fairness_results[strategy]['quant_diff'][rate][self.num_models] for rate in pruning_rates]
-            std_dev_values = [fairness_results[strategy]['cv'][rate][self.num_models] for rate in pruning_rates]
-
-            ax1.plot(x_labels, max_min_values, label=f"Quant Diff ({style['label']})", linestyle=style['linestyle'],
-                     color='tab:blue')
-            ax2.plot(x_labels, std_dev_values, label=f"CV ({style['label']})", linestyle=style['linestyle'],
-                     color='tab:orange')
-
-        ax1.set_xlabel("Pruning Rate")
-        ax1.set_ylabel("Quant Diff", color='tab:blue')
-        ax2.set_ylabel("CV", color='tab:orange')
-        ax1.tick_params(axis='y', labelcolor='tab:blue')
-        ax2.tick_params(axis='y', labelcolor='tab:orange')
-
-        # Combine legends from both axes
-        lines_1, labels_1 = ax1.get_legend_handles_labels()
-        lines_2, labels_2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
-
-        plt.title(f"Fairness (Ensemble Size = {self.num_models})")
-        fig.tight_layout()
-        filename = f"fairness_dual_axis_ensemble{self.num_models}.pdf"
-        plt.savefig(os.path.join(self.figure_save_dir, filename))
-        plt.close()
-
-    def plot_fairness_change_heatmap(self, fairness_results):
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            for fairness_type in ['max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy', 'avg_change']:
-                pruning_rates = sorted(fairness_results[pruning_strategy][fairness_type].keys())
-                ensemble_sizes = list(range(1, self.num_models))  # from size 1 to N-1 (we compare i vs i+1)
-                heatmap_data = []
-
-                for pruning_rate in pruning_rates:
-                    row = []
-                    for i in ensemble_sizes:
-                        fairness_i = fairness_results[pruning_strategy][fairness_type][pruning_rate][i]
-                        fairness_ip1 = fairness_results[pruning_strategy][fairness_type][pruning_rate][i + 1]
-                        delta = abs(fairness_ip1 - fairness_i)
-                        row.append(delta)
-                    heatmap_data.append(row)
-
-                heatmap_data = np.array(heatmap_data)
-
-                plt.figure(figsize=(10, 6))
-                sns.heatmap(
-                    heatmap_data, annot=True, fmt=".3f", center=0.0,
-                    cmap="coolwarm", xticklabels=ensemble_sizes,
-                    yticklabels=[f"{r}%" for r in pruning_rates]
-                )
-                plt.title(f"Δ {fairness_type.replace('_', ' ').title()} (i+1 - i) ({pruning_strategy})")
-                plt.xlabel("Ensemble Size i (Δ = i+1 - i)")
-                plt.ylabel("Pruning Rate")
-                filename = f"{fairness_type}_change_heatmap_{pruning_strategy}.pdf"
-                plt.tight_layout()
-                plt.savefig(os.path.join(self.figure_save_dir, filename))
-                plt.close()
-
-    def compute_recall_instability(self, results):
-        instability_results = {}
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            instability_results[pruning_strategy] = {}
-
-            for pruning_rate in sorted(results[pruning_strategy]['Recall'].keys()):
-                instability_results[pruning_strategy][pruning_rate] = {}
-
-                for i in range(1, self.num_models):  # comparing i vs i+1
-                    recalls_i, recalls_ip1 = [], []
-
-                    for class_id in range(self.num_classes):
-                        mean_recall_i = np.mean([
-                            results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx]
-                            for model_idx in range(i)
-                        ])
-                        mean_recall_ip1 = np.mean([
-                            results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx]
-                            for model_idx in range(i + 1)
-                        ])
-                        recalls_i.append(mean_recall_i)
-                        recalls_ip1.append(mean_recall_ip1)
-
-                    # Sum of absolute differences
-                    instability = np.sum(np.abs(np.array(recalls_ip1) - np.array(recalls_i)))
-                    instability_results[pruning_strategy][pruning_rate][i] = instability / self.num_classes
-
-        return instability_results
-
-    def plot_recall_instability(self, instability_results):
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            pruning_rates = sorted(instability_results[pruning_strategy].keys())
-            ensemble_sizes = list(range(1, self.num_models))
-
-            heatmap_data = np.array([
-                [instability_results[pruning_strategy][rate][i] for i in ensemble_sizes]
-                for rate in pruning_rates
-            ])
-
-            plt.figure(figsize=(10, 6))
-            vmax = 0.019 if self.dataset_name == 'CIFAR100' else 0.005
-            sns.heatmap(heatmap_data, annot=True, fmt=".3f", cmap="YlOrRd", vmin=0, vmax=vmax,
-                        xticklabels=ensemble_sizes, yticklabels=[f"{r}%" for r in pruning_rates])
-            plt.title(f"Recall Instability (|Δ Recall_c| summed) ({pruning_strategy})")
-            plt.xlabel("Ensemble Size i (vs i+1)")
-            plt.ylabel("Pruning Rate")
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.figure_save_dir, f"recall_instability_{pruning_strategy}.pdf"))
-            plt.close()
-
-    def compute_and_plot_recall_correlations_across_ensemble_sizes(self, results):
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            pruning_rates = sorted(results[pruning_strategy]['Recall'].keys())
-            pearson_matrix, spearman_matrix = [], []
-            pearson_pval_matrix, spearman_pval_matrix = [], []
-            for pruning_rate in sorted(results[pruning_strategy]['Recall'].keys()):
-                pearson_row, spearman_row = [], []
-                pearson_pval_row, spearman_pval_row = [], []
-                for i in range(1, self.num_models):
-                    recall_i, recall_ip1 = [], []
-                    for class_id in range(self.num_classes):
-                        # Ensemble of size i
-                        recall_vec_i = np.mean([
-                            results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx]
-                            for model_idx in range(i)
-                        ])
-                        # Ensemble of size i+1
-                        recall_vec_ip1 = np.mean([
-                            results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx]
-                            for model_idx in range(i + 1)
-                        ])
-                        recall_i.append(recall_vec_i)
-                        recall_ip1.append(recall_vec_ip1)
                     pearson_corr, pearson_pval = pearsonr(recall_i, recall_ip1)
-                    spearman_corr, spearman_pval = spearmanr(recall_i, recall_ip1)
+                    spearman_corr, spearman_pval = spearmanr(recall_i, recall_ip1)  # noqa
                     pearson_row.append(pearson_corr)
                     spearman_row.append(spearman_corr)
                     pearson_pval_row.append(pearson_pval)
@@ -453,9 +226,9 @@ class PerformanceVisualizer:
             pearson_pval_matrix = np.array(pearson_pval_matrix)
             spearman_pval_matrix = np.array(spearman_pval_matrix)
 
-            fig, axes = plt.subplots(2, 2, figsize=(14, 6), sharey=True)
-            x_labels = list(range(1, self.num_models))
-            y_labels = [f"{r}%" for r in pruning_rates]
+            fig, axes = plt.subplots(2, 2, figsize=(14, 6), sharey='all')
+            x_labels = list(range(1, min(self.num_datasets, self.num_models_per_dataset)))
+            y_labels = [f"{r}%" for r in sorted_pruning_rates]
             heatmaps = [
                 (pearson_matrix, "Pearson Correlation", axes[0, 0]),
                 (spearman_matrix, "Spearman Correlation", axes[0, 1]),
@@ -465,8 +238,7 @@ class PerformanceVisualizer:
             for mat, title, ax in heatmaps:
                 sns.heatmap(
                     mat, xticklabels=x_labels, yticklabels=y_labels, annot=True, fmt=".2f",
-                    cmap="YlGnBu" if "Correlation" in title else "OrRd", ax=ax,
-                    cbar=True, vmin=0.0, vmax=1.0
+                    cmap="YlGnBu" if "Correlation" in title else "OrRd", ax=ax, vmin=0.0, vmax=1.0
                 )
                 ax.set_title(title)
             for ax in axes[1]:  # Label only bottom row
@@ -478,198 +250,206 @@ class PerformanceVisualizer:
             fig.savefig(os.path.join(self.figure_save_dir, f"recall_corr_pval_heatmap_{pruning_strategy}.pdf"))
             plt.close()
 
-    def plot_class_level_results(self, results: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]],
-                                 pruned_percentages: Dict[str, Dict[int, List[float]]]):
-        pruning_rates = sorted(results[f'{self.pruning_type}_clp']['Average Accuracy'].keys())
+    def plot_class_level_results(
+            self,
+            results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]],
+            pruned_percentages: Dict[str, Dict[int, List[float]]]
+    ):
+        """This visualization also compares the class-level recalls across different pruning strategies and pruning
+        thresholds, but in a different manner. This time we focus on 10 most extreme classes (5 easiest and 5 hardest)
+        and also show the differences in pruned thresholds (e.g., pruning threshold of 20% leads to removal of way more
+         samples on the hardest classes)."""
+        def compute_statistic(pruning_strategy, reducer):
+            """Helper function"""
+            return np.array([
+                reducer([
+                    results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx]
+                    for dataset_idx in range(self.num_datasets)
+                    for model_idx in range(self.num_models_per_dataset)
+                ])
+                for p in pruning_rates
+            ])
 
-        for metric_name in results[f'{self.pruning_type}_clp'].keys():
-            # Compute average recall over all pruning rates and models per class
-            class_avg_recall = []
-            for class_id in range(self.num_classes):
-                recalls = [results[f'{self.pruning_type}_clp'][metric_name][0][class_id][model_idx]
-                           for model_idx in range(self.num_models)]
-                class_avg_recall.append(np.mean(recalls))
-
+        pruning_rates = sorted(results['Recall']['clp'].keys())
+        colors = matplotlib.colormaps["tab10"]
+        for metric_name in results.keys():
             # Identify 5 easiest and 5 hardest classes
-            sorted_classes = np.argsort(class_avg_recall)
+            pruning_dlp = [pruned_percentages['randomdlp'][pruning_rates[1]][cls] for cls in range(self.num_classes)]
+            sorted_classes = np.argsort(-np.array(pruning_dlp))
             selected_classes = list(sorted_classes[-5:][::-1]) + list(sorted_classes[:5])
             plot_indices = list(range(5)) + list(range(9, 4, -1))  # map to top and bottom row
 
-            num_plots, ncols, nrows = 10, 5, 2
-            fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows), sharey='all')
+            num_plots, num_cols, num_rows = 10, 5, 2
+            fig, axes = plt.subplots(num_rows, num_cols, figsize=(4 * num_cols, 4 * num_rows), sharey='all')
             fig.suptitle(f"Class-Level {metric_name} Across Pruning Rates", fontsize=16)
             axes = axes.flatten()
 
             for idx, class_id in enumerate(selected_classes):
-                avg_metric_values_clp = np.array([np.mean([results[f'{self.pruning_type}_clp'][metric_name][p][class_id]
-                                                           [model_idx] for model_idx in range(self.num_models)])
-                                                  for p in pruning_rates])
-                std_metric_values_clp = np.array([np.std([results[f'{self.pruning_type}_clp'][metric_name][p][class_id]
-                                                          [model_idx] for model_idx in range(self.num_models)])
-                                                  for p in pruning_rates])
-
-                avg_metric_values_dlp = np.array([np.mean([results[f'{self.pruning_type}_dlp'][metric_name][p][class_id]
-                                                           [model_idx] for model_idx in range(self.num_models)])
-                                                  for p in pruning_rates])
-                std_metric_values_dlp = np.array([np.std([results[f'{self.pruning_type}_dlp'][metric_name][p][class_id]
-                                                          [model_idx] for model_idx in range(self.num_models)])
-                                                  for p in pruning_rates])
-
-                pruning_clp = [pruned_percentages[f'{self.pruning_type}_clp'][p][class_id] for p in pruning_rates]
-                pruning_dlp = [pruned_percentages[f'{self.pruning_type}_dlp'][p][class_id] for p in pruning_rates]
+                avg_metric_values_clp = compute_statistic('clp', np.mean)
+                std_metric_values_clp = compute_statistic('clp', np.std)
+                pruning_clp = [pruned_percentages['clp'][p][class_id] for p in pruning_rates]
 
                 ax = axes[plot_indices[idx]]
-                ax.plot(pruning_clp, avg_metric_values_clp, marker='o', linestyle='-', color='blue', label='clp')
+                ax.plot(pruning_clp, avg_metric_values_clp, marker='o', linestyle='-', color=colors(0), label='clp')
                 ax.fill_between(pruning_clp, avg_metric_values_clp - std_metric_values_clp,
                                 avg_metric_values_clp + std_metric_values_clp, color='blue', alpha=0.2)
                 ax.set_xlabel("Pruning % (clp)", color='blue')
                 ax.set_xlim(0, 100)
                 ax.tick_params(axis='x', labelcolor='blue')
-
                 ax2 = ax.twiny()
-                ax2.plot(pruning_dlp, avg_metric_values_dlp, marker='s', linestyle='--', color='red', label='dlp')
-                ax.fill_between(pruning_dlp, avg_metric_values_dlp - std_metric_values_dlp,
-                                avg_metric_values_dlp + std_metric_values_dlp, color='red', alpha=0.2)
-                ax2.set_xlabel("Pruning % (dlp)", color='red')
-                ax2.set_xlim(0, 100)
-                ax2.tick_params(axis='x', labelcolor='red')
+
+                for i, strategy in enumerate(['randomdlp', 'SMOTEdlp', 'holdoutdlp']):
+                    avg_metric_values_dlp = compute_statistic(strategy, np.mean)
+                    std_metric_values_dlp = compute_statistic(strategy, np.std)
+                    pruning_dlp = [pruned_percentages[strategy][p][class_id] for p in pruning_rates]
+
+                    ax2.plot(pruning_dlp, avg_metric_values_dlp, marker='s', linestyle='--', color=colors(i),
+                             label=strategy)
+                    ax.fill_between(pruning_dlp, avg_metric_values_dlp - std_metric_values_dlp,
+                                    avg_metric_values_dlp + std_metric_values_dlp, color=colors(i), alpha=0.2)
+                    ax2.set_xlabel("Pruning % (dlp)")
+                    ax2.set_xlim(0, 100)
+                    ax2.tick_params(axis='x', labelcolor='red')
 
                 ax.set_ylabel(f"{metric_name}")
                 ax.set_title(f"Class {class_id}")
                 ax.grid(True, linestyle='--', alpha=0.6)
 
-            # Hide any unused subplots
-            for j in range(len(selected_classes), len(axes)):
-                axes[j].axis('off')
-
             plt.tight_layout(rect=[0, 0, 1, 0.96])
             plt.savefig(os.path.join(self.figure_save_dir, f'Class_Level_{metric_name}.pdf'))
             plt.close()
 
-    def compare_clp_with_dlp(self, results: Dict[str, Dict[str, Dict[int, Dict[int, Dict[int, int]]]]]):
-        pruning_rates = sorted(results[f'{self.pruning_type}_clp']['Average Accuracy'].keys())
+    def compare_clp_with_dlp(
+            self,
+            results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]]
+    ):
+        """This visualization provides the final comparison across pruning techniques. This time the comparison is
+        performed at dataset leve. On one hand it provides the least information, but at the same time this should be
+        the easiest to understand due to simplicity and clarity."""
+        def compute_statistic(pruning_strategy, reducer):
+            """Helper function"""
+            return np.array([
+                reducer([
+                    results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx]
+                    for dataset_idx in range(self.num_datasets)
+                    for model_idx in range(self.num_models_per_dataset)
+                    for class_id in range(self.num_classes)
+                ])
+                for p in pruning_rates
+            ])
+
+        pruning_rates = sorted(results['Recall']['clp'].keys())
         x_labels = [f"{r}" for r in pruning_rates]
-        print(f'x_labels - {x_labels}')
+        colors = matplotlib.colormaps["tab10"]
 
-        for metric_name in results[f'{self.pruning_type}_clp'].keys():
-            avg_metric_clp = np.array([np.mean([results[f'{self.pruning_type}_clp'][metric_name][p][class_id][model_idx]
-                                                for model_idx in range(self.num_models)
-                                                for class_id in range(self.num_classes)])
-                                       for p in pruning_rates])
-            std_metric_clp = np.array([np.std([results[f'{self.pruning_type}_clp'][metric_name][p][class_id][model_idx]
-                                               for model_idx in range(self.num_models)
-                                               for class_id in range(self.num_classes)])
-                                       for p in pruning_rates])
-
-            avg_metric_dlp = np.array([np.mean([results[f'{self.pruning_type}_dlp'][metric_name][p][class_id][model_idx]
-                                                for model_idx in range(self.num_models)
-                                                for class_id in range(self.num_classes)])
-                                       for p in pruning_rates])
-            std_metric_dlp = np.array([np.std([results[f'{self.pruning_type}_dlp'][metric_name][p][class_id][model_idx]
-                                               for model_idx in range(self.num_models)
-                                               for class_id in range(self.num_classes)])
-                                       for p in pruning_rates])
-
-            if metric_name == 'Recall':
-                print(avg_metric_clp)
-                print(avg_metric_dlp)
+        for metric_name in results.keys():
+            avg_metric_clp = compute_statistic('clp', np.mean)
+            std_metric_clp = compute_statistic('clp', np.std)
 
             plt.figure(figsize=(8, 6))
-
-            # Plot CLP (Blue Line)
-            plt.plot(x_labels, avg_metric_clp, marker='o', linestyle='-', color='blue', label='CLP')
+            plt.plot(x_labels, avg_metric_clp, marker='o', linestyle='-', color=colors(0), label='CLP')
             plt.fill_between(x_labels, avg_metric_clp - std_metric_clp, avg_metric_clp + std_metric_clp,
                              color='blue', alpha=0.2)
-            # Plot DLP (Red Line)
-            plt.plot(x_labels, avg_metric_dlp, marker='s', linestyle='--', color='red', label='DLP')
-            plt.fill_between(x_labels, avg_metric_dlp - std_metric_dlp, avg_metric_dlp + std_metric_dlp,
-                             color='red', alpha=0.2)  # Shaded region for std
+
+            for i, strategy in enumerate(['randomdlp', 'SMOTEdlp', 'holdoutdlp']):
+                avg_metric_dlp = compute_statistic(strategy, np.mean)
+                std_metric_dlp = compute_statistic(strategy, np.std)
+                if metric_name == 'Recall':
+                    print(avg_metric_dlp)
+
+                plt.plot(x_labels, avg_metric_dlp, marker='s', linestyle='--', color=colors(i), label=f'{strategy}DLP')
+                plt.fill_between(x_labels, avg_metric_dlp - std_metric_dlp, avg_metric_dlp + std_metric_dlp,
+                                 color=colors(i), alpha=0.2)
 
             plt.xlabel("Percentage of samples removed from the dataset", fontsize=12)
             plt.ylabel(f"Average {metric_name}", fontsize=12)
             plt.legend()
-
             plt.savefig(os.path.join(self.figure_save_dir, f'{metric_name}_clp_vs_dlp.pdf'))
 
+    def compute_recall_instability(
+            self,
+            results: Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]
+    ) -> Dict[str, Dict[int, Dict[int, float]]]:
+        """This method computes the average instability of class-level recall values. If we increase the number of
+        models per dataset and number of datasets by one how does it change the class-level recall on average? High
+        instability indicates that adding more models and datasets greatly affects the results and is hence advised (low
+         stability of robustness)."""
+        def compute_statistic(j, class_id, reducer):
+            """Helper function"""
+            return np.array([
+                reducer([
+                    results[pruning_strategy][pruning_rate][class_id][dataset_idx][model_idx]
+                    for dataset_idx in range(j)
+                    for model_idx in range(j)
+                ])
+            ])
+
+        instability_results = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+        for pruning_strategy in ['clp', 'randomdlp', 'holdoutdlp', 'SMOTEdlp']:
+            for pruning_rate in sorted(results[pruning_strategy].keys()):
+                for i in range(1, min(self.num_datasets, self.num_models_per_dataset)):
+                    recalls_i = [compute_statistic(i, class_id, np.mean) for class_id in range(self.num_classes)]
+                    recalls_ip1 = [compute_statistic(i + 1, class_id, np.mean) for class_id in range(self.num_classes)]
+
+                    # Sum of absolute differences
+                    instability = np.sum(np.abs(np.array(recalls_ip1) - np.array(recalls_i)))
+                    instability_results[pruning_strategy][pruning_rate][i] = instability / self.num_classes
+
+        return instability_results
+
+    def plot_recall_instability(self, instability_results: Dict[str, Dict[int, Dict[int, float]]]):
+        """This visualization shows the instability results in a form of a heatmap - instability as a function of
+        pruning rate and min(self.num_datasets, self.num_models_per_dataset)."""
+        for pruning_strategy in ['clp', 'randomdlp', 'holdoutdlp', 'SMOTEdlp']:
+            pruning_rates = sorted(instability_results[pruning_strategy].keys())
+            ensemble_sizes = list(range(1, min(self.num_datasets, self.num_models_per_dataset)))
+
+            heatmap_data = np.array([
+                [instability_results[pruning_strategy][pruning_rate][i] for i in ensemble_sizes]
+                for pruning_rate in pruning_rates
+            ])
+
+            plt.figure(figsize=(10, 6))
+            v_max = np.max(heatmap_data)
+            sns.heatmap(heatmap_data, annot=True, fmt=".3f", cmap="YlOrRd", vmin=0, vmax=v_max,
+                        xticklabels=ensemble_sizes, yticklabels=[f"{r}%" for r in pruning_rates])
+            plt.title(f"Recall Instability (|Δ Recall_c| summed) ({pruning_strategy})")
+            plt.xlabel("Ensemble Size i (vs i+1)")
+            plt.ylabel("Pruning Rate")
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.figure_save_dir, f"recall_instability_{pruning_strategy}.pdf"))
+            plt.close()
+
     def main(self):
-        samples_per_class = load_results(os.path.join(self.results_dir, f'unclean{self.dataset_name}', f'alpha_1',
-                                                      'samples_per_class.pkl'))
+        """Main method for producing the visualizations."""
         models = self.load_models()
-        print(f'Continuing with {self.num_models}.')
         pruned_percentages = self.compute_pruned_percentages(models)
-        if self.num_classes == 10:
-            self.plot_pruned_percentages(pruned_percentages[f'{self.pruning_type}_dlp'])
+        self.plot_pruned_percentages(pruned_percentages[f'randomdlp'])
+        _, _, test_loader, _ = load_dataset(self.dataset_name, apply_augmentation=True)
 
-        # We only use test_loader so values of remove_noise, shuffle, and apply_augmentation doesn't matter below.
-        _, _, test_loader, _ = load_dataset(self.dataset_name, False, False, True)
-
-        # Evaluate ensemble performance
-        if os.path.exists(os.path.join(self.results_dir, self.dataset_name, "ensemble_results.pkl")):
-            print('Loading pre-computed ensemble results.')
-            with open(os.path.join(self.results_dir, self.dataset_name, "ensemble_results.pkl"), 'rb') as f:
-                results = pickle.load(f)
-        else:
-            results = {}
-        if f'{self.pruning_type}_clp' not in results.keys():
-            for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-                results[pruning_strategy] = {}
-                for metric_name in ['Tp', 'Fn', 'Fp', 'Tn']:
-                    results[pruning_strategy][metric_name] = {}
-
-            self.evaluate_ensemble(models, test_loader, results)
-            self.save_file("ensemble_results.pkl", results)
-
-        for pruning_strategy in [f'{self.pruning_type}_clp', f'{self.pruning_type}_dlp']:
-            for metric_name in ['F1', 'MCC', 'Average Accuracy', 'Precision', 'Recall']:
-                results[pruning_strategy][metric_name] = {}
-            for pruning_rate in results[f'{self.pruning_type}_clp']['Tp'].keys():
-                for metric_name in ['F1', 'MCC', 'Average Accuracy', 'Precision', 'Recall']:
-                    results[pruning_strategy][metric_name][pruning_rate] = {}
-                for class_id in range(self.num_classes):
-                    for metric_name in ['F1', 'MCC', 'Average Accuracy', 'Precision', 'Recall']:
-                        results[pruning_strategy][metric_name][pruning_rate][class_id] = {}
-                    for model_idx in range(self.num_models):
-                        Tp = results[pruning_strategy]['Tp'][pruning_rate][class_id][model_idx]
-                        Fp = results[pruning_strategy]['Fp'][pruning_rate][class_id][model_idx]
-                        Fn = results[pruning_strategy]['Fn'][pruning_rate][class_id][model_idx]
-                        Tn = results[pruning_strategy]['Tn'][pruning_rate][class_id][model_idx]
-
-                        precision = Tp / (Tp + Fp) if (Tp + Fp) > 0 else 0.0
-                        recall = Tp / (Tp + Fn) if (Tp + Fn) > 0 else 0.0
-                        accuracy = Tp + Tn / sum(self.num_test_samples)
-                        F1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-
-                        MCC_numerator = Tp * Tn - Fp * Fn
-                        MCC_denominator = ((Tp + Fp) * (Tp + Fn) * (Tn + Fp) * (Tn + Fn)) ** 0.5
-                        MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
-                        MCC = 0.0 if MCC_denominator == 0 else MCC_numerator / MCC_denominator
-
-                        results[pruning_strategy]['F1'][pruning_rate][class_id][model_idx] = F1
-                        results[pruning_strategy]['MCC'][pruning_rate][class_id][model_idx] = MCC
-                        results[pruning_strategy]['Average Accuracy'][pruning_rate][class_id][model_idx] = accuracy
-                        results[pruning_strategy]['Precision'][pruning_rate][class_id][model_idx] = precision
-                        results[pruning_strategy]['Recall'][pruning_rate][class_id][model_idx] = recall
-
+        results = obtain_results(os.path.join(self.results_dir, self.dataset_name), self.num_classes, test_loader,
+                                 "ensemble_results.pkl", models)
         self.plot_classwise_recall_vs_pruning(results)
-        fairness_results = self.compute_fairness_metrics(results, samples_per_class)
-        self.generate_fairness_table(fairness_results, os.path.join(self.results_dir, self.dataset_name))
-        self.plot_fairness_stability(fairness_results)
-        self.plot_fairness_dual_axis(fairness_results)
-        self.plot_fairness_change_heatmap(fairness_results)
-        instability_results = self.compute_recall_instability(results)
-        self.plot_recall_instability(instability_results)
         self.compute_and_plot_recall_correlations_across_ensemble_sizes(results)
         self.plot_class_level_results(results, pruned_percentages)
         self.compare_clp_with_dlp(results)
+
+        instability_results = self.compute_recall_instability(results['Recall'])
+        self.plot_recall_instability(instability_results)
+
+        samples_per_class = load_results(os.path.join(self.results_dir, f'unclean{self.dataset_name}', f'alpha_1',
+                                                      'samples_per_class.pkl'))
+        pruning_strategies = ['clp', 'randomdlp', 'holdoutdlp', 'SMOTEdlp']
+        fairness_results = compute_fairness_metrics(results, samples_per_class, pruning_strategies, self.num_classes,
+                                                    min(self.num_datasets, self.num_models_per_dataset))
+        generate_fairness_table(fairness_results, os.path.join(self.results_dir, self.dataset_name),
+                                min(self.num_datasets, self.num_models_per_dataset), 'pruning')
+        plot_fairness_stability(fairness_results, self.figure_save_dir)
+        plot_fairness_dual_axis(fairness_results, self.figure_save_dir, 'pruning')
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Load models for specified pruning strategy and dataset")
     parser.add_argument("--dataset_name", type=str, required=True, help="Name of the dataset (e.g., 'CIFAR10')")
-    parser.add_argument("--pruning_type", choices=['easy', 'random'])
     args = parser.parse_args()
-    PerformanceVisualizer(args.dataset_name, args.pruning_type).main()
-
-# TODO: Plot stability of recall gap as a function of ensemble size and pruning rate (1 plot per pruning rate)
-# TODO: Repeat the sum of absolute differences in class-level recall values (1 plot per pruning rate).
-
+    PerformanceVisualizer(args.dataset_name,).main()
