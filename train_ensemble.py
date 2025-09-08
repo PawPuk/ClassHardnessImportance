@@ -127,12 +127,11 @@ class ModelTrainer:
         avg_loss = running_loss / total
         return avg_loss, accuracy
 
-    def train_model(self, current_dataset_index: int, current_model_index: int, latest_model_indices: List[int],
+    def train_model(self, current_dataset_index: int, current_model_index: int,
                     hardness_estimates: Union[Dict[Tuple[int, int], Dict], None]) -> Union[None, ResNet18LowRes]:
         """Train a single model."""
         dataset_model_id = (current_dataset_index, current_model_index)
-        latest_model_index = latest_model_indices[current_dataset_index]
-        seed = self.compute_current_seed(current_dataset_index, current_model_index + latest_model_index + 1)
+        seed = self.compute_current_seed(current_dataset_index, current_model_index)
         set_reproducibility(seed)
 
         model = ResNet18LowRes(num_classes=self.config['num_classes']).to(DEVICE)
@@ -174,7 +173,7 @@ class ModelTrainer:
                 avg_train_loss = running_loss / total_train
                 train_accuracy = 100 * correct_train / total_train
                 avg_test_loss, test_accuracy = self.evaluate_model(model, criterion)
-                print(f'Model {current_model_index + latest_model_index + 1}, '
+                print(f'Model {current_model_index}, '
                       f'Epoch [{epoch + 1}/{self.config["num_epochs"]}] '
                       f'Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}%, '
                       f'Test Loss: {avg_test_loss:.4f}, Test Acc: {test_accuracy:.2f}%')
@@ -185,18 +184,18 @@ class ModelTrainer:
                     return model
                 if self.save_probe_models:
                     save_path = os.path.join(self.save_dir, f'dataset_{current_dataset_index}_model_'
-                                                            f'{current_model_index + latest_model_index + 1}'
+                                                            f'{current_model_index}'
                                                             f'_epoch_{epoch + 1}.pth')
                     torch.save(model.state_dict(), save_path)
-                    print(f'Model {current_model_index + latest_model_index + 1} ({self.dataset_name}, '
+                    print(f'Model {current_model_index} ({self.dataset_name}, '
                           f'{self.pruning_type} dataset) saved at epoch {self.config["save_epoch"]}.')
 
         # Save model after full training
         final_save_path = os.path.join(self.save_dir, f'dataset_{current_dataset_index}'
-                                                      f'_model_{current_model_index + latest_model_index + 1}'
+                                                      f'_model_{current_model_index}'
                                                       f'_epoch_{self.config["num_epochs"]}.pth')
         torch.save(model.state_dict(), final_save_path)
-        print(f'Dataset {current_dataset_index} Model {current_model_index + latest_model_index + 1} '
+        print(f'Dataset {current_dataset_index} Model {current_model_index} '
               f'({self.dataset_name}, {self.pruning_type} dataset) saved after full training at epoch '
               f'{self.config["num_epochs"]}.')
         return None
@@ -246,7 +245,7 @@ class ModelTrainer:
         for dataset_id in tqdm(range(self.dataset_count)):
             for model_id in tqdm(range(latest_model_indices[dataset_id] + 1, num_models_to_train_per_dataset)):
                 hardness_estimates = {(dataset_id, model_id): {}}
-                self.train_model(dataset_id, model_id, latest_model_indices, hardness_estimates)
+                self.train_model(dataset_id, model_id, hardness_estimates)
                 if self.estimate_hardness:
                     for estimator in ['Confidence', 'AUM', 'DataIQ', 'Loss']:
                         hardness_estimates[(dataset_id, model_id)][estimator] = np.mean(

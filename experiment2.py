@@ -111,6 +111,7 @@ class Experiment2:
                                                hardness_estimates:  Dict[Tuple[int, int], Dict[str, List[float]]],
                                                thresholds: List[int]):
         """Produces the visualizations for the stability experiments performed in investigate_resampling_ratios()."""
+        os.makedirs(os.path.join(self.figure_save_dir, f"unclean{self.dataset_name}"), exist_ok=True)
         for estimator_name in hardness_estimates[(0, 0)].keys():
             if estimator_name == 'probs':
                 continue
@@ -175,7 +176,7 @@ class Experiment2:
                                                       num_workers=2))
 
         trainer = ModelTrainer(len(training_dataset), pruned_training_loaders, test_loader, self.dataset_name,
-                               f"{self.oversampling_strategy}{self.pruning_strategy}{self.pruning_rate}",
+                               f"{self.oversampling_strategy}_{self.pruning_strategy}{self.pruning_rate}",
                                False)
         trainer.train_ensemble()
 

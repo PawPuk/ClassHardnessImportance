@@ -68,7 +68,6 @@ def compute_sample_allocation_after_resampling(hardness_scores: List[float], lab
     hardnesses_by_class = {class_id: [] for class_id in range(num_classes)}
 
     # Divide the hardness estimates into classes.
-    print(len(labels), len(hardness_scores))
     for i, label in enumerate(labels):
         hardnesses_by_class[label].append(hardness_scores[i])
 

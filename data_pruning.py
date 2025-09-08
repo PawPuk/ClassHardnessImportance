@@ -120,11 +120,13 @@ class DataPruning:
         pruned_indices = list(set(range(len(training_dataset))) - set(subdataset_indices))
         pruned_dataset = AugmentedSubset(Subset(training_dataset, pruned_indices))
 
-        self.fig_save_dir = os.path.join(self.fig_save_dir, 'random_clp' + str(int(self.prune_percentage * 100)),
+        self.fig_save_dir = os.path.join(self.fig_save_dir, 'clp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
-        self.res_save_dir = os.path.join(self.res_save_dir, 'random_clp' + str(int(self.prune_percentage * 100)),
+        self.res_save_dir = os.path.join(self.res_save_dir, 'clp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
         self.plot_class_level_sample_distribution(subdataset_indices, 'clp', labels)
+        self.fig_save_dir = os.path.join(ROOT, 'Figures/')
+        self.res_save_dir = os.path.join(ROOT, 'Results/')
 
         return subdataset, pruned_dataset
 
@@ -195,7 +197,7 @@ class DataPruning:
                                stop_at_probe=True)
         el2n_scores, sub_labels = [], None
         for model_id in tqdm.tqdm(range(self.num_models_per_dataset)):
-            model = trainer.train_model(0, model_id, [-1], None)
+            model = trainer.train_model(0, model_id, None)
             scores, sub_labels = self.compute_el2n_scores(model, sub_dataloader)
             el2n_scores.append(scores)
         class_level_hardness = self.compute_class_level_scores(el2n_scores, sub_labels)
@@ -203,5 +205,14 @@ class DataPruning:
                                    'easy', class_level_hardness, True,
                                    self.dataset_name, self.num_models_for_hardness, self.mean, self.std, pruned_dataset)
         resampled_dataset = resampler.resample_data(self.imbalance_ratio)
+
+        self.fig_save_dir = os.path.join(self.fig_save_dir,
+                                         f'{oversampling_strategy}_dlp' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
+        self.res_save_dir = os.path.join(self.res_save_dir,
+                                         f'{oversampling_strategy}_dlp' + str(int(self.prune_percentage * 100)),
+                                         self.dataset_name)
+        subdataset_indices = [idx for _, _, idx in resampled_dataset]
+        self.plot_class_level_sample_distribution(subdataset_indices, 'dlp', labels)
 
         return resampled_dataset

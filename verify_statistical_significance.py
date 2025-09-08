@@ -396,7 +396,7 @@ class Visualizer:
                                                                                            estimator_name)
                     differences = np.mean([abs(next_samples_per_class[k] - curr_samples_per_class[k])
                                            for k in range(self.num_classes)])
-                    abs_diffs[estimator_name][subensemble_size].append(differences)
+                    abs_diffs[estimator_name][subensemble_size - 1].append(differences)
         return abs_diffs
 
     def visualize_stability_of_resampling(self, abs_diffs: Dict[str, List[List[float]]], num_subensembles: int):
@@ -450,6 +450,7 @@ class Visualizer:
         pruned_indices = self.get_pruned_indices(hardness_estimates)
         num_pruning_thresholds = len(pruned_indices['easy']['Confidence'])
         num_subensembles = len(pruned_indices['easy']['Confidence'][0])
+        print(f'Continuing with {num_subensembles} subensemble sizes.')
 
         stability_results = self.compute_stability_of_pruning(pruned_indices, num_subensembles, num_pruning_thresholds)
         self.visualize_stability_of_pruning_via_heatmap(num_subensembles, num_pruning_thresholds, stability_results)
