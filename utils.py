@@ -1,6 +1,7 @@
 """Module that contains a few useful functions."""
 
 from collections import defaultdict
+import dill
 import os
 import pickle
 import random
@@ -11,10 +12,10 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scipy.stats import ttest_rel
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import seaborn as sns
 
 from config import DEVICE, ROOT
 from neural_networks import ResNet18LowRes
@@ -116,8 +117,19 @@ def restructure_hardness_dictionary(
             out[metric_name].append(estimates)
     return dict(out)
 
+
+def copy_results_for_degree_zero(results, first_strategies, strategies, degree, class_index, ensembles):
+    """Since the results are shared across strategies for degree 0 we do not want to recompute them but rather copy to
+    save compute."""
+    for dataset_idx in range(len(ensembles)):
+        for model_idx, _ in enumerate(ensembles[dataset_idx]):
+            for metric_name in results.keys():
+                results[metric_name][strategies][degree][class_index][dataset_idx][model_idx] = \
+                    results[metric_name][first_strategies][degree][class_index][dataset_idx][model_idx]
+
+
 def evaluate_ensembles(
-        ensembles: List[List[str]],
+        ensembles: Dict[int, List[str]],
         test_loader: DataLoader,
         class_index: int,
         num_classes: int,
@@ -165,11 +177,20 @@ def evaluate_ensembles(
             for (metric_name, metric_results) in [('Tp', true_positives), ('Tn', true_negatives), ('Recall', recall),
                                                   ('Fp', false_positives), ('Fn', false_negatives), ('F1', F1),
                                                   ('MCC', MCC), ('Precision', precision)]:
-                results[metric_name][strategies][degree][class_index][dataset_idx][model_idx] = metric_results
+                results[metric_name][strategies][int(degree)][class_index][dataset_idx][model_idx] = metric_results
+
+
+def defaultdict_to_dict(d):
+    """Recursively convert defaultdicts to dicts at all depths."""
+    if isinstance(d, defaultdict):
+        d = {k: defaultdict_to_dict(v) for k, v in d.items()}
+    elif isinstance(d, dict):  # catch plain dicts too
+        d = {k: defaultdict_to_dict(v) for k, v in d.items()}
+    return d
 
 
 def obtain_results(save_dir: str, num_classes: int, test_loader: DataLoader, file_name: str,
-                   models: Dict[Union[str, Tuple[str, str]], Dict[int, List[List[str]]]],
+                   models: Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, List[str]]]],
                    ) -> Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]]:
     """Load the results if they have been computed before, or use evaluate_ensembles to compute them."""
     results = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(
@@ -177,17 +198,18 @@ def obtain_results(save_dir: str, num_classes: int, test_loader: DataLoader, fil
     if os.path.exists(os.path.join(save_dir, file_name)):
         print('Loading pre-computed ensemble results.')
         with open(os.path.join(save_dir, file_name), 'rb') as f:
-            results = pickle.load(f)
+            results = dill.load(f)
     else:
         for class_index in tqdm(range(num_classes), desc='Iterating through classes'):
-            for strategies, ensembles_across_degrees in models.items():
+            for i, (strategies, ensembles_across_degrees) in enumerate(models.items()):
                 for degree, ensembles in ensembles_across_degrees.items():
                     evaluate_ensembles(ensembles, test_loader, class_index, num_classes, strategies, degree, results)
         os.makedirs(save_dir, exist_ok=True)
         with open(os.path.join(save_dir, file_name), "wb") as file:
-            # noinspection PyTypeChecker
-            pickle.dump(results, file)
-    return results
+            dill.dump(results, file)
+    print('The loaded results have keys:', results.keys())
+    return defaultdict_to_dict(results)
+
 
 def compute_fairness_metrics(
         results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]],
@@ -195,49 +217,72 @@ def compute_fairness_metrics(
         resampling_or_pruning_strategies: Union[List[str], List[Tuple[str, str]]],
         num_classes: int,
         max_ensemble_size: int
-) -> Dict[str, Dict[str, Dict[str, Dict[int, Dict[int, float]]]]]:
+) -> Dict[str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float]]]]]]:
     """This method computes the fairness metrics to better determine whether applying hardness-based resampling (both
     on pruned data in experiment2.py and the full data in experiment3.py) brings meaningful improvement to fairness."""
     fairness_results = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
-    for base_metric in ['Recall', 'F1', 'MCC', 'Precision']:
+    for metric_name in ['Recall', 'F1', 'MCC', 'Precision']:
         for strategy in resampling_or_pruning_strategies:
-            for degree in sorted(results['Recall'][strategy].keys()):
+            for degree in sorted(results[metric_name][strategy].keys()):
                 for ensemble_size in range(1, max_ensemble_size + 1):
-                    recall_values = []
-                    for class_id in range(num_classes):
-                        # Mean recall over ensemble_size models for a given class
-                        mean_recall = np.mean([
-                            results['Recall'][strategy][degree][class_id][dataset_idx][model_idx]
-                            for dataset_idx in range(ensemble_size)
-                            for model_idx in range(ensemble_size)
-                        ])
-                        recall_values.append(mean_recall)
+                    fairness_metrics_grid = {'max_min_gap': [], 'std_dev': [], 'quant_diff': [], 'mad': [],
+                                             'hard_easy': [], 'avg_change': []}
 
-                    max_min_gap = max(recall_values) - min(recall_values)
-                    std_dev = np.std(recall_values)
-                    cv = float(np.std(recall_values)) / float(np.mean(recall_values))
-                    quant_diff = float(np.percentile(recall_values, 90)) - float(np.percentile(recall_values, 10))
-                    hard_class_recalls = [recall_values[cls] for cls in samples_per_class
-                                          if samples_per_class[cls] > np.mean(samples_per_class)]
-                    easy_class_recalls = [recall_values[cls] for cls in samples_per_class
-                                          if samples_per_class[cls] <= np.mean(samples_per_class)]
-                    hard_easy = abs(float(np.mean(hard_class_recalls)) - float(np.mean(easy_class_recalls)))
-                    base_values = [np.mean([results['Recall'][strategy][0][class_id][dataset_idx][model_idx]
-                                            for dataset_idx in range(ensemble_size)
-                                            for model_idx in range(ensemble_size)])
-                                   for class_id in range(num_classes)]
-                    avg_change = float(np.mean(base_values)) - float(np.mean(recall_values))
+                    num_datasets = len(results[metric_name][strategy][degree][0])
+                    for dataset_idx in range(num_datasets):
+                        num_models = len(results[metric_name][strategy][degree][0][dataset_idx])
+                        for model_idx in range(num_models):
+                            metric_values = [
+                                results[metric_name][strategy][degree][class_id][dataset_idx][model_idx]
+                                for class_id in range(num_classes)
+                                if results[metric_name][strategy][degree][class_id][dataset_idx][model_idx] != 0.0
+                            ]
 
-                    for (fairness_metric, metric_results) in [('max_min_gap', max_min_gap), ('std_dev', std_dev),
-                                                              ('cv', cv), ('quant_diff', quant_diff),
-                                                              ('hard_easy', hard_easy), ('avg_change', avg_change)]:
-                        fairness_results[base_metric][strategy][fairness_metric][degree][ensemble_size] = metric_results
+                            max_min_gap = abs(max(metric_values) - min(metric_values))
+                            std_dev = np.std(metric_values)
 
-    return fairness_results
+                            median_val = np.median(metric_values)
+                            mad = np.median(np.abs(metric_values - median_val))
+
+                            k = 2 if num_classes == 10 else 10
+                            upper = np.mean(np.sort(metric_values)[-k:])
+                            lower = np.mean(np.sort(metric_values)[:k])
+                            quant_diff = abs(upper - lower)
+
+                            hard_class_recalls = [metric_values[cls] for cls in range(len(samples_per_class))
+                                                  if samples_per_class[cls] > np.mean(samples_per_class)]
+                            easy_class_recalls = [metric_values[cls] for cls in range(len(samples_per_class))
+                                                  if samples_per_class[cls] <= np.mean(samples_per_class)]
+                            hard_easy = abs(float(np.mean(hard_class_recalls)) - float(np.mean(easy_class_recalls)))
+
+                            base_values = [np.mean(
+                                [results[metric_name][strategy][0][class_id][0][model_idx]
+                                 for model_idx in range(ensemble_size * ensemble_size)
+                                 if results[metric_name][strategy][0][class_id][0][model_idx] != 0.0]
+                            ) for class_id in range(num_classes)]
+                            avg_change = abs(float(np.mean(base_values)) - float(np.mean(metric_values)))
+
+                            for (fairness_metric, metric_results) in [('max_min_gap', max_min_gap), ('mad', mad),
+                                                                      ('std_dev', std_dev), ('quant_diff', quant_diff),
+                                                                      ('hard_easy', hard_easy),
+                                                                      ('avg_change', avg_change)]:
+                                fairness_metrics_grid[fairness_metric].append(metric_results)
+
+                    for fairness_metric, values in fairness_metrics_grid.items():
+                        fairness_results[metric_name][strategy][fairness_metric][degree][ensemble_size] = \
+                            (float(np.mean(values)), float(np.std(values)))
+
+    return defaultdict_to_dict(fairness_results)
 
 
-def generate_fairness_table(fairness_results: Dict[str, Dict[str, Dict[str, Dict[int, Dict[int, float]]]]],
-                            save_path: str, max_ensemble_size: int, task: str):
+def generate_fairness_table(
+        fairness_results: Dict[
+            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float]]]]]
+        ],
+        save_path: str,
+        max_ensemble_size: int,
+        task: str
+):
     """This produces a table to visualize the fairness gains from various hardness-based resampling variants."""
     for base_metric in ['Recall', 'F1', 'MCC', 'Precision']:
         rows = []
@@ -246,26 +291,24 @@ def generate_fairness_table(fairness_results: Dict[str, Dict[str, Dict[str, Dict
                 row = {
                     f'{task} Strategy': strategy,
                     f'{task} Degree': degree,
-                    'max_min_gap': metrics_dict['max_min_gap'][degree][max_ensemble_size],
-                    'std_dev': metrics_dict['std_dev'][degree][max_ensemble_size],
-                    'cv': metrics_dict['cv'][degree][max_ensemble_size],
-                    'quant_diff': metrics_dict['quant_diff'][degree][max_ensemble_size],
-                    'hard_easy': metrics_dict['hard_easy'][degree][max_ensemble_size],
-                    'avg_change': metrics_dict['avg_change'][degree][max_ensemble_size]
                 }
+                for col in ['max_min_gap', 'std_dev', 'quant_diff', 'hard_easy', 'avg_change']:
+                    mean, std = metrics_dict[col][degree][max_ensemble_size]
+                    row[col] = f"{mean:.4f} ± {std:.4f}"
                 rows.append(row)
         df = pd.DataFrame(rows)
 
         def quantize(s):
-            """Helper function that improves clarity of fairness table."""
+            """Bold the minimum value (based on mean) if task != pruning."""
             if task == 'pruning':
-                return [f'{v:.4f}' for v in s]
+                return [f'{v}' for v in s]
             else:
-                min_val = s.min()
-                return [f'\\textbf{{{v:.4f}}}' if v == min_val else f'{v:.4f}' for v in s]
+                means = [float(v.split("±")[0]) for v in s]
+                min_val = min(means)
+                return [f'\\textbf{{{v}}}' if float(v.split("±")[0]) == min_val else f'{v}' for v in s]
 
         styled_df = df.copy()
-        for col in ['max_min_gap', 'std_dev', 'cv', 'quant_diff', 'hard_easy', 'avg_change']:
+        for col in ['max_min_gap', 'std_dev', 'quant_diff', 'hard_easy', 'avg_change']:
             styled_df[col] = quantize(df[col])
         df.to_csv(os.path.join(save_path, f"{task}_{base_metric}_fairness_results.csv"), index=False)
         latex_str = styled_df.to_latex(index=False, escape=False)
@@ -273,46 +316,61 @@ def generate_fairness_table(fairness_results: Dict[str, Dict[str, Dict[str, Dict
             f.write(latex_str)
 
 
-def plot_fairness_stability(fairness_results: Dict[str, Dict[str, Dict[str, Dict[int, Dict[int, float]]]]],
-                            figure_save_dir: str):
+def plot_fairness_stability(
+        fairness_results: Dict[
+            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float]]]]]
+        ],
+        figure_save_dir: str
+):
     """This method visualizes the fairness_results using a heatmap. It's practical when the number of degrees is
     higher than one (we performed experiment3.py for more than one alpha value or experiment2.py for more than one
     pruning_rate). It's main focus is to determine if the ensemble size is adequate (are fairness_results stable with
     respect to the ensemble size or do we need to train more models or use more datasets)."""
-    for base_metric in fairness_results.keys():
+    for base_metric in ['Precision', 'Recall']:
         for strategy in fairness_results[base_metric].keys():
-            for fairness_metric in fairness_results[base_metric][strategy].keys():
-                # Extract data into a 2D matrix: rows = degree of resampling/pruning, cols = ensemble sizes
-                degrees = sorted(fairness_results[base_metric][strategy][fairness_metric].keys())
-                ensemble_sizes = sorted(next(iter(
-                    fairness_results[base_metric][strategy][fairness_metric].values()
-                )).keys())
+            plt.figure(figsize=(10, 6))
+            colors = matplotlib.colormaps["tab10"]
+            max_degree = None
 
-                heatmap_data = np.array([
-                    [fairness_results[base_metric][strategy][fairness_metric][degree][size]
-                     for size in ensemble_sizes]
-                    for degree in degrees
-                ])
+            for idx, fairness_metric in enumerate(fairness_results[base_metric][strategy].keys()):
+                max_degree = max(fairness_results[base_metric][strategy][fairness_metric].keys())
+                ensemble_sizes = sorted(fairness_results[base_metric][strategy][fairness_metric][max_degree].keys())
 
-                plt.figure(figsize=(10, 6))
-                sns.heatmap(heatmap_data, annot=True, fmt=".3f", cmap="viridis",
-                            xticklabels=ensemble_sizes, yticklabels=[f"{d}%" for d in degrees])
-                plt.title(f"{fairness_metric.replace('_', ' ').title()} Heatmap ({strategy} based on "
-                          f"{base_metric})")
-                plt.xlabel("Ensemble Size")
-                plt.ylabel("Degree of Resampling/Pruning")
-                filename = f"{fairness_metric}_stability_{strategy}_based_on_{base_metric}.pdf"
-                plt.tight_layout()
-                plt.savefig(os.path.join(figure_save_dir, filename))
-                plt.close()
+                means = [fairness_results[base_metric][strategy][fairness_metric][max_degree][size][0]
+                         for size in ensemble_sizes]
+                stds = [fairness_results[base_metric][strategy][fairness_metric][max_degree][size][1]
+                        for size in ensemble_sizes]
+
+                plt.plot(ensemble_sizes, means, label=fairness_metric.replace("_", " "),
+                         color=colors(idx), marker="o")
+                plt.fill_between(ensemble_sizes,
+                                 [m - s for m, s in zip(means, stds)],
+                                 [m + s for m, s in zip(means, stds)],
+                                 color=colors(idx), alpha=0.2)
+
+            plt.title(f"Fairness Metrics vs Ensemble Size (Degree={max_degree}, Strategy={strategy}, "
+                      f"Base={base_metric})", fontsize=14)
+            plt.xlabel("Ensemble Size")
+            plt.xticks([1, 2, 3, 4, 5])
+            plt.ylabel("Degree of Resampling/Pruning")
+            filename = f"fairness_metrics_degree_{max_degree}_{strategy}_based_on_{base_metric}.pdf"
+            plt.legend(ncol=2)
+            plt.tight_layout()
+            plt.savefig(os.path.join(figure_save_dir, filename))
+            plt.close()
 
 
-def plot_fairness_dual_axis(fairness_results: Dict[str, Dict[str, Dict[str, Dict[int, Dict[int, float]]]]],
-                            figure_save_dir: str, task: str):
+def plot_fairness_dual_axis(
+        fairness_results: Dict[
+            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float]]]]]
+        ],
+        figure_save_dir: str,
+        task: str
+):
     """This visualization compares the fairness across different task strategies. The idea is to make the findings from
      the fairness table more visually appealing."""
     colors = matplotlib.colormaps["tab10"]
-    for base_metric in fairness_results.keys():
+    for base_metric in ['Precision', 'Recall', 'F1', 'MCC']:
         strategies = list(fairness_results[base_metric].keys())
         for fairness_metric in fairness_results[base_metric][strategies[0]]:
             degrees = sorted(fairness_results[base_metric][strategies[0]][fairness_metric].keys())
@@ -320,24 +378,30 @@ def plot_fairness_dual_axis(fairness_results: Dict[str, Dict[str, Dict[str, Dict
             fig, ax = plt.subplots(figsize=(10, 6))
 
             for i, (strategy) in enumerate(strategies):
-                mean_values = [
-                    np.mean(list(fairness_results[base_metric][strategy][fairness_metric][degree].values()))
-                    for degree in degrees
-                ]
-                std_values = [
-                    np.std(list(fairness_results[base_metric][strategy][fairness_metric][degree].values()))
-                    for degree in degrees
-                ]
+                if 'none' not in strategy:
+                    max_degree = max(fairness_results[base_metric][strategy][fairness_metric].keys())
+                    max_ensemble_size = int(max(
+                        fairness_results[base_metric][strategy][fairness_metric][max_degree].keys()
+                    ))
 
-                ax.plot(x_labels, mean_values, label=f"{strategy}", color=colors(i))
-                ax.fill_between(x_labels, np.array(mean_values) - np.array(std_values),
-                                np.array(mean_values) + np.array(std_values),  alpha=0.2, color=colors(i))
+                    means = [fairness_results[base_metric][strategy][fairness_metric][degree][max_ensemble_size][0]
+                             for degree in degrees]
+                    ax.plot(x_labels, means, label=f"{strategy}", color=colors(i))
+
+                    if task == 'pruning':
+                        stds = [fairness_results[base_metric][strategy][fairness_metric][degree][max_ensemble_size][1]
+                                for degree in degrees]
+                        ax.fill_between(x_labels,
+                                        [m - s for m, s in zip(means, stds)],
+                                        [m + s for m, s in zip(means, stds)],
+                                        color=colors(i), alpha=0.2)
 
             ax.set_xlabel("Pruning Rate")
             ax.set_ylabel("Quant Diff")
             ax.tick_params(axis='y')
             lines_1, labels_1 = ax.get_legend_handles_labels()
             ax.legend(lines_1, labels_1, loc='upper center', bbox_to_anchor=(0.5, -0.1), ncol=2)
+            ax.grid(True, alpha=0.6, linestyle='--')
 
             plt.title(f"{fairness_metric} based on {base_metric} during {task}")
             fig.tight_layout()

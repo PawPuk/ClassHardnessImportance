@@ -29,7 +29,7 @@ class Experiment3:
         applied to it or not (see experiment1.py). This is only useful for random oversampling and SMOTE as these method
         are the most heavily impacted by label noise. That is not to say generative models aren't, it's just that we
         don't have resources to retrain a diffusion model on `clean` datasets.
-        :param alpha: Integer used for computing resampling ratio thst allows to modify the degree of introduced data
+        :param alpha: Integer used for computing resampling ratio that allows to modify the degree of introduced data
         imbalance.
         """
         self.dataset_name = dataset_name

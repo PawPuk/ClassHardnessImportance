@@ -53,8 +53,6 @@ class Visualizer:
         self.num_training_samples = sum(config['num_training_samples'])
         self.model_dir = config['save_dir']
         self.save_epoch = config['save_epoch']
-        self.num_models_per_dataset = config['num_models_per_dataset']
-        self.num_datasets = config['num_datasets']
 
         self.results_save_dir = os.path.join(ROOT, 'Results/', f'{self.data_cleanliness}{dataset_name}')
         self.figures_save_dir = os.path.join(ROOT, 'Figures/', f'{self.data_cleanliness}{dataset_name}')
@@ -85,7 +83,7 @@ class Visualizer:
 
         Each maps to a list of per-sample scores, ordered according to dataset indices.
         """
-        for model_id in tqdm(range(self.num_models_per_dataset), desc='Iterating through models.'):
+        for model_id in tqdm(range(len(hardness_estimates)), desc='Iterating through models.'):
             for new_hardness_estimate in ['iConfidence', 'iAUM', 'iDataIQ', 'iLoss', 'EL2N', 'probs']:
                 hardness_estimates[(0, model_id)][new_hardness_estimate] = []
             model = self.load_model(model_id)
@@ -177,7 +175,7 @@ class Visualizer:
                 for subensemble_size in range(1, max_ensemble_size // 2 + 1):
                     pruned_indices['easy'][metric_name][thresh_i].append([])
                     pruned_indices['hard'][metric_name][thresh_i].append([])
-                    for _ in range(self.num_datasets):
+                    for _ in range(1):
                         # Produce random subensemble
                         subensemble_indices = np.random.choice(range(max_ensemble_size), subensemble_size,
                                                                replace=False)
@@ -197,7 +195,8 @@ class Visualizer:
                             pruned_hard_indices.tolist())
         return pruned_indices
 
-    def compute_stability_of_pruning(self, pruned_indices: Dict[str, Dict[str, List[List[List[List[int]]]]]],
+    @staticmethod
+    def compute_stability_of_pruning(pruned_indices: Dict[str, Dict[str, List[List[List[List[int]]]]]],
                                      num_subensembles: int, num_pruning_thresholds: int
                                      ) -> Dict[str, Dict[str, List[List[List[float]]]]]:
         """Computes the stability of the pruning indices by measuring the percentage change between two sets of pruned
@@ -215,7 +214,7 @@ class Visualizer:
             for hardness_type in ['hard', 'easy']:
                 for i in range(num_pruning_thresholds):
                     for j in range(num_subensembles - 1):
-                        for subensemble_idx in range(self.num_datasets):
+                        for subensemble_idx in range(1):
                             set1 = set(pruned_indices[hardness_type][metric_name][i][j][subensemble_idx])
                             set2 = set(pruned_indices[hardness_type][metric_name][i][j + 1][subensemble_idx])
                             changed = len(set2 - set1) / len(set1)
@@ -290,12 +289,9 @@ class Visualizer:
                 for idx, metric_name in enumerate(group):
                     for t_idx, threshold in enumerate(thresholds):
                         avg_values = np.mean(np.array(stability_results[hardness_type][metric_name][threshold]), axis=1)
-                        std = np.std(np.array(stability_results[hardness_type][metric_name][threshold]), axis=1)
                         label = f"{metric_name} ({threshold_labels[t_idx]})"
                         plt.plot(np.arange(1, num_subensembles), avg_values, label=label, color=colors(idx),
                                  linestyle='-' if t_idx == 0 else '--', marker='o' if t_idx == 0 else '^')
-                        plt.fill_between(np.arange(1, num_subensembles), avg_values - std, avg_values + std,
-                                         color=colors(idx), alpha=0.15, linewidth=0)
 
                 plt.xlabel('Ensemble size M passed to PCR')
                 plt.ylabel('Pruning Change Rate (PCR)')
@@ -320,7 +316,7 @@ class Visualizer:
                 overlaps, overlaps_std = [], []
                 for thresh_idx in range(num_pruning_thresholds):
                     subensemble_overlaps = []
-                    for subensemble_idx in range(self.num_datasets):
+                    for subensemble_idx in range(1):
                         # Compute the overlap only for the largest subensembles (-1 part).
                         set1 = set(pruned_indices[hardness_type][metric1][thresh_idx][-1][subensemble_idx])
                         set2 = set(pruned_indices[hardness_type][metric2][thresh_idx][-1][subensemble_idx])
@@ -375,7 +371,7 @@ class Visualizer:
             # We don't add 1 here to have the same size of the X-axis as in the previous visualizations.
             for subensemble_size in range(1, max_ensemble_size // 2):
                 abs_diffs[estimator_name].append([])
-                for _ in range(self.num_datasets):
+                for _ in range(1):
                     curr_subensemble_indices = np.random.choice(range(max_ensemble_size), subensemble_size,
                                                                 replace=False)
                     next_subensemble_indices = np.random.choice(range(max_ensemble_size), subensemble_size + 1,
@@ -412,11 +408,8 @@ class Visualizer:
             plt.figure(figsize=(10, 6))
             for idx, estimator_name in enumerate(group):
                 avg_diffs = np.mean(np.array(abs_diffs[estimator_name]), axis=1)
-                std_diffs = np.std(np.array(abs_diffs[estimator_name]), axis=1)
                 plt.plot(np.arange(1, num_subensembles), avg_diffs, label=f'{estimator_name}', marker='s',
                          color=colors(idx))
-                plt.fill_between(np.arange(1, num_subensembles), avg_diffs - std_diffs, avg_diffs + std_diffs,
-                                 color=colors(idx), alpha=0.2, linewidth=0)
             plt.xlabel('Ensemble size M passed to Absolute Difference')
             plt.xticks(np.arange(1, num_subensembles))
             plt.ylabel("Average Absolute Difference across all classes")
@@ -441,7 +434,8 @@ class Visualizer:
         training_loader = torch.utils.data.DataLoader(training_dataset, batch_size=1000, shuffle=False)
 
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
-        if 'probs' not in hardness_estimates[(0, 0)].keys():
+        if 'probs' not in hardness_estimates[(0, len(hardness_estimates) - 1)].keys():
+            print('Computing instance scores')
             self.compute_instance_scores(hardness_estimates, training_loader)
             self.save_hardness_estimates(hardness_estimates)
         self.plot_instance_level_hardness_distributions(hardness_estimates)

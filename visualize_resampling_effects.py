@@ -15,14 +15,13 @@ from collections import defaultdict
 import os
 from typing import Dict, List, Tuple, Union
 
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 
 from config import get_config, ROOT
 from data import load_dataset
-from utils import (compute_fairness_metrics, generate_fairness_table, load_results, obtain_results,
+from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_fairness_table, load_results, obtain_results,
                    plot_fairness_dual_axis, plot_fairness_stability)
 
 
@@ -54,13 +53,13 @@ class ResamplingVisualizer:
         for save_dir in self.figure_save_dir, self.hardness_save_dir:
             os.makedirs(save_dir, exist_ok=True)
 
-    def load_models(self) -> Dict[Tuple[str, str], Dict[int, List[List[str]]]]:
+    def load_models(self) -> Dict[Tuple[str, str], Dict[int, Dict[int, List[str]]]]:
         """Used to load pretrained models."""
         models_dir = os.path.join(ROOT, "Models")
-        models_by_strategy = defaultdict(lambda: defaultdict(list))
+        models_by_strategy = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
 
         for root, dirs, files in os.walk(models_dir):
-            if 'over_' in root and os.path.basename(root) in f'{self.clean_data}{self.dataset_name}':
+            if 'over_' in root and os.path.basename(root) == f'{self.clean_data}{self.dataset_name}':
                 oversampling_strategy = root.split("over_")[1].split("_under_")[0]
                 undersampling_strategy = root.split("_under_")[1].split("_alpha_")[0]
                 alpha = root.split("_alpha_")[1].split("_hardness_")[0]
@@ -76,10 +75,12 @@ class ResamplingVisualizer:
                                             'have the same values as it when running experiment3.py.')
 
                         model_path = os.path.join(root, file)
-                        models_by_strategy[key][alpha].append(model_path)
+                        models_by_strategy[key][alpha][dataset_index].append(model_path)
                 if len(models_by_strategy[key][alpha]) > 0:
-                    print(f"Loaded {len(models_by_strategy[key][alpha])} x {len(models_by_strategy[key][alpha][0])}"
-                          f" models for strategies {key} and alpha {alpha}.")
+                    print(f"Loaded {len(models_by_strategy[key][alpha])} ensembles of models for strategies {key} and "
+                          f"alpha {alpha}, with each ensemble having {len(models_by_strategy[key][alpha][0])} models.")
+                    for i in range(1, len(models_by_strategy[key][alpha])):  # Sanity check
+                        assert len(models_by_strategy[key][alpha][0]) == len(models_by_strategy[key][alpha][i])
 
         # Also load models trained on the full dataset (no resampling)
         full_dataset_dir = os.path.join(models_dir, "none", f"{self.clean_data}{self.dataset_name}")
@@ -88,11 +89,10 @@ class ResamplingVisualizer:
             for file in os.listdir(full_dataset_dir):
                 if file.endswith(".pth") and f"_epoch_{self.num_epochs}" in file:
                     model_path = os.path.join(full_dataset_dir, file)
-                    models_by_strategy[key][1].append(model_path)
+                    models_by_strategy[key][1][0].append(model_path)
 
-        print([key for key in models_by_strategy.keys()])
         print(f"Loaded {len(models_by_strategy.keys())} ensembles for {self.dataset_name}.")
-        return models_by_strategy
+        return defaultdict_to_dict(models_by_strategy)
 
     def load_sample_allocations(self) -> Dict[int, List[int]]:
         """Extracts the sample allocations after resampling for different alphas"""
@@ -122,7 +122,7 @@ class ResamplingVisualizer:
 
         for alpha in sample_allocation.keys():
             norm = plt.Normalize(min(alpha_values), max(alpha_values))
-            cmap = cm.get_cmap("Greys")
+            cmap = plt.get_cmap("Greys")
             grey_shade = cmap(0.5 + 0.5 * norm(alpha))  # Scale to [0.5, 1] for visual clarity
 
             sorted_indices = np.argsort(sample_allocation[alpha])
@@ -137,9 +137,9 @@ class ResamplingVisualizer:
         ax.legend()
         fig.savefig(os.path.join(self.figure_save_dir, 'sorted_resampled_dataset.pdf'))
 
-        number_of_easy_classes = sum([sample_allocation[alpha_values[0]][i] <= avg_count
-                                      for i in sample_allocation[alpha_values[0]]])
-        print(f'Finished plotting and computing the numbers of easy classes for each alpha: {number_of_easy_classes}')
+        number_of_easy_classes = sum([sample_allocation[alpha_values[0]][cls] <= avg_count
+                                      for cls in range(len(sample_allocation[alpha_values[0]]))])
+        print(f'Identified {number_of_easy_classes} easy classes in this dataset.')
         return number_of_easy_classes, alpha_values
 
     def plot_all_metrics_sorted(
@@ -154,19 +154,23 @@ class ResamplingVisualizer:
         """This visualization plots the metric (e.g., Recall, F1, ...) values sorted based on the hardness on the
         untouched dataset. We want to see whether hardness-based imbalance visibly improves the performance on hard
         classes."""
+        def flatten(d):
+            """Helper function for transforming Dict[int, Dict[int, float]] into List[float]"""
+            return [v for inner in d.values() for v in inner.values()]
+
         base_strategy, base_alpha = ('none', 'none'), 1
 
         plt.figure(figsize=(12, 8))
-        reordered_base_values = [np.mean(np.array(results[base_metric][base_strategy][base_alpha][class_id]))
+        reordered_base_values = [np.mean(flatten(results[base_metric][base_strategy][base_alpha][class_id]))
                                  for class_id in class_order]
         plt.plot(range(len(class_order)), [v for v in reordered_base_values], color='black', linestyle='-',
                  linewidth=4, label="α=1")
 
         for alpha in results[base_metric][strategy].keys():
             norm = plt.Normalize(min(alpha_values), max(alpha_values))
-            cmap = cm.get_cmap("Greys")
+            cmap = plt.get_cmap("Greys")
             grey_shade = cmap(0.5 + 0.5 * norm(alpha))
-            reordered_values = [np.mean(np.array(results[base_metric][strategy][alpha][class_id]))
+            reordered_values = [np.mean(flatten(results[base_metric][strategy][alpha][class_id]))
                                 for class_id in class_order]
             plt.plot(range(len(class_order)), reordered_values, color=grey_shade, lw=2, linestyle='--',
                      label=f'"α={alpha}"')
@@ -195,23 +199,32 @@ class ResamplingVisualizer:
         """This visualization completes the plot_all_metrics_sorted() method by focusing on the differences between the
         performance on normal dataset and the resampled dataset. This is useful as the visualization from
         plot_all_metrics_sorted() can be unclear."""
+        def flatten(d):
+            """Helper function for transforming Dict[int, Dict[int, float]] into List[float]"""
+            return [v for inner in d.values() for v in inner.values()]
+
         base_strategy, base_alpha, value_changes = (('none', 'none'), 1, defaultdict(lambda: defaultdict(list)))
 
         plt.figure(figsize=(12, 8))
 
         for alpha in results[base_metric][strategy].keys():
-            values = np.array(results[base_metric][strategy][alpha])
             value_changes[strategy][alpha] = [
-                float(np.mean(values[class_id])) -
-                float(np.mean(np.array(results[base_metric][base_strategy][base_alpha][class_id])))
+                float(np.mean(flatten(results[base_metric][strategy][alpha][class_id]))) -
+                float(np.mean(flatten(results[base_metric][base_strategy][base_alpha][class_id])))
                 for class_id in class_order
             ]
             norm = plt.Normalize(min(alpha_values), max(alpha_values))
-            cmap = cm.get_cmap("Greys")
-            grey_shade = cmap(0.5 + 0.5 * norm(float(alpha)))
+            cmap = plt.get_cmap("Greys")
+            grey_shade = cmap(0.5 + 0.5 * norm(alpha))
             plt.axhline(color='black', linewidth=2)  # To accentuate X-axis
-            plt.plot(range(len(values)), value_changes[strategy][alpha], color=grey_shade,
+            plt.plot(range(self.num_classes), value_changes[strategy][alpha], color=grey_shade,
                      linewidth=2, label=f"α={alpha}")
+
+            print(f'{alpha}, {strategy} - easy mean: '
+                  f'{np.mean(value_changes[strategy][alpha][:number_of_easy_classes])}'
+                  f', hard mean:  {np.mean(value_changes[strategy][alpha][number_of_easy_classes:])}, easy std: '
+                  f'{np.std(value_changes[strategy][alpha][:number_of_easy_classes])}, hard std:'
+                  f'{np.std(value_changes[strategy][alpha][number_of_easy_classes:])}')
 
         plt.axvspan(0, number_of_easy_classes - 0.5, color='green', alpha=0.15)
         plt.axvspan(number_of_easy_classes - 0.5, len(class_order), color='red', alpha=0.15)
@@ -245,10 +258,17 @@ class ResamplingVisualizer:
                 self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes, strategy,
                                          alpha_values)
 
+        for metric_name in ['Recall', 'F1', 'MCC', 'Precision']:
+            for strategy in results[metric_name]:
+                if strategy is not ('none', 'none'):
+                    results[metric_name][strategy][0] = results[metric_name][('none', 'none')][1]
+            del results[metric_name][('none', 'none')]
         resampling_strategies = list(results['Recall'].keys())
+
         fairness_results = compute_fairness_metrics(results, samples_per_class[1], resampling_strategies,
                                                     self.num_classes,
                                                     min(self.num_datasets, self.num_models_per_dataset))
+
         generate_fairness_table(fairness_results, results_dir, min(self.num_datasets, self.num_models_per_dataset),
                                 'resampling')
         plot_fairness_stability(fairness_results, self.figure_save_dir)
