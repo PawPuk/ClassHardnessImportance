@@ -21,8 +21,9 @@ from numpy.typing import NDArray
 
 from config import get_config, ROOT
 from data import load_dataset
-from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_fairness_table, load_results, obtain_results,
-                   plot_fairness_dual_axis, plot_fairness_stability)
+from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_fairness_table, generate_t_test_table,
+                   load_results, obtain_results, perform_paired_t_tests, plot_fairness_dual_axis,
+                   plot_fairness_stability)
 
 
 class ResamplingVisualizer:
@@ -273,6 +274,9 @@ class ResamplingVisualizer:
                                 'resampling')
         plot_fairness_stability(fairness_results, self.figure_save_dir)
         plot_fairness_dual_axis(fairness_results, self.figure_save_dir, 'resampling')
+        t_test_results = perform_paired_t_tests(fairness_results, min(self.num_datasets, self.num_models_per_dataset),
+                                                'resampling')
+        # generate_t_test_table(t_test_results, self.figure_save_dir, 'resampling')
 
 
 if __name__ == "__main__":

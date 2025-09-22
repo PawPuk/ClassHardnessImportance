@@ -22,8 +22,9 @@ import seaborn as sns
 
 from data import load_dataset
 from config import get_config, ROOT
-from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_fairness_table, load_results,
-                   obtain_results, plot_fairness_dual_axis, plot_fairness_stability)
+from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_fairness_table,
+                   generate_t_test_table_for_pruning, load_results, obtain_results, perform_paired_t_tests,
+                   plot_fairness_dual_axis, plot_fairness_stability)
 
 
 class PerformanceVisualizer:
@@ -494,6 +495,9 @@ class PerformanceVisualizer:
                                 min(self.num_datasets, self.num_models_per_dataset), 'pruning')
         plot_fairness_stability(fairness_results, self.figure_save_dir)
         plot_fairness_dual_axis(fairness_results, self.figure_save_dir, 'pruning')
+        t_test_results = perform_paired_t_tests(fairness_results, min(self.num_datasets, self.num_models_per_dataset),
+                                                'pruning')
+        generate_t_test_table_for_pruning(t_test_results, self.figure_save_dir, 'pruning')
 
 
 if __name__ == "__main__":

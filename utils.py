@@ -6,7 +6,7 @@ import os
 import pickle
 import random
 import re
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -217,7 +217,7 @@ def compute_fairness_metrics(
         resampling_or_pruning_strategies: Union[List[str], List[Tuple[str, str]]],
         num_classes: int,
         max_ensemble_size: int
-) -> Dict[str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float]]]]]]:
+) -> Dict[str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float, List[float]]]]]]]:
     """This method computes the fairness metrics to better determine whether applying hardness-based resampling (both
     on pruned data in experiment2.py and the full data in experiment3.py) brings meaningful improvement to fairness."""
     fairness_results = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(dict))))
@@ -229,8 +229,8 @@ def compute_fairness_metrics(
                                              'hard_easy': [], 'avg_change': []}
 
                     num_datasets = len(results[metric_name][strategy][degree][0])
-                    for dataset_idx in range(num_datasets):
-                        num_models = len(results[metric_name][strategy][degree][0][dataset_idx])
+                    for dataset_idx in range(min(num_datasets, ensemble_size)):
+                        num_models = ensemble_size ** 2 if num_datasets == 1 else ensemble_size
                         for model_idx in range(num_models):
                             metric_values = [
                                 results[metric_name][strategy][degree][class_id][dataset_idx][model_idx]
@@ -238,7 +238,7 @@ def compute_fairness_metrics(
                                 if results[metric_name][strategy][degree][class_id][dataset_idx][model_idx] != 0.0
                             ]
 
-                            max_min_gap = abs(max(metric_values) - min(metric_values))
+                            max_min_gap = max(metric_values) - min(metric_values)
                             std_dev = np.std(metric_values)
 
                             median_val = np.median(metric_values)
@@ -247,13 +247,13 @@ def compute_fairness_metrics(
                             k = 2 if num_classes == 10 else 10
                             upper = np.mean(np.sort(metric_values)[-k:])
                             lower = np.mean(np.sort(metric_values)[:k])
-                            quant_diff = abs(upper - lower)
+                            quant_diff = upper - lower
 
                             hard_class_recalls = [metric_values[cls] for cls in range(len(samples_per_class))
                                                   if samples_per_class[cls] > np.mean(samples_per_class)]
                             easy_class_recalls = [metric_values[cls] for cls in range(len(samples_per_class))
                                                   if samples_per_class[cls] <= np.mean(samples_per_class)]
-                            hard_easy = abs(float(np.mean(hard_class_recalls)) - float(np.mean(easy_class_recalls)))
+                            hard_easy = float(np.mean(easy_class_recalls)) - float(np.mean(hard_class_recalls))
 
                             base_values = [np.mean(
                                 [results[metric_name][strategy][0][class_id][0][model_idx]
@@ -270,14 +270,14 @@ def compute_fairness_metrics(
 
                     for fairness_metric, values in fairness_metrics_grid.items():
                         fairness_results[metric_name][strategy][fairness_metric][degree][ensemble_size] = \
-                            (float(np.mean(values)), float(np.std(values)))
+                            (float(np.mean(values)), float(np.std(values)), values)
 
     return defaultdict_to_dict(fairness_results)
 
 
 def generate_fairness_table(
         fairness_results: Dict[
-            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float]]]]]
+            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float, List[float]]]]]]
         ],
         save_path: str,
         max_ensemble_size: int,
@@ -293,7 +293,7 @@ def generate_fairness_table(
                     f'{task} Degree': degree,
                 }
                 for col in ['max_min_gap', 'std_dev', 'quant_diff', 'hard_easy', 'avg_change']:
-                    mean, std = metrics_dict[col][degree][max_ensemble_size]
+                    mean, std, _ = metrics_dict[col][degree][max_ensemble_size]
                     row[col] = f"{mean:.4f} ± {std:.4f}"
                 rows.append(row)
         df = pd.DataFrame(rows)
@@ -318,7 +318,7 @@ def generate_fairness_table(
 
 def plot_fairness_stability(
         fairness_results: Dict[
-            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float]]]]]
+            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float, List[float]]]]]]
         ],
         figure_save_dir: str
 ):
@@ -362,7 +362,7 @@ def plot_fairness_stability(
 
 def plot_fairness_dual_axis(
         fairness_results: Dict[
-            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float]]]]]
+            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float, List[float]]]]]]
         ],
         figure_save_dir: str,
         task: str
@@ -408,3 +408,116 @@ def plot_fairness_dual_axis(
             filename = f"{fairness_metric}_based_on_{base_metric}_during_{task}.pdf"
             plt.savefig(os.path.join(figure_save_dir, filename))
             plt.close()
+
+
+def perform_paired_t_tests(
+        fairness_results: Dict[
+            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Dict[int, Tuple[float, float, List[float]]]]]]
+        ],
+        max_ensemble_size: int,
+        task: str
+) -> Dict[str, Dict[str, Dict[int, Dict[str, Tuple[float, float]]]]]:
+    """
+    Perform paired t-tests comparing fairness metrics at degree=0 (baseline) with non-zero degrees.
+    Uses raw fairness values stored in fairness_results.
+    """
+    test_results = defaultdict(lambda: defaultdict(lambda: defaultdict(dict)))
+
+    for metric_name, strategies in fairness_results.items():
+        for strategy, metrics_dict in strategies.items():
+            for fairness_metric, degree_dict in metrics_dict.items():
+                for degree, ensemble_dict in degree_dict.items():
+                    if task == 'resampling':
+                        baseline_entry = degree_dict[0][max_ensemble_size]
+                        baseline_values = np.array(baseline_entry[2])
+                    else:
+                        baseline_entry = strategies['clp'][fairness_metric][degree][max_ensemble_size]
+                        baseline_values = np.array(baseline_entry[2])
+
+                    if degree == 0:
+                        continue
+                    entry = ensemble_dict[max_ensemble_size]
+                    comparison = np.array(entry[2])
+
+                    # Align lengths
+                    n = min(len(baseline_values), len(comparison))
+                    baseline_aligned = baseline_values[:n]
+                    comparison_aligned = comparison[:n]
+
+                    # Paired t-test (H0: mean diff = 0, H1: baseline > comparison)
+                    t_stat, p_value = ttest_rel(baseline_aligned, comparison_aligned)
+
+                    test_results[metric_name][strategy][degree][fairness_metric] = (float(t_stat), float(p_value))
+
+    return defaultdict_to_dict(test_results)
+
+
+def generate_t_test_table_for_pruning(
+        t_test_results: Dict[str, Dict[str, Dict[int, Dict[str, Tuple[float, float]]]]],
+        save_path: str,
+        task: str
+):
+    """
+    Generate a fully formatted LaTeX table for all metrics and pruning strategies.
+
+    Args:
+        t_test_results: Nested dict:
+            metric_name -> strategy -> degree -> fairness_metric -> ('t_stat', 'p_value').
+        save_path: Directory to save outputs (CSV + LaTeX).
+        task: Name of the task (used in column naming + filenames).
+    """
+    metrics = ['Recall', 'Precision', 'F1']
+    strategies = ['random_dlp', 'SMOTE_dlp', 'holdout_dlp']
+    fairness_metrics = ['max_min_gap', 'mad', 'std_dev', 'quant_diff', 'hard_easy', 'avg_change']
+
+    # Define mapping for display names (optional)
+    strategy_names = {
+        'random_dlp': 'random oversampling',
+        'SMOTE_dlp': 'SMOTE oversampling',
+        'holdout_dlp': 'holdout oversampling'
+    }
+
+    fairness_metrics_order = list(next(iter(t_test_results.values())).keys())  # e.g., ['avg_change', 'hard_easy', ...]
+
+    # Start LaTeX string
+    latex_lines = ["\\begin{table}[h!]", "\\centering",
+                   "\\caption{t-statistics (with p-values) for fairness metrics under different pruning strategies. "
+                   "Significant results $(p < 0.05)$ are bolded.}",
+                   "\\resizebox{\\textwidth}{!}{%", "\\begin{tabular}{lc|" + "ccc|" * 2 + "ccc}", "\\toprule",
+                   # Header row 1
+                   "\\makecell{Fairness\\\\metric} & \\makecell{Pruning\\\\rate} " +
+                   "".join([f"& \\multicolumn{{3}}{{c|}}{{{strategy_names[s]}}} "
+                            if s != strategies[-1] else f"& \\multicolumn{{3}}{{c}}{{{strategy_names[s]}}}"
+                            for s in strategies]) + " \\\\",
+                   # cmidrule
+                   " & & " + " & ".join(["Recall & Precision & F1"] * 3) + " \\\\", "\\midrule"]
+
+    # Table body
+    for fm in fairness_metrics:
+        acronym = 'm' if fm == 'max_min_gap' else 'MAD' if fm == 'mad' else '\\sigma' if fm == 'std_dev' \
+            else 'q' if fm == 'quant_diff' else 'he' if fm == 'hard_easy' else 'avg'
+        latex_lines.append(f"\\multirow{{4}}{{*}}{{$\\Delta_{{{acronym}}}$}}")
+        for i, pruning_rate in enumerate(sorted(next(iter(t_test_results.values()))[strategies[0]].keys())):
+            row_items = [f" & {pruning_rate}"]
+            for strategy in strategies:
+                if 'clp' in strategy:
+                    continue
+                for metric in metrics:
+                    t_stat, p_val = t_test_results[metric][strategy][pruning_rate][fm]
+                    # Format t-stat and p-value
+                    if p_val < 0.05:
+                        formatted = f"\\textbf{{{t_stat:.2f} ({p_val:.2e})}}"
+                    else:
+                        formatted = f"{t_stat:.2f} ({p_val:.2e})"
+                    row_items.append(f"& {formatted}")
+            latex_lines.append(" ".join(row_items) + " \\\\")
+        latex_lines.append("\\midrule")
+
+    latex_lines.append("\\bottomrule")
+    latex_lines.append("\\end{tabular}}")
+    latex_lines.append("\\end{table}")
+
+    # Write to file
+    filename = os.path.join(save_path, f"full_t_test_{task}.tex")
+    with open(filename, 'w') as f:
+        f.write("\n".join(latex_lines))
