@@ -64,7 +64,7 @@ class DataPruning:
             class_level_sample_counts_after_pruning[pruning_key] = {}
 
         # Store the distribution of samples after pruning
-        class_level_sample_counts_after_pruning[pruning_key][int(self.prune_percentage * 100)] = [
+        class_level_sample_counts_after_pruning[pruning_key][int(round(self.prune_percentage * 100))] = [
             class_counts[unique_classes.tolist().index(cls)] if cls in unique_classes else 0
             for cls in range(self.num_classes)
         ]
@@ -120,7 +120,7 @@ class DataPruning:
         pruned_indices = list(set(range(len(training_dataset))) - set(subdataset_indices))
         pruned_dataset = AugmentedSubset(Subset(training_dataset, pruned_indices))
 
-        self.fig_save_dir = os.path.join(self.fig_save_dir, 'clp' + str(int(self.prune_percentage * 100)),
+        self.fig_save_dir = os.path.join(self.fig_save_dir, 'clp' + str(int(round(self.prune_percentage * 100))),
                                          self.dataset_name)
         self.res_save_dir = os.path.join(self.res_save_dir, 'clp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)
@@ -206,6 +206,7 @@ class DataPruning:
                                    self.dataset_name, self.num_models_for_hardness, self.mean, self.std, pruned_dataset)
         resampled_dataset = resampler.resample_data(self.imbalance_ratio)
 
+        print('II. prune_percentage', self.prune_percentage)
         self.fig_save_dir = os.path.join(self.fig_save_dir,
                                          f'{oversampling_strategy}_dlp' + str(int(self.prune_percentage * 100)),
                                          self.dataset_name)

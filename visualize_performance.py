@@ -17,14 +17,11 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from fiona.crs import defaultdict
-from scipy.stats import pearsonr, spearmanr
-import seaborn as sns
 
 from data import load_dataset
 from config import get_config, ROOT
-from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_fairness_table,
-                   generate_t_test_table_for_pruning, load_results, obtain_results, perform_paired_t_tests,
-                   plot_fairness_dual_axis, plot_fairness_stability)
+from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_t_test_table_for_pruning, load_results,
+                   obtain_results, perform_paired_t_tests, plot_fairness_dual_axis, plot_fairness_stability)
 
 
 class PerformanceVisualizer:
@@ -86,14 +83,6 @@ class PerformanceVisualizer:
                             f"strategies {pruning_strategy} and pruning rate {pruning_rate}, with each ensemble having "
                             f"{len(models_by_strategy[pruning_strategy][pruning_rate][0])} models.")
 
-            # Load models trained on the full dataset (no pruning)
-            full_dataset_dir = os.path.join(models_dir, "none", f'unclean{self.dataset_name}')
-            if os.path.exists(full_dataset_dir):
-                for file in os.listdir(full_dataset_dir):
-                    if file.endswith(".pth") and f"_epoch_{self.num_epochs}" in file:
-                        model_path = os.path.join(full_dataset_dir, file)
-                        models_by_strategy[pruning_strategy][0][0].append(model_path)
-
             print(f"Models loaded by pruning rate for {pruning_strategy} on {self.dataset_name}")
 
         print(models_by_strategy.keys())
@@ -111,17 +100,20 @@ class PerformanceVisualizer:
 
             # Iterate over each pruning rate in models_by_rate
             for pruning_rate in pruning_rates:
-                if int(pruning_rate) != 0:
-                    pkl_path = os.path.join(ROOT, "Results", pruning_strategy + str(pruning_rate), self.dataset_name,
-                                            f"class_level_sample_counts.pkl")
-                    with open(pkl_path, "rb") as file:
-                        class_level_sample_counts = pickle.load(file)
-                    pkey = 'clp' if 'clp' in pruning_strategy else 'dlp'
-                    remaining_data_count = class_level_sample_counts[pkey][pruning_rate]
-                    for c in range(self.num_classes):
-                        pruned_percentage = 100.0 * (self.num_training_samples[c] - remaining_data_count[c]) / \
-                                            self.num_training_samples[c]
-                        pruned_percentages[pruning_strategy][pruning_rate].append(pruned_percentage)
+                if pruning_rate == 58:
+                    pruning_rate = 57
+                pkl_path = os.path.join(ROOT, "Results", pruning_strategy + str(pruning_rate), self.dataset_name,
+                                        f"class_level_sample_counts.pkl")
+                with open(pkl_path, "rb") as file:
+                    class_level_sample_counts = pickle.load(file)
+                if pruning_rate == 57:
+                    pruning_rate = 58
+                pkey = 'clp' if 'clp' in pruning_strategy else 'dlp'
+                remaining_data_count = class_level_sample_counts[pkey][pruning_rate]
+                for c in range(self.num_classes):
+                    pruned_percentage = 100.0 * (self.num_training_samples[c] - remaining_data_count[c]) / \
+                                        self.num_training_samples[c]
+                    pruned_percentages[pruning_strategy][pruning_rate].append(pruned_percentage)
                 else:
                     pruned_percentages[pruning_strategy][0] = [0.0 for _ in range(self.num_classes)]
         print('Pruned percentages: ', pruned_percentages)
@@ -166,15 +158,13 @@ class PerformanceVisualizer:
             """Helper function for transforming Dict[int, Dict[int, float]] into List[float]"""
             return [v for inner in d.values() for v in inner.values()]
 
-        pruning_rates = list(results['Recall']['clp'].keys())
+        pruning_rates = sorted(list(results['Recall']['clp'].keys()))
         print('Pruning rates:', pruning_rates)
-        zero_rate = 0.0 if 0.0 in pruning_rates else 0
-        pruning_rate_no_zero = sorted([pr for pr in pruning_rates if pr != zero_rate])
         colors = matplotlib.colormaps["tab10"]
 
-        fig, axes = plt.subplots(ncols=len(pruning_rate_no_zero), figsize=(4 * len(pruning_rate_no_zero), 8),
+        fig, axes = plt.subplots(ncols=len(pruning_rates), figsize=(4 * len(pruning_rates), 8),
                                  sharey='all')
-        for ax, pruning_rate in zip(axes, pruning_rate_no_zero):
+        for ax, pruning_rate in zip(axes, pruning_rates):
             clp_recalls = [np.mean(flatten(results['Recall']['clp'][pruning_rate][cls]))
                            for cls in range(self.num_classes)]
             random_dlp_recalls = [np.mean(flatten(results['Recall']['random_dlp'][pruning_rate][cls]))
@@ -205,72 +195,6 @@ class PerformanceVisualizer:
         filename = f"class_level_recall_changes_investigation.pdf"
         plt.savefig(os.path.join(self.figure_save_dir, filename))
 
-    def compute_and_plot_recall_correlations_across_ensemble_sizes(
-            self,
-            results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]]
-    ):
-        """This visualization measures the Spearman Rank and Pearson correlations between the class-level recall values
-         averaged over i x i ensemble and (i+1) x (i+1) ensemble - (num_datasets) x (num_models_per_dataset). The idea
-         is to see if we have to use more models datasets to ensure statistical significance of class-level recalls."""
-        def compute_mean_recall(class_id, size):
-            """Helper function"""
-            if pruning_rate == 0:
-                return np.mean([results['Recall'][pruning_strategy][pruning_rate][class_id][0][m]
-                                for m in range(size * size)])
-            else:
-                return np.mean([results['Recall'][pruning_strategy][pruning_rate][class_id][d][m]
-                                for d in range(size) for m in range(size)])
-
-        for pruning_strategy in results['Recall'].keys():
-            sorted_pruning_rates = sorted(results['Recall'][pruning_strategy].keys())
-            pearson_matrix, spearman_matrix, pearson_pval_matrix, spearman_pval_matrix = [], [], [], []
-            for pruning_rate in sorted_pruning_rates:
-                pearson_row, spearman_row, pearson_pval_row, spearman_pval_row = [], [], [], []
-                for i in range(1, min(self.num_datasets, self.num_models_per_dataset)):
-                    # Recalls for ensemble of size i x i
-                    recall_i = [compute_mean_recall(c, i) for c in range(self.num_classes)]
-                    # Recalls for ensemble of size (i + 1) x (i + 1)
-                    recall_ip1 = [compute_mean_recall(c, i + 1) for c in range(self.num_classes)]
-
-                    pearson_corr, pearson_pval = pearsonr(recall_i, recall_ip1)
-                    spearman_corr, spearman_pval = spearmanr(recall_i, recall_ip1)  # noqa
-                    pearson_row.append(pearson_corr)
-                    spearman_row.append(spearman_corr)
-                    pearson_pval_row.append(pearson_pval)
-                    spearman_pval_row.append(spearman_pval)
-                pearson_matrix.append(pearson_row)
-                spearman_matrix.append(spearman_row)
-                pearson_pval_matrix.append(pearson_pval_row)
-                spearman_pval_matrix.append(spearman_pval_row)
-            pearson_matrix = np.array(pearson_matrix)
-            spearman_matrix = np.array(spearman_matrix)
-            pearson_pval_matrix = np.array(pearson_pval_matrix)
-            spearman_pval_matrix = np.array(spearman_pval_matrix)
-
-            fig, axes = plt.subplots(2, 2, figsize=(14, 6), sharey='all')
-            x_labels = list(range(1, min(self.num_datasets, self.num_models_per_dataset)))
-            y_labels = [f"{r}%" for r in sorted_pruning_rates]
-            heatmaps = [
-                (pearson_matrix, "Pearson Correlation", axes[0, 0]),
-                (spearman_matrix, "Spearman Correlation", axes[0, 1]),
-                (pearson_pval_matrix, "Pearson p-value", axes[1, 0]),
-                (spearman_pval_matrix, "Spearman p-value", axes[1, 1]),
-            ]
-            for mat, title, ax in heatmaps:
-                sns.heatmap(
-                    mat, xticklabels=x_labels, yticklabels=y_labels, annot=True, fmt=".2f",
-                    cmap="YlGnBu" if "Correlation" in title else "OrRd", ax=ax, vmin=0.0, vmax=1.0
-                )
-                ax.set_title(title)
-            for ax in axes[1]:  # Label only bottom row
-                ax.set_xlabel("Ensemble Size i (vs i+1)")
-            for ax in axes[:, 0]:  # Label only left column
-                ax.set_ylabel("Pruning Rate")
-            fig.suptitle(f"Recall Correlation & p-values Across Ensemble Sizes ({pruning_strategy})", fontsize=14)
-            fig.tight_layout(rect=[0, 0, 1, 0.95])
-            fig.savefig(os.path.join(self.figure_save_dir, f"recall_corr_pval_heatmap_{pruning_strategy}.pdf"))
-            plt.close()
-
     def plot_class_level_results(
             self,
             results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]],
@@ -284,19 +208,12 @@ class PerformanceVisualizer:
             """Helper function"""
             values = []
             for p in pruning_rates:
-                if p == 0:
-                    stat = reducer([
-                        results[metric_name][pruning_strategy][p][class_id][0][model_idx]
-                        for model_idx in range(self.num_models_per_dataset * self.num_models_per_dataset)
-                        if results[metric_name][pruning_strategy][p][class_id][0][model_idx] != 0.0
-                    ])
-                else:
-                    stat = reducer([
-                        results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx]
-                        for dataset_idx in range(self.num_datasets)
-                        for model_idx in range(self.num_models_per_dataset)
-                        if results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx] != 0.0
-                    ])
+                stat = reducer([
+                    results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx]
+                    for dataset_idx in range(self.num_datasets)
+                    for model_idx in range(self.num_models_per_dataset)
+                    if results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx] != 0.0
+                ])
                 values.append(stat)
             return np.array(values)
 
@@ -304,7 +221,7 @@ class PerformanceVisualizer:
         colors = matplotlib.colormaps["tab10"]
         for metric_name in results.keys():
             # Identify 5 easiest and 5 hardest classes (based on Recall values of a single model)
-            hardness = [results['Recall']['clp'][0][cls][0][0] for cls in range(self.num_classes)]
+            hardness = [results['Recall']['clp'][50][cls][0][0] for cls in range(self.num_classes)]
             sorted_classes = np.argsort(np.array(hardness))
             selected_classes = list(sorted_classes[-5:][::-1]) + list(sorted_classes[:5])
             plot_indices = list(range(5)) + list(range(9, 4, -1))  # map to top and bottom row
@@ -357,23 +274,14 @@ class PerformanceVisualizer:
             """Helper function"""
             values = []
             for p in pruning_rates:
-                if p == 0:
-                    # Special structure: results[metric][strategy][0][class_id][0][model_idx]
-                    stat = reducer([
-                        results[metric_name][pruning_strategy][p][class_id][0][model_idx]
-                        for class_id in range(self.num_classes)
-                        for model_idx in range(self.num_models_per_dataset * self.num_models_per_dataset)
-                        if results[metric_name][pruning_strategy][p][class_id][0][model_idx] != 0.0
-                    ])
-                else:
-                    # Normal structure: results[metric][strategy][p][class_id][dataset_idx][model_idx]
-                    stat = reducer([
-                        results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx]
-                        for class_id in range(self.num_classes)
-                        for dataset_idx in range(self.num_datasets)
-                        for model_idx in range(self.num_models_per_dataset)
-                        if results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx] != 0.0
-                    ])
+                # Normal structure: results[metric][strategy][p][class_id][dataset_idx][model_idx]
+                stat = reducer([
+                    results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx]
+                    for class_id in range(self.num_classes)
+                    for dataset_idx in range(self.num_datasets)
+                    for model_idx in range(self.num_models_per_dataset)
+                    if results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx] != 0.0
+                ])
                 values.append(stat)
             return np.array(values)
 
@@ -479,7 +387,6 @@ class PerformanceVisualizer:
         results = obtain_results(os.path.join(self.results_dir, self.dataset_name), self.num_classes, test_loader,
                                  "ensemble_results.pkl", models)
         self.plot_classwise_recall_vs_pruning(results)
-        self.compute_and_plot_recall_correlations_across_ensemble_sizes(results)
         self.plot_class_level_results(results, pruned_percentages)
         self.compare_clp_with_dlp(results)
 
@@ -489,15 +396,11 @@ class PerformanceVisualizer:
         samples_per_class = load_results(os.path.join(self.results_dir, f'unclean{self.dataset_name}', f'alpha_1',
                                                       'samples_per_class.pkl'))
         pruning_strategies = ['clp', 'random_dlp', 'holdout_dlp', 'SMOTE_dlp']
-        fairness_results = compute_fairness_metrics(results, samples_per_class, pruning_strategies, self.num_classes,
-                                                    min(self.num_datasets, self.num_models_per_dataset))
-        generate_fairness_table(fairness_results, os.path.join(self.results_dir, self.dataset_name),
-                                min(self.num_datasets, self.num_models_per_dataset), 'pruning')
+        fairness_results = compute_fairness_metrics(results, samples_per_class, pruning_strategies, self.num_classes)
         plot_fairness_stability(fairness_results, self.figure_save_dir)
         plot_fairness_dual_axis(fairness_results, self.figure_save_dir, 'pruning')
-        t_test_results = perform_paired_t_tests(fairness_results, min(self.num_datasets, self.num_models_per_dataset),
-                                                'pruning')
-        generate_t_test_table_for_pruning(t_test_results, self.figure_save_dir, 'pruning')
+        fairness_t_test_results = perform_paired_t_tests(fairness_results, 'pruning')
+        generate_t_test_table_for_pruning(fairness_t_test_results, self.figure_save_dir)
 
 
 if __name__ == "__main__":
