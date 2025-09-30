@@ -133,6 +133,43 @@ class Visualizer:
             # noinspection PyTypeChecker
             pickle.dump(hardness_estimates, file)
 
+    def compute_and_save_per_class_recall(self, num_models: int, dataloader: DataLoader):
+        """
+        Compute per-class recall for each trained model.
+
+        Returns:
+            recalls: Dict[model_id -> List of recall values per class]
+        """
+        recalls = {}
+
+        for model_id in tqdm(range(num_models), desc='Computing per-class recall'):
+            model = self.load_model(model_id)
+            model.eval()
+            true_positives = torch.zeros(self.num_classes, dtype=torch.long)
+            false_negatives = torch.zeros(self.num_classes, dtype=torch.long)
+            with torch.no_grad():
+                for inputs, labels, _ in dataloader:
+                    inputs, labels = inputs.cuda(), labels.cuda()
+                    outputs = model(inputs)
+                    _, predicted = torch.max(outputs, 1)
+                    for c in range(self.num_classes):
+                        mask = (labels == c)
+                        true_positives[c] += ((predicted == c) & mask).sum().item()
+                        false_negatives[c] += ((predicted != c) & mask).sum().item()
+            # Compute recall per class
+            recall_per_class = []
+            for c in range(self.num_classes):
+                denominator = true_positives[c] + false_negatives[c]
+                recall_c = true_positives[c].item() / denominator.item()
+                recall_per_class.append(recall_c)
+
+            recalls[(0, model_id)] = recall_per_class
+
+        hardness_save_dir = os.path.join(ROOT, f"Results/{self.data_cleanliness}{self.dataset_name}/")
+        path = os.path.join(hardness_save_dir, 'recalls.pkl')
+        with open(path, "wb") as file:
+            pickle.dump(recalls, file)
+
     def plot_instance_level_hardness_distributions(self,
                                                    hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]]):
         """The purpose of this visualization is to see the distribution of `probs`. This is required to validate the
@@ -421,7 +458,7 @@ class Visualizer:
     def main(self):
         """Main method for producing the visualizations."""
         config = get_config(self.dataset_name)
-        _, training_dataset, _, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean')
+        _, training_dataset, test_loader, _ = load_dataset(args.dataset_name, self.data_cleanliness == 'clean')
 
         # We want to work with normalized but unaugmented images in this module.
         new_training_transform = torchvision.transforms.Compose([
@@ -438,6 +475,7 @@ class Visualizer:
             print('Computing instance scores')
             self.compute_instance_scores(hardness_estimates, training_loader)
             self.save_hardness_estimates(hardness_estimates)
+            self.compute_and_save_per_class_recall(len(hardness_estimates), test_loader)
         self.plot_instance_level_hardness_distributions(hardness_estimates)
 
         # pruned_indices[hardness_type][metric_name][pruning_threshold][subensemble_size][subensemble][pruned_indices]
