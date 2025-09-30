@@ -61,19 +61,22 @@ def load_hardness_estimates(data_cleanliness: str, dataset_name: str) -> Dict[Tu
     return hardness_estimates
 
 
-def compute_sample_allocation_after_resampling(hardness_scores: List[float], labels: List[int], num_classes: int,
-                                               num_training_samples: int, hardness_estimator: str,
-                                               pruning_rate: int = 0, alpha: int = 1
-                                               ) -> Tuple[List[int], Dict[int, List[float]]]:
+def compute_sample_allocation_after_resampling(instance_hardness_scores: List[float], labels: List[int],
+                                               num_classes: int, num_training_samples: int, hardness_estimator: str,
+                                               class_hardness_scores: List[float], pruning_rate: int = 0,
+                                               alpha: int = 1) -> Tuple[List[int], Dict[int, List[float]]]:
     """Compute number of samples per class after hardness-based resampling according to hardness_scores."""
-    hardnesses_by_class = {class_id: [] for class_id in range(num_classes)}
-
-    # Divide the hardness estimates into classes.
+    # Divide the instant-level hardness estimates into classes.
+    hardness_sorted_by_class = {class_id: [] for class_id in range(num_classes)}
     for i, label in enumerate(labels):
-        hardnesses_by_class[label].append(hardness_scores[i])
+        hardness_sorted_by_class[label].append(instance_hardness_scores[i])
 
-    # Compute average hardness of each class.
-    means_hardness_by_class = {class_id: np.mean(vals) for class_id, vals in hardnesses_by_class.items()}
+    # Compute (or extract) average hardness of each class
+    if class_hardness_scores is None:
+        means_hardness_by_class = {class_id: np.mean(vals) for class_id, vals in hardness_sorted_by_class.items()}
+    else:
+        means_hardness_by_class = {class_id: class_hardness_scores[class_id] for class_id in range(num_classes)}
+    print('means_hardness_by_class', means_hardness_by_class)
 
     # Add offset in case some classes have negative hardness values to not get nonsensical resampling ratios.
     if min(means_hardness_by_class.values()) < 0:
@@ -103,7 +106,7 @@ def compute_sample_allocation_after_resampling(hardness_scores: List[float], lab
             else:
                 samples_per_class[class_id] = average_sample_count - int(alpha * absolute_difference)
 
-    return samples_per_class, hardnesses_by_class
+    return samples_per_class, hardness_sorted_by_class
 
 
 def restructure_hardness_dictionary(
@@ -323,7 +326,7 @@ def plot_fairness_dual_axis(
      the fairness table more visually appealing."""
     colors = matplotlib.colormaps["tab10"]
     for base_metric in ['Precision', 'Recall', 'F1', 'MCC']:
-        strategies = list(fairness_results[base_metric].keys())
+        strategies = sorted(list(fairness_results[base_metric].keys()))
         for fairness_metric in fairness_results[base_metric][strategies[0]]:
             degrees = sorted(fairness_results[base_metric][strategies[0]][fairness_metric].keys())
             x_labels = [f"{d}" for d in degrees]

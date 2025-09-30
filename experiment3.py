@@ -11,20 +11,22 @@ from config import get_config, ROOT
 from data import get_dataloader, load_dataset, perform_data_augmentation
 from data_resampling import DataResampling
 from train_ensemble import ModelTrainer
-from utils import compute_sample_allocation_after_resampling, load_hardness_estimates, set_reproducibility
+from utils import compute_sample_allocation_after_resampling, load_hardness_estimates, load_results, set_reproducibility
 
 
 class Experiment3:
     """Encapsulates all the necessary methods to perform the resampling experiments."""
-    def __init__(self, dataset_name: str, oversampling: str, undersampling: str, hardness_estimator: str,
-                 remove_noise: bool, alpha: int):
+    def __init__(self, dataset_name: str, oversampling: str, undersampling: str, class_hardness_estimator: str,
+                 instance_hardness_estimator: str, remove_noise: bool, alpha: int):
         """Initialize the Experiment3 class with configuration specific to the current experiment.
 
         :param dataset_name: Name of the dataset.
         :param oversampling: Name of the oversampling strategy. The viable options are 'random', 'easy', 'hard',
         'SMOTE', 'rEDM', 'hEDM', 'aEDM', and 'none', with the last one indicating no oversampling (used for
         ablation study).
-        :param hardness_estimator: Name of the hardness estimator. Uses AUM by default.
+        :param class_hardness_estimator: Name of the hardness estimator that will be used to compute the resampling
+        ratios, which specifies how many samples to keep in each class after hardness-based resampling.
+        :param instance_hardness_estimator: Name of the hardness estimator that will be used to guide pruning.
         :param remove_noise: Flag indicating whether the experiments are conducted on dataset that had noise removal
         applied to it or not (see experiment1.py). This is only useful for random oversampling and SMOTE as these method
         are the most heavily impacted by label noise. That is not to say generative models aren't, it's just that we
@@ -36,7 +38,8 @@ class Experiment3:
         self.oversampling_strategy = oversampling
         self.undersampling_strategy = undersampling
         self.data_cleanliness = 'clean' if remove_noise else 'unclean'
-        self.hardness_estimator = hardness_estimator
+        self.class_hardness_estimator = class_hardness_estimator
+        self.instance_hardness_estimator = instance_hardness_estimator
         self.alpha = alpha
 
         self.config = get_config(dataset_name)
@@ -58,25 +61,34 @@ class Experiment3:
         _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.data_cleanliness == 'clean')
         labels = [training_dataset[idx][1].item() for idx in range(len(training_dataset))]
 
-        hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
-        hardness_over_models = [hardness_estimates[(0, model_id)][self.hardness_estimator]
-                                for model_id in range(len(hardness_estimates))]
-        hardness_estimates = list(np.mean(np.array(hardness_over_models[:self.num_models_for_hardness]), axis=0))
+        class_hardness_estimates = None
+        if self.class_hardness_estimator == 'Recall':
+            path = os.path.join(ROOT, f"Results/unclean{self.dataset_name}/recalls.pkl")
+            recalls = load_results(path)
+            recalls_over_models = [recalls[(0, model_id)] for model_id in range(len(recalls))]
+            class_hardness_estimates = list(np.mean(np.array(recalls_over_models[:self.num_models_for_hardness]),
+                                                    axis=0))
 
-        samples_per_class, hardnesses_by_class = compute_sample_allocation_after_resampling(hardness_estimates, labels,
-                                                                                            self.num_classes,
-                                                                                            self.num_samples,
-                                                                                            self.hardness_estimator,
-                                                                                            alpha=self.alpha)
+        hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
+        hardness_over_models = [hardness_estimates[(0, model_id)][self.instance_hardness_estimator]
+                                for model_id in range(len(hardness_estimates))]
+        instance_hardness_estimates = list(np.mean(np.array(hardness_over_models[:self.num_models_for_hardness]),
+                                                   axis=0))
+        print('hardness_estimates', hardness_estimates)
+
+        samples_per_class, hardness_sorted_by_class = compute_sample_allocation_after_resampling(
+            instance_hardness_estimates, labels, self.num_classes, self.num_samples, self.instance_hardness_estimator,
+            class_hardness_estimates, alpha=self.alpha
+        )
         with open(os.path.join(self.hardness_save_dir, f'alpha_{self.alpha}', 'samples_per_class.pkl'), 'wb') as file:
             # noinspection PyTypeChecker
             pickle.dump(samples_per_class, file)
 
-        high_is_hard = self.hardness_estimator not in ['Confidence', 'AUM']
+        high_is_hard = self.instance_hardness_estimator not in ['Confidence', 'AUM']
         actual_counts, resampled_loaders = None, []
         for _ in tqdm.tqdm(range(self.dataset_count)):
             resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
-                                       self.undersampling_strategy, hardnesses_by_class, high_is_hard,
+                                       self.undersampling_strategy, hardness_sorted_by_class, high_is_hard,
                                        self.dataset_name, self.num_models_for_hardness, self.mean, self.std)
             resampled_dataset = resampler.resample_data(samples_per_class)
             # Sanity check below
@@ -97,7 +109,7 @@ class Experiment3:
             print(f"  Class {class_id}: {count}")
 
         model_save_dir = (f"over_{self.oversampling_strategy}_under_{self.undersampling_strategy}_alpha_{self.alpha}_"
-                          f"hardness_{self.hardness_estimator}")
+                          f"hardness_{self.instance_hardness_estimator}")
         trainer = ModelTrainer(len(training_dataset), resampled_loaders, test_loader, self.dataset_name,
                                model_save_dir, False, clean_data=self.data_cleanliness == 'clean')
         trainer.train_ensemble()
@@ -116,8 +128,10 @@ if __name__ == "__main__":
     parser.add_argument('--undersampling', type=str, required=True, choices=['easy', 'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, `prune_extreme`, and `none`).')
-    parser.add_argument('--hardness_estimator', type=str, default='AUM',
-                        help='Specifies which instance level hardness estimator to use.')
+    parser.add_argument('--class_hardness_estimator', type=str, default='AUM',
+                        help='Specifies which hardness estimator to use for computing resampling ratios.')
+    parser.add_argument('--instance_hardness_estimator', type=str, default='AUM',
+                        help='Specifies which hardness estimator to use for pruning.')
     parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
     parser.add_argument('--alpha', type=int, default=1, help='Used to control the degree of introduced imbalance.')
     args = parser.parse_args()

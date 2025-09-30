@@ -179,7 +179,8 @@ class DataPruning:
         return class_level_scores
 
     def resampling_pruned_subdataset(self, oversampling_strategy: str, labels: List[int],
-                                     training_dataset: Union[AugmentedSubset, IndexedDataset]) -> AugmentedSubset:
+                                     training_dataset: Union[AugmentedSubset, IndexedDataset],
+                                     hardness_sorted_by_class: Union[None, Dict[int, List[float]]]) -> AugmentedSubset:
         """
         Removes the specified percentage of samples from the dataset. Produces imbalanced subdatasets. Works by firstly
         performing class_Level_pruning, and later performing hardness_based resampling on the pruned subdataset to
@@ -188,22 +189,26 @@ class DataPruning:
         :param oversampling_strategy: Name of the oversampling strategy for hardness-based resampling.
         :param labels: List of labels for each data sample in the original dataset.
         :param training_dataset: Original training dataset
+        :param hardness_sorted_by_class: Instance-level hardness estimates used to guide pruning. If these are set to
+        None than EL2N scores are computed from the pruned subdatasets.
 
         :return: Imbalanced pruned subdataset
         """
         subdataset, pruned_dataset = self.class_level_pruning(labels, training_dataset)
-        sub_dataloader = get_dataloader(subdataset, 1000)
-        trainer = ModelTrainer(len(subdataset), [sub_dataloader], None, self.dataset_name,
-                               stop_at_probe=True)
-        el2n_scores, sub_labels = [], None
-        for model_id in tqdm.tqdm(range(self.num_models_per_dataset)):
-            model = trainer.train_model(0, model_id, None)
-            scores, sub_labels = self.compute_el2n_scores(model, sub_dataloader)
-            el2n_scores.append(scores)
-        class_level_hardness = self.compute_class_level_scores(el2n_scores, sub_labels)
-        resampler = DataResampling(subdataset, self.num_classes, oversampling_strategy,
-                                   'easy', class_level_hardness, True,
-                                   self.dataset_name, self.num_models_for_hardness, self.mean, self.std, pruned_dataset)
+
+        if hardness_sorted_by_class is None:
+            sub_dataloader = get_dataloader(subdataset, 1000)
+            trainer = ModelTrainer(len(subdataset), [sub_dataloader], None, self.dataset_name, stop_at_probe=True)
+            el2n_scores, sub_labels = [], None
+            for model_id in tqdm.tqdm(range(self.num_models_per_dataset)):
+                model = trainer.train_model(0, model_id, None)
+                scores, sub_labels = self.compute_el2n_scores(model, sub_dataloader)
+                el2n_scores.append(scores)
+            hardness_sorted_by_class = self.compute_class_level_scores(el2n_scores, sub_labels)
+
+        resampler = DataResampling(subdataset, self.num_classes, oversampling_strategy, 'easy',
+                                   hardness_sorted_by_class, True, self.dataset_name, self.num_models_for_hardness,
+                                   self.mean, self.std, pruned_dataset)
         resampled_dataset = resampler.resample_data(self.imbalance_ratio)
 
         print('II. prune_percentage', self.prune_percentage)
@@ -217,3 +222,5 @@ class DataPruning:
         self.plot_class_level_sample_distribution(subdataset_indices, 'dlp', labels)
 
         return resampled_dataset
+
+# TODO: Make it so that the imbalance_ratio can be computed from EL2N.
