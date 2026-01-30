@@ -12,7 +12,6 @@ import argparse
 from config import get_config
 from data import load_dataset
 from train_ensemble import ModelTrainer
-from utils import set_reproducibility
 
 
 def main(dataset_name: str, remove_noise: bool):
@@ -31,8 +30,6 @@ def main(dataset_name: str, remove_noise: bool):
 
 
 if __name__ == '__main__':
-    set_reproducibility()
-
     parser = argparse.ArgumentParser(description='Train an ensemble of models on CIFAR-10 or CIFAR-100.')
     parser.add_argument('--dataset_name', type=str, required=True,
                         choices=['CIFAR10', 'CIFAR100'], help='Dataset name: CIFAR10 or CIFAR100')

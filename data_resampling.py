@@ -70,58 +70,6 @@ class DataResampling:
         additional_indices = random.choices(range(len(hardness_scores)), k=desired_count - len(hardness_scores))
         return list(range(len(hardness_scores))) + additional_indices
 
-    def oversample_easy(self, desired_count: int, hardness_scores: List[float]) -> List[int]:
-        """
-        Perform oversampling with a higher chance of duplicating easy samples.
-        """
-        # Sort indices by ascending hardness (the easiest samples first)
-        if self.high_is_hard:
-            sorted_indices = np.argsort(hardness_scores)
-        else:
-            sorted_indices = np.argsort(hardness_scores)[::-1]
-        n = len(hardness_scores)
-
-        # Calculate probabilities using the adjusted exponential formula
-        alpha_easy = 5
-        normalized_hardness = np.linspace(0, 1, n)
-        probabilities_sorted = 0.5 + 0.5 * (1 - np.exp(-alpha_easy * (1 - normalized_hardness))) / (
-                1 - np.exp(-alpha_easy))
-
-        # Map sorted probabilities back to the original order
-        probabilities = np.zeros(n)
-        probabilities[sorted_indices] = probabilities_sorted
-
-        # Perform weighted sampling
-        additional_indices = random.choices(range(n), weights=probabilities, k=desired_count - n)
-
-        return list(range(n)) + additional_indices
-
-    def oversample_hard(self, desired_count: int, hardness_scores: List[float]) -> List[int]:
-        """
-        Perform oversampling with a higher chance of duplicating hard samples.
-        """
-        # Sort indices by descending hardness (the hardest samples first)
-        if self.high_is_hard:
-            sorted_indices = np.argsort(hardness_scores)[::-1]
-        else:
-            sorted_indices = np.argsort(hardness_scores)
-        n = len(hardness_scores)
-
-        # Calculate probabilities using the adjusted exponential formula
-        alpha_hard = 5
-        normalized_hardness = np.linspace(0, 1, n)
-        probabilities_sorted = 0.5 + 0.5 * (1 - np.exp(-alpha_hard * (1 - normalized_hardness))) / (
-                1 - np.exp(-alpha_hard))
-
-        # Map sorted probabilities back to the original order
-        probabilities = np.zeros(n)
-        probabilities[sorted_indices] = probabilities_sorted
-
-        # Perform weighted sampling
-        additional_indices = random.choices(range(n), weights=probabilities, k=desired_count - n)
-
-        return list(range(n)) + additional_indices
-
     def SMOTE(self, desired_count: int, current_indices: List[int], k: int = 5) -> Tuple[torch.Tensor, torch.Tensor]:  # noqa
         """Perform oversampling using SMOTE to match the desired count."""
         current_n_samples, synthetic_samples = len(current_indices), []
@@ -302,10 +250,6 @@ class DataResampling:
         """
         if self.oversampling_strategy == "random":
             return lambda count, hardness: self.random_oversample(count, hardness)
-        elif self.oversampling_strategy == "easy":
-            return lambda count, hardness: self.oversample_easy(count, hardness)
-        elif self.oversampling_strategy == "hard":
-            return lambda count, hardness: self.oversample_hard(count, hardness)
         elif self.oversampling_strategy == 'SMOTE':
             return lambda count, current_indices: self.SMOTE(count, current_indices)
         elif self.oversampling_strategy == 'rEDM':
@@ -349,12 +293,12 @@ class DataResampling:
                 resampled_indices.extend(np.array(current_indices)[class_retain_indices])
             elif len(current_indices) < desired_count and self.oversampling_strategy != 'none':
                 # Below if block is necessary because SMOTE generates synthetic samples directly (can't use indices).
-                if self.oversampling_strategy in ['SMOTE']:
+                if self.oversampling_strategy == 'SMOTE':
                     original_data, generated_data = oversample(desired_count, current_indices)
                     print(f'Generated {len(generated_data)} data samples via SMOTE for class {class_id}.')
                     hard_classes_data.append(torch.cat([original_data, generated_data]))
                     hard_classes_labels.append(torch.full((desired_count,), class_id))
-                elif self.oversampling_strategy in ['easy', 'hard', 'random']:
+                elif self.oversampling_strategy == 'random':
                     class_add_indices = oversample(desired_count, hardnesses_within_class)
                     resampled_indices.extend(np.array(current_indices)[class_add_indices])
             else:

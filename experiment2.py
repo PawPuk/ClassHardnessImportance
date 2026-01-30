@@ -1,6 +1,7 @@
 """This is the second important module that allows training the ensembles on pruned subdatasets."""
 
 import argparse
+from copy import deepcopy
 import os.path
 from typing import Dict, List, Tuple, Union
 
@@ -14,35 +15,27 @@ from data_pruning import DataPruning
 from train_ensemble import ModelTrainer
 from config import get_config, ROOT
 from data import AugmentedSubset, IndexedDataset, load_dataset, perform_data_augmentation
-from utils import compute_sample_allocation_after_resampling, load_hardness_estimates, load_results, set_reproducibility
+from utils import compute_sample_allocation_after_resampling, load_hardness_estimates, set_reproducibility
 
 
 class Experiment2:
     """Encapsulates all the necessary methods to perform the pruning experiments."""
-    def __init__(self, pruning_strategy: str, dataset_name: str, pruning_rate: int, class_hardness_estimator: str,
-                 instance_hardness_estimator: str, oversampling_strategy: str, alpha: int):
+    def __init__(self, dataset_name: str, pruning_rate: int, hardness_estimator: str,
+                 oversampling_strategy: str, alpha: int):
         """Initialize the Experiment2 class with configuration specific to the current experiment.
 
-        :param pruning_strategy: Specifies the pruning strategy. The only viable options are `clp` and `dlp`. The former
-        indicates that pruning will be performed at class level ensuring balanced pruned subdatasets. The latter
-        indicates dataset-level pruning and requires `oversampling_strategy` to be specified. Ths is because dlp
-        operates by first performing clp and then applying hardness-based resampling on the pruned subdataset.
         :param dataset_name: Name of the dataset.
         :param pruning_rate: An integer specifying the percentage of samples that will be pruned from the dataset.
-        :param class_hardness_estimator: Name of the hardness estimator that will be used to compute the resampling
-        ratios, which specifies how many samples to keep in each class after hardness-based resampling.
-        :param instance_hardness_estimator: Name of the hardness estimator that will be used to guide pruning.
-        :param oversampling_strategy: Name of the oversampling strategy for dlp.
+        :param hardness_estimator: Name of the hardness estimator that will be used to compute the resampling
+        ratios and guide pruning.
+        :param oversampling_strategy: Name of the oversampling strategy. If set to none than no resampling will be
+        applied after pruning.
         :param alpha: Integer used for computing resampling ratio that allows to modify the degree of introduced data
         imbalance. This is only applicable when pruning_strategy is set to dlp.
         """
-        set_reproducibility()
-
         self.dataset_name = dataset_name
-        self.pruning_strategy = pruning_strategy
         self.pruning_rate = pruning_rate
-        self.class_hardness_estimator = class_hardness_estimator
-        self.instance_hardness_estimator = instance_hardness_estimator
+        self.hardness_estimator = hardness_estimator
         self.oversampling_strategy = oversampling_strategy
         self.alpha = alpha
 
@@ -63,7 +56,12 @@ class Experiment2:
             self,
             hardness_estimates: Dict[Tuple[int, int], Dict[str, List[float]]],
             labels: List[int], thresholds: List[int]
-    ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]], Dict[str, List[int]], Dict[int, List[float]]]:
+    ) -> Tuple[
+        Dict[str, List[float]],
+        Dict[str, List[float]],
+        Dict[str, List[int]],
+        Dict[int, List[Tuple[int, float]]]
+    ]:
         """The resampling ratios can be obtained through various means. Currently, we are computing them using the
         formulations from compute_imbalance_ratio_with_hardness() method, but they can be also obtained through simple
         pruning. If we perform dataset-level pruning focusing on removing easy sample we inadvertently produce
@@ -104,23 +102,14 @@ class Experiment2:
             ideal_ratios[estimator_name] = per_class_counts[estimator_name][best_combined_idx]
             print(f'{best_combined_idx} is the best ratio for {estimator_name}.')
 
-        class_hardness_estimates = None
-        if self.class_hardness_estimator == 'Recall':
-            hardness_save_dir = os.path.join(ROOT, f"Results/unclean{self.dataset_name}/")
-            path = os.path.join(hardness_save_dir, 'recalls.pkl')
-            recalls = load_results(path)
-            recalls_over_models = [hardness_estimates[(0, model_id)] for model_id in range(len(recalls))]
-            class_hardness_estimates = list(np.mean(np.array(recalls_over_models[:self.NUM_MODELS_FOR_HARDNESS]),
-                                                    axis=0))
-        hardness_over_models = [hardness_estimates[(0, model_id)][self.instance_hardness_estimator]
+        hardness_over_models = [hardness_estimates[(0, model_id)][self.hardness_estimator]
                                 for model_id in range(len(hardness_estimates))]
-        instance_hardness_estimates = list(np.mean(np.array(hardness_over_models[:self.NUM_MODELS_FOR_HARDNESS]),
-                                                   axis=0))
-        # Hardness-Based Resampling Ratio computation
+        estimates = list(np.mean(np.array(hardness_over_models[:self.NUM_MODELS_FOR_HARDNESS]), axis=0))
         ideal_ratios['HBRR'], hardness_sorted_by_class = compute_sample_allocation_after_resampling(
-            instance_hardness_estimates, labels, self.NUM_CLASSES, self.NUM_TRAINING_SAMPLES,
-            self.instance_hardness_estimator, class_hardness_estimates, self.pruning_rate, self.alpha)
+            estimates, labels, self.NUM_CLASSES, self.NUM_TRAINING_SAMPLES,
+            self.hardness_estimator, self.pruning_rate, self.alpha)
         print('Ideal ratios: ', ideal_ratios['HBRR'])
+
         return pearson_scores, spearman_scores, ideal_ratios, hardness_sorted_by_class
 
     def measure_stability_of_resampling_ratios(self, pearson_scores: Dict[str, List[float]],
@@ -162,19 +151,14 @@ class Experiment2:
                                  "resampling_ratio_spearman_correlation_matrix.pdf"))
         plt.close()
 
-    def prune_dataset(self, labels: List[int], training_dataset: Union[AugmentedSubset, IndexedDataset],
-                      imbalance_ratio: List[int], hardness_sorted_by_class: Dict[int, List[float]]) -> AugmentedSubset:
+    def prune_dataset(self, labels: List[int],
+                      training_dataset: Union[AugmentedSubset, IndexedDataset],
+                      imbalance_ratio: List[int],
+                      hardness_sorted_by_class: Dict[int, List[Tuple[int, float]]]) -> AugmentedSubset:
         """Produce the pruned dataset through DataPruning"""
-        if self.instance_hardness_estimator == 'pEL2N':
-            hardness_sorted_by_class = None
         pruner = DataPruning(self.pruning_rate, self.dataset_name, imbalance_ratio)
-        if self.pruning_strategy == 'dlp':
-            pruned_subdataset = pruner.resampling_pruned_subdataset(self.oversampling_strategy, labels,
-                                                                    training_dataset, hardness_sorted_by_class)
-        elif self.pruning_strategy == 'clp':
-            pruned_subdataset, _ = pruner.class_level_pruning(labels, training_dataset)
-        else:
-            raise ValueError('Wrong value of the parameter `pruning_strategy`.')
+        pruned_subdataset = pruner.prune_and_resample(self.oversampling_strategy, labels, training_dataset,
+                                                      deepcopy(hardness_sorted_by_class))
         augmented_subdataset = perform_data_augmentation(pruned_subdataset, self.dataset_name)
         return augmented_subdataset
 
@@ -191,16 +175,14 @@ class Experiment2:
         self.measure_stability_of_resampling_ratios(pearson_scores, spearman_scores, ideal_ratios, hardness_estimates,
                                                     thresholds)
         pruned_training_loaders = []
-        for _ in range(self.DATASET_COUNT):
+        for dataset_idx in range(self.DATASET_COUNT):
+            set_reproducibility(42 * dataset_idx)
             pruned_dataset = self.prune_dataset(labels, training_dataset, ideal_ratios['HBRR'],
                                                 hardness_sorted_by_class)
             pruned_training_loaders.append(DataLoader(pruned_dataset, batch_size=self.BATCH_SIZE, shuffle=True,
                                                       num_workers=2))
 
-        if self.pruning_strategy == 'clp':
-            model_dir = f"{self.pruning_strategy}{self.pruning_rate}_alpha_{self.alpha}"
-        else:
-            model_dir = f"{self.oversampling_strategy}_{self.pruning_strategy}{self.pruning_rate}_alpha_{self.alpha}"
+        model_dir = f"{self.oversampling_strategy}_pruning_rate_{self.pruning_rate}_alpha_{self.alpha}"
         trainer = ModelTrainer(len(training_dataset), pruned_training_loaders, test_loader, self.dataset_name,
                                model_dir, False)
         trainer.train_ensemble()
@@ -208,18 +190,13 @@ class Experiment2:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='EL2N Score Calculation and Dataset Pruning')
-    parser.add_argument('--pruning_strategy', type=str, choices=['clp', 'dlp'],
-                        help='Choose pruning strategy: clp (fixed class level pruning) or dlp (data level pruning)')
     parser.add_argument('--dataset_name', type=str, choices=['CIFAR10', 'CIFAR100'],
                         help='Specify the dataset name (default: CIFAR10)')
     parser.add_argument('--pruning_rate', type=int,
                         help='Percentage of data samples that will be removed during data pruning (use integers).')
-    parser.add_argument('--class_hardness_estimator', type=str, default='AUM',
+    parser.add_argument('--hardness_estimator', type=str, default='AUM',
                         help='Specifies which hardness estimator to use for computing resampling ratios.')
-    parser.add_argument('--instance_hardness_estimator', type=str, default='pEL2N',
-                        help='Specifies which hardness estimator to use for pruning. The default uses the EL2N scores '
-                             'computed from the pruned subdatasets.')
-    parser.add_argument('--oversampling_strategy', type=str, choices=['random', 'SMOTE', 'holdout'],
+    parser.add_argument('--oversampling_strategy', type=str, choices=['none', 'random', 'SMOTE', 'holdout'],
                         help='Specifies what oversampling to use (only applicable for dlp)')
     parser.add_argument('--alpha', type=int, default=1,
                         help='Used to control the degree of introduced imbalance when using dlp.')
@@ -227,9 +204,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Initialize and run the experiment
-    experiment = Experiment2(args.pruning_strategy, args.dataset_name, args.pruning_rate, args.class_hardness_estimator,
-                             args.instance_hardness_estimator, args.oversampling_strategy, args.alpha)
+    experiment = Experiment2(args.dataset_name, args.pruning_rate, args.hardness_estimator,
+                             args.oversampling_strategy, args.alpha)
     experiment.run_experiment()
-
-
-# TODO: Implement holdout oversampling

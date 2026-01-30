@@ -11,7 +11,7 @@ from config import get_config, ROOT
 from data import get_dataloader, load_dataset, perform_data_augmentation
 from data_resampling import DataResampling
 from train_ensemble import ModelTrainer
-from utils import compute_sample_allocation_after_resampling, load_hardness_estimates, load_results, set_reproducibility
+from utils import compute_sample_allocation_after_resampling, load_hardness_estimates, set_reproducibility
 
 
 class Experiment3:
@@ -21,9 +21,8 @@ class Experiment3:
         """Initialize the Experiment3 class with configuration specific to the current experiment.
 
         :param dataset_name: Name of the dataset.
-        :param oversampling: Name of the oversampling strategy. The viable options are 'random', 'easy', 'hard',
-        'SMOTE', 'rEDM', 'hEDM', 'aEDM', and 'none', with the last one indicating no oversampling (used for
-        ablation study).
+        :param oversampling: Name of the oversampling strategy. The viable options are 'random', 'SMOTE', 'rEDM',
+        'hEDM', 'aEDM', and 'none', with the last one indicating no oversampling (used for ablation study).
         :param class_hardness_estimator: Name of the hardness estimator that will be used to compute the resampling
         ratios, which specifies how many samples to keep in each class after hardness-based resampling.
         :param instance_hardness_estimator: Name of the hardness estimator that will be used to guide pruning.
@@ -61,32 +60,29 @@ class Experiment3:
         _, training_dataset, _, test_dataset = load_dataset(self.dataset_name, self.data_cleanliness == 'clean')
         labels = [training_dataset[idx][1].item() for idx in range(len(training_dataset))]
 
-        class_hardness_estimates = None
-        if self.class_hardness_estimator == 'Recall':
-            path = os.path.join(ROOT, f"Results/unclean{self.dataset_name}/recalls.pkl")
-            recalls = load_results(path)
-            recalls_over_models = [recalls[(0, model_id)] for model_id in range(len(recalls))]
-            class_hardness_estimates = list(np.mean(np.array(recalls_over_models[:self.num_models_for_hardness]),
-                                                    axis=0))
-
         hardness_estimates = load_hardness_estimates(self.data_cleanliness, self.dataset_name)
         hardness_over_models = [hardness_estimates[(0, model_id)][self.instance_hardness_estimator]
                                 for model_id in range(len(hardness_estimates))]
         instance_hardness_estimates = list(np.mean(np.array(hardness_over_models[:self.num_models_for_hardness]),
                                                    axis=0))
-        print('hardness_estimates', hardness_estimates)
 
         samples_per_class, hardness_sorted_by_class = compute_sample_allocation_after_resampling(
             instance_hardness_estimates, labels, self.num_classes, self.num_samples, self.instance_hardness_estimator,
-            class_hardness_estimates, alpha=self.alpha
+            alpha=self.alpha
         )
+        # We get rid of the indices of hardness estimates as they are only required for pruning
+        hardness_sorted_by_class = {c: [hardness_sorted_by_class[c][i][1]
+                                        for i in range(len(hardness_sorted_by_class[c]))]
+                                    for c in hardness_sorted_by_class.keys()}
+
         with open(os.path.join(self.hardness_save_dir, f'alpha_{self.alpha}', 'samples_per_class.pkl'), 'wb') as file:
             # noinspection PyTypeChecker
             pickle.dump(samples_per_class, file)
 
         high_is_hard = self.instance_hardness_estimator not in ['Confidence', 'AUM']
         actual_counts, resampled_loaders = None, []
-        for _ in tqdm.tqdm(range(self.dataset_count)):
+        for i in tqdm.tqdm(range(self.dataset_count)):
+            set_reproducibility(42 * i)
             resampler = DataResampling(training_dataset, self.num_classes, self.oversampling_strategy,
                                        self.undersampling_strategy, hardness_sorted_by_class, high_is_hard,
                                        self.dataset_name, self.num_models_for_hardness, self.mean, self.std)
@@ -116,15 +112,13 @@ class Experiment3:
 
 
 if __name__ == "__main__":
-    set_reproducibility()
-
     parser = argparse.ArgumentParser(description="Experiment3 with Data Resampling.")
     parser.add_argument('--dataset_name', type=str, required=True,
                         help="Name of the dataset (e.g., CIFAR10, CIFAR100, SVHN).")
     parser.add_argument('--oversampling', type=str, required=True,
-                        choices=['random', 'easy', 'hard', 'SMOTE', 'rEDM', 'hEDM', 'aEDM', 'none'],
-                        help='Strategy used for oversampling (have to choose between `random`, `easy`, `hard`, '
-                             '`SMOTE``, `rEDM`, `hEDM`, `aEDM`, and `none`).')
+                        choices=['random', 'SMOTE', 'rEDM', 'hEDM', 'aEDM', 'none'],
+                        help='Strategy used for oversampling (have to choose between `random`, `SMOTE``, `rEDM`, '
+                             '`hEDM`, `aEDM`, and `none`).')
     parser.add_argument('--undersampling', type=str, required=True, choices=['easy', 'none'],
                         help='Strategy used for undersampling (have to choose between `random`, `prune_easy`, '
                              '`prune_hard`, `prune_extreme`, and `none`).')

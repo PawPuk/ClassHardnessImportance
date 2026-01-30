@@ -1,22 +1,18 @@
 """Core module for pruning the dataset that returns the pruned subdataset."""
 
-import os
-import pickle
 from typing import Dict, List, Tuple, Union
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch.nn import functional
 from torch.utils.data import DataLoader, Subset
 import tqdm
 
-from config import DEVICE, get_config, ROOT
+from config import DEVICE, get_config
 from data import AugmentedSubset, get_dataloader, IndexedDataset
 from data_resampling import DataResampling
 from neural_networks import ResNet18LowRes
 from train_ensemble import ModelTrainer
-from utils import load_results
 
 
 class DataPruning:
@@ -43,69 +39,23 @@ class DataPruning:
         self.mean = config['mean']
         self.std = config['std']
 
-        self.fig_save_dir = os.path.join(ROOT, 'Figures/')
-        self.res_save_dir = os.path.join(ROOT, 'Results/')
-
-    def plot_class_level_sample_distribution(self, subdataset_indices: List[int], pruning_key: str, labels: List[int]):
-        """Visualizes the per-class sample count after pruning, and saves the class_level_sample_counts.pkl"""
-        os.makedirs(self.fig_save_dir, exist_ok=True)
-        os.makedirs(self.res_save_dir, exist_ok=True)
-
-        # Count the number of remaining samples for each class
-        remaining_labels = np.array(labels)[subdataset_indices]
-        unique_classes, class_counts = np.unique(remaining_labels, return_counts=True)
-
-        path = os.path.join(self.res_save_dir, 'class_level_sample_counts.pkl')
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            class_level_sample_counts_after_pruning = load_results(path)
-        else:
-            class_level_sample_counts_after_pruning = {}
-        if pruning_key not in class_level_sample_counts_after_pruning:
-            class_level_sample_counts_after_pruning[pruning_key] = {}
-
-        # Store the distribution of samples after pruning
-        class_level_sample_counts_after_pruning[pruning_key][int(round(self.prune_percentage * 100))] = [
-            class_counts[unique_classes.tolist().index(cls)] if cls in unique_classes else 0
-            for cls in range(self.num_classes)
-        ]
-        with open(os.path.join(self.res_save_dir, "class_level_sample_counts.pkl"), "wb") as file:
-            # noinspection PyTypeChecker
-            pickle.dump(class_level_sample_counts_after_pruning, file)
-
-        # Plot the original class distribution
-        plt.figure()
-        plt.bar(unique_classes, class_counts)
-        plt.ylabel('Number of Remaining Samples')
-        plt.title(f'Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
-        plt.xticks([])
-        plt.savefig(os.path.join(self.fig_save_dir, "class_level_sample_distribution.pdf"))
-        plt.close()
-
-        # Sort classes by class_counts for imbalance visualization
-        sorted_indices = np.argsort(class_counts)
-        sorted_classes = unique_classes[sorted_indices]
-        sorted_counts = class_counts[sorted_indices]
-
-        # Plot sorted class distribution to highlight data imbalance
-        plt.figure()
-        plt.bar(range(len(sorted_classes)), sorted_counts)
-        plt.ylabel('Number of Remaining Samples')
-        plt.title(f'Sorted Class-level Distribution of Remaining Samples After {pruning_key.upper()} Pruning')
-        plt.xticks([])
-        plt.savefig(os.path.join(self.fig_save_dir, "sorted_class_level_sample_distribution.pdf"))
-        plt.close()
-
-    def class_level_pruning(self, labels: List[int], training_dataset: Union[AugmentedSubset, IndexedDataset]
-                            ) -> Tuple[AugmentedSubset, AugmentedSubset]:
+    def class_level_pruning(
+            self,
+            labels: List[int],
+            training_dataset: Union[AugmentedSubset, IndexedDataset],
+            hardness_sorted_by_class: Dict[int, List[Tuple[int, float]]]
+    ) -> Tuple[AugmentedSubset, AugmentedSubset, Dict[int, List[float]]]:
         """
         Remove the specified percentage of samples from each class. Ensures that the class distribution remains
         balanced.
 
         :param labels: List of labels for each data sample in the original dataset.
         :param training_dataset: Original training dataset
+        :param hardness_sorted_by_class: Instance-level hardness estimates (and the corresponding sample indices) sorted
+        by class. We will have to remove the estimates of samples that will get pruned.
 
-        :return: Balanced subdataset, containing the remaining samples, and the pruned_dataset containing the pruned
-        samples.
+        :return: Balanced subdataset, containing the remaining samples, the pruned_dataset containing the pruned
+        samples, and the updated hardness estimates.
         """
         subdataset_indices = []
 
@@ -114,21 +64,18 @@ class DataPruning:
             class_remaining_indices = np.random.choice(self.num_samples_per_class[class_id], retain_count,
                                                        replace=False)
             global_indices = np.where(np.array(labels) == class_id)[0]
-            subdataset_indices.extend(global_indices[class_remaining_indices])
+            # We sort the indices because the hardness scores are sorted by indices, and we need those two to match.
+            subdataset_indices.extend(np.sort(global_indices[class_remaining_indices]))
         subdataset = AugmentedSubset(Subset(training_dataset, subdataset_indices))
 
         pruned_indices = list(set(range(len(training_dataset))) - set(subdataset_indices))
         pruned_dataset = AugmentedSubset(Subset(training_dataset, pruned_indices))
+        hardness_sorted_by_class = {c: [hardness_sorted_by_class[c][i][1]
+                                        for i in range(len(hardness_sorted_by_class[c]))
+                                        if hardness_sorted_by_class[c][i][0] in subdataset_indices]
+                                    for c in hardness_sorted_by_class.keys()}
 
-        self.fig_save_dir = os.path.join(self.fig_save_dir, 'clp' + str(int(round(self.prune_percentage * 100))),
-                                         self.dataset_name)
-        self.res_save_dir = os.path.join(self.res_save_dir, 'clp' + str(int(self.prune_percentage * 100)),
-                                         self.dataset_name)
-        self.plot_class_level_sample_distribution(subdataset_indices, 'clp', labels)
-        self.fig_save_dir = os.path.join(ROOT, 'Figures/')
-        self.res_save_dir = os.path.join(ROOT, 'Results/')
-
-        return subdataset, pruned_dataset
+        return subdataset, pruned_dataset, hardness_sorted_by_class
 
     def compute_el2n_scores(self, model: ResNet18LowRes, dataloader: DataLoader) -> Tuple[List[float], List[int]]:
         """
@@ -178,24 +125,32 @@ class DataPruning:
 
         return class_level_scores
 
-    def resampling_pruned_subdataset(self, oversampling_strategy: str, labels: List[int],
-                                     training_dataset: Union[AugmentedSubset, IndexedDataset],
-                                     hardness_sorted_by_class: Union[None, Dict[int, List[float]]]) -> AugmentedSubset:
+    def prune_and_resample(
+            self,
+            oversampling_strategy: str,
+            labels: List[int],
+            training_dataset: Union[AugmentedSubset, IndexedDataset],
+            hardness_sorted_by_class: Dict[int, List[Tuple[int, float]]]
+    ) -> AugmentedSubset:
         """
         Removes the specified percentage of samples from the dataset. Produces imbalanced subdatasets. Works by firstly
         performing class_Level_pruning, and later performing hardness_based resampling on the pruned subdataset to
-        introduce the data imbalance. Uses easy pruning as a default undersampling strategy.
+        introduce the data imbalance. Uses easy pruning as a default undersampling strategy, unless
+        oversampling_strategy is "none" in which case no resampling is applied.
 
-        :param oversampling_strategy: Name of the oversampling strategy for hardness-based resampling.
+        :param oversampling_strategy: Name of the oversampling strategy for hardness-based resampling. If set to "none"
+        then no resampling is applied.
         :param labels: List of labels for each data sample in the original dataset.
         :param training_dataset: Original training dataset
-        :param hardness_sorted_by_class: Instance-level hardness estimates used to guide pruning. If these are set to
-        None than EL2N scores are computed from the pruned subdatasets.
+        :param hardness_sorted_by_class: Instance-level hardness estimates together with corresponding sample indices
+        used to guide pruning. If these are set to None then EL2N scores are computed from the pruned subdatasets.
 
         :return: Imbalanced pruned subdataset
         """
-        subdataset, pruned_dataset = self.class_level_pruning(labels, training_dataset)
+        subdataset, pruned_dataset, hardness_sorted_by_class = self.class_level_pruning(labels, training_dataset,
+                                                                                        hardness_sorted_by_class)
 
+        # The below allows to use EL2N (computed on the pruned subdatasets) instead of AUM to guide pruning.
         if hardness_sorted_by_class is None:
             sub_dataloader = get_dataloader(subdataset, 1000)
             trainer = ModelTrainer(len(subdataset), [sub_dataloader], None, self.dataset_name, stop_at_probe=True)
@@ -206,21 +161,10 @@ class DataPruning:
                 el2n_scores.append(scores)
             hardness_sorted_by_class = self.compute_class_level_scores(el2n_scores, sub_labels)
 
-        resampler = DataResampling(subdataset, self.num_classes, oversampling_strategy, 'easy',
-                                   hardness_sorted_by_class, True, self.dataset_name, self.num_models_for_hardness,
-                                   self.mean, self.std, pruned_dataset)
-        resampled_dataset = resampler.resample_data(self.imbalance_ratio)
+        if oversampling_strategy != "none":
+            resampler = DataResampling(subdataset, self.num_classes, oversampling_strategy, 'easy',
+                                       hardness_sorted_by_class, True, self.dataset_name, self.num_models_for_hardness,
+                                       self.mean, self.std, pruned_dataset)
+            subdataset = resampler.resample_data(self.imbalance_ratio)
 
-        print('II. prune_percentage', self.prune_percentage)
-        self.fig_save_dir = os.path.join(self.fig_save_dir,
-                                         f'{oversampling_strategy}_dlp' + str(int(self.prune_percentage * 100)),
-                                         self.dataset_name)
-        self.res_save_dir = os.path.join(self.res_save_dir,
-                                         f'{oversampling_strategy}_dlp' + str(int(self.prune_percentage * 100)),
-                                         self.dataset_name)
-        subdataset_indices = [idx for _, _, idx in resampled_dataset]
-        self.plot_class_level_sample_distribution(subdataset_indices, 'dlp', labels)
-
-        return resampled_dataset
-
-# TODO: Make it so that the imbalance_ratio can be computed from EL2N.
+        return subdataset

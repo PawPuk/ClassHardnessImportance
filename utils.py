@@ -6,12 +6,11 @@ import os
 import pickle
 import random
 import re
-from typing import Any, Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 from scipy.stats import ttest_rel
 import torch
 from torch.utils.data import DataLoader
@@ -63,19 +62,17 @@ def load_hardness_estimates(data_cleanliness: str, dataset_name: str) -> Dict[Tu
 
 def compute_sample_allocation_after_resampling(instance_hardness_scores: List[float], labels: List[int],
                                                num_classes: int, num_training_samples: int, hardness_estimator: str,
-                                               class_hardness_scores: List[float], pruning_rate: int = 0,
-                                               alpha: int = 1) -> Tuple[List[int], Dict[int, List[float]]]:
+                                               pruning_rate: int = 0,
+                                               alpha: int = 1) -> Tuple[List[int], Dict[int, List[Tuple[int, float]]]]:
     """Compute number of samples per class after hardness-based resampling according to hardness_scores."""
     # Divide the instant-level hardness estimates into classes.
     hardness_sorted_by_class = {class_id: [] for class_id in range(num_classes)}
     for i, label in enumerate(labels):
-        hardness_sorted_by_class[label].append(instance_hardness_scores[i])
+        hardness_sorted_by_class[label].append((i, instance_hardness_scores[i]))
 
     # Compute (or extract) average hardness of each class
-    if class_hardness_scores is None:
-        means_hardness_by_class = {class_id: np.mean(vals) for class_id, vals in hardness_sorted_by_class.items()}
-    else:
-        means_hardness_by_class = {class_id: class_hardness_scores[class_id] for class_id in range(num_classes)}
+    means_hardness_by_class = {class_id: np.mean([score for _, score in entries])
+                               for class_id, entries in hardness_sorted_by_class.items()}
     print('means_hardness_by_class', means_hardness_by_class)
 
     # Add offset in case some classes have negative hardness values to not get nonsensical resampling ratios.
@@ -448,9 +445,9 @@ def generate_t_test_table_for_pruning(
                     t_stat, p_val = fairness_t_test_results[metric][strategy][pruning_rate][fm]
                     # Format t-stat and p-value
                     if p_val < 0.05:
-                        formatted = f"\\textbf{{{t_stat:.2f} ({p_val:.2e})}}"
+                        formatted = f"\\textbf{{{t_stat:.2f}}}"
                     else:
-                        formatted = f"{t_stat:.2f} ({p_val:.2e})"
+                        formatted = f"{t_stat:.2f}"
                     row_items.append(f"& {formatted}")
             latex_lines.append(" ".join(row_items) + " \\\\")
         latex_lines.append("\\midrule")
@@ -550,9 +547,9 @@ def generate_t_test_table_for_resampling(
                     row_items.append("--")
                     continue
                 if p_val < 0.05:
-                    formatted = f"\\textbf{{{t_stat:.2f} ({p_val:.2f})}}"
+                    formatted = f"\\textbf{{{t_stat:.2f}}}"
                 else:
-                    formatted = f"{t_stat:.2f} ({p_val:.2f})"
+                    formatted = f"{t_stat:.2f}"
                 row_items.append(formatted)
         return " & ".join(row_items) + " \\\\"
 
