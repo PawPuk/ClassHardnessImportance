@@ -31,7 +31,7 @@ class Experiment2:
         :param oversampling_strategy: Name of the oversampling strategy. If set to none than no resampling will be
         applied after pruning.
         :param alpha: Integer used for computing resampling ratio that allows to modify the degree of introduced data
-        imbalance. This is only applicable when pruning_strategy is set to dlp.
+        imbalance.
         """
         self.dataset_name = dataset_name
         self.pruning_rate = pruning_rate
@@ -197,9 +197,9 @@ if __name__ == "__main__":
     parser.add_argument('--hardness_estimator', type=str, default='AUM',
                         help='Specifies which hardness estimator to use for computing resampling ratios.')
     parser.add_argument('--oversampling_strategy', type=str, choices=['none', 'random', 'SMOTE', 'holdout'],
-                        help='Specifies what oversampling to use (only applicable for dlp)')
+                        help='Specifies what oversampling to use')
     parser.add_argument('--alpha', type=int, default=1,
-                        help='Used to control the degree of introduced imbalance when using dlp.')
+                        help='Used to control the degree of introduced imbalance.')
 
     args = parser.parse_args()
 

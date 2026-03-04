@@ -268,50 +268,6 @@ def compute_fairness_metrics(
     return defaultdict_to_dict(fairness_results)
 
 
-def plot_fairness_stability(
-        fairness_results: Dict[
-            str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Tuple[float, float, List[float]]]]]
-        ],
-        figure_save_dir: str
-):
-    """This method visualizes the fairness_results using a heatmap. It's practical when the number of degrees is
-    higher than one (we performed experiment3.py for more than one alpha value or experiment2.py for more than one
-    pruning_rate). It's main focus is to determine if the ensemble size is adequate (are fairness_results stable with
-    respect to the ensemble size or do we need to train more models or use more datasets)."""
-    for base_metric in ['Precision', 'Recall']:
-        for strategy in fairness_results[base_metric].keys():
-            plt.figure(figsize=(10, 6))
-            colors = matplotlib.colormaps["tab10"]
-            max_degree = None
-
-            for idx, fairness_metric in enumerate(fairness_results[base_metric][strategy].keys()):
-                pass
-                """max_degree = max(fairness_results[base_metric][strategy][fairness_metric].keys())
-
-                means = [fairness_results[base_metric][strategy][fairness_metric][max_degree][size][0]
-                         for size in ensemble_sizes]
-                stds = [fairness_results[base_metric][strategy][fairness_metric][max_degree][size][1]
-                        for size in ensemble_sizes]
-
-                plt.plot(ensemble_sizes, means, label=fairness_metric.replace("_", " "),
-                         color=colors(idx), marker="o")
-                plt.fill_between(ensemble_sizes,
-                                 [m - s for m, s in zip(means, stds)],
-                                 [m + s for m, s in zip(means, stds)],
-                                 color=colors(idx), alpha=0.2)"""
-
-            plt.title(f"Fairness Metrics vs Ensemble Size (Degree={max_degree}, Strategy={strategy}, "
-                      f"Base={base_metric})", fontsize=14)
-            plt.xlabel("Ensemble Size")
-            plt.xticks([1, 2, 3, 4, 5])
-            plt.ylabel("Degree of Resampling/Pruning")
-            filename = f"fairness_metrics_degree_{max_degree}_{strategy}_based_on_{base_metric}.pdf"
-            plt.legend(ncol=2)
-            plt.tight_layout()
-            plt.savefig(os.path.join(figure_save_dir, filename))
-            plt.close()
-
-
 def plot_fairness_dual_axis(
         fairness_results: Dict[
             str, Dict[Union[str, Tuple[str, str]], Dict[str, Dict[int, Tuple[float, float, List[float]]]]]
@@ -330,12 +286,13 @@ def plot_fairness_dual_axis(
             fig, ax = plt.subplots(figsize=(10, 6))
 
             for i, (strategy) in enumerate(strategies):
-                if 'none' not in strategy:
-                    means = [fairness_results[base_metric][strategy][fairness_metric][degree][0]
-                             for degree in degrees]
-                    ax.plot(x_labels, means, label=f"{strategy}", color=colors(i))
+                means = [fairness_results[base_metric][strategy][fairness_metric][degree][0] for degree in degrees]
+                if isinstance(strategy, tuple):
+                    strategy = strategy[0]
+                ax.plot(x_labels, means, label=f"{strategy}", color=colors(i))
 
-            ax.set_xlabel("Pruning Rate")
+            x_label = "Pruning_rate" if task == "pruning" else "Alpha"
+            ax.set_xlabel(x_label)
             ax.set_ylabel("Quant Diff")
             ax.tick_params(axis='y')
             lines_1, labels_1 = ax.get_legend_handles_labels()
@@ -369,7 +326,7 @@ def perform_paired_t_tests(
                         baseline_entry = degree_dict[0]
                         baseline_values = np.array(baseline_entry[2])
                     else:
-                        baseline_entry = strategies['clp'][fairness_metric][degree]
+                        baseline_entry = strategies['none'][fairness_metric][degree]
                         baseline_values = np.array(baseline_entry[2])
 
                     if degree == 0:
@@ -393,199 +350,271 @@ def perform_paired_t_tests(
     return defaultdict_to_dict(test_results)
 
 
-def generate_t_test_table_for_pruning(
+def generate_t_test_table_for_fairness_metrics_for_pruning(
         fairness_t_test_results: Dict[
             str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[str, Tuple[float, float]]]]
         ],
         save_path: str
 ):
-    """
-    Generate a fully formatted LaTeX table for all metrics and pruning strategies.
+    """Generate a LaTeX table for pruning results only for the fairness metrics"""
 
-    Args:
-        fairness_t_test_results: Nested dict:
-            metric_name -> strategy -> degree -> fairness_metric -> ('t_stat', 'p_value').
-        save_path: Directory to save outputs (CSV + LaTeX).
-    """
-    metrics = ['Recall', 'Precision', 'F1']
-    strategies = ['random_dlp', 'SMOTE_dlp', 'holdout_dlp']
-    fairness_metrics = ['max_min_gap', 'quant_diff', 'hard_easy', 'std_dev', 'mad', 'avg_value']
+    metrics = ['Recall', 'Precision']
+    strategies = ['random', 'SMOTE', 'holdout']
+    fairness_metrics = ['max_min_gap', 'quant_diff', 'hard_easy', 'std_dev', 'mad']
 
-    # Define mapping for display names (optional)
     strategy_names = {
-        'random_dlp': 'random oversampling',
-        'SMOTE_dlp': 'SMOTE oversampling',
-        'holdout_dlp': 'holdout oversampling'
+        'random': 'random oversampling',
+        'SMOTE': 'SMOTE oversampling',
+        'holdout': 'holdout oversampling'
     }
 
-    # Start LaTeX string
-    latex_lines = ["\\begin{table}[h!]", "\\centering",
-                   "\\caption{t-statistics (with p-values) for fairness metrics under different pruning strategies. "
-                   "Significant results $(p < 0.05)$ are \\textbf{bolded}.}",
-                   "\\resizebox{\\textwidth}{!}{%", "\\begin{tabular}{lc|" + "ccc|" * 2 + "ccc}", "\\toprule",
-                   # Header row 1
-                   "\\makecell{Fairness\\\\metric} & \\makecell{Pruning\\\\rate} " +
-                   "".join([f"& \\multicolumn{{3}}{{c|}}{{{strategy_names[s]}}} "
-                            if s != strategies[-1] else f"& \\multicolumn{{3}}{{c}}{{{strategy_names[s]}}}"
-                            for s in strategies]) + " \\\\",
-                   # cmidrule
-                   " & & " + " & ".join(["Recall & Precision & F1"] * 3) + " \\\\", "\\midrule"]
+    acronym_map = {'max_min_gap': 'm', 'quant_diff': 'q', 'hard_easy': 'he', 'std_dev': '\\sigma', 'mad': 'MAD'}
 
-    # Table body
+    pruning_rates = sorted(next(iter(fairness_t_test_results.values()))[strategies[0]].keys())
+
+    latex_lines = [
+        "\\begin{table}[h!]", "\\centering",
+        "\\caption{t-statistics for fairness metrics under different pruning strategies. "
+        "Significant results $(p < 0.05)$ are \\textbf{bolded}.}",
+        "\\begin{tabular}{lc|" + "cc|" * 2 + "cc}",
+        "\\toprule",
+        "\\makecell{Fairness\\\\metric} & \\makecell{Pruning\\\\rate} " +
+        "".join(
+            f"& \\multicolumn{{2}}{{c|}}{{{strategy_names[s]}}} "
+            if s != strategies[-1]
+            else f"& \\multicolumn{{2}}{{c}}{{{strategy_names[s]}}}"
+            for s in strategies
+        ) + " \\\\",
+        " & & " + " & ".join(["Recall & Precision"] * len(strategies)) + " \\\\",
+        "\\midrule"
+    ]
+
     for fm in fairness_metrics:
-        acronym = 'm' if fm == 'max_min_gap' else 'MAD' if fm == 'mad' else '\\sigma' if fm == 'std_dev' \
-            else 'q' if fm == 'quant_diff' else 'he' if fm == 'hard_easy' else 'avg'
-        latex_lines.append(f"\\multirow{{6}}{{*}}{{$\\Delta_{{{acronym}}}$}}")
-        for i, pruning_rate in enumerate(sorted(next(iter(fairness_t_test_results.values()))[strategies[0]].keys())):
-            row_items = [f" & {pruning_rate}"]
+        latex_lines.append(f"\\multirow{{{len(pruning_rates)}}}{{*}}{{$\\Delta_{{{acronym_map[fm]}}}$}}")
+        for i, rate in enumerate(pruning_rates):
+            row = [f" & {rate}"]
             for strategy in strategies:
-                if 'clp' in strategy:
-                    continue
                 for metric in metrics:
-                    t_stat, p_val = fairness_t_test_results[metric][strategy][pruning_rate][fm]
-                    # Format t-stat and p-value
-                    if p_val < 0.05:
-                        formatted = f"\\textbf{{{t_stat:.2f}}}"
-                    else:
-                        formatted = f"{t_stat:.2f}"
-                    row_items.append(f"& {formatted}")
-            latex_lines.append(" ".join(row_items) + " \\\\")
+                    t, p = fairness_t_test_results[metric][strategy][rate][fm]
+                    row.append(f"& \\textbf{{{t:.2f}}}" if p < 0.05 else f"& {t:.2f}")
+            latex_lines.append(" ".join(row) + " \\\\")
         latex_lines.append("\\midrule")
 
-    latex_lines.append("\\end{tabular}}")
-    latex_lines.append("\\end{table}")
+    latex_lines.extend(["\\end{tabular}", "\\end{table}"])
 
-    # Write to file
-    filename = os.path.join(save_path, f"full_t_test_pruning.tex")
-    with open(filename, 'w') as f:
+    filename = os.path.join(save_path, "t_test_fairness_for_pruning.tex")
+    with open(filename, "w") as f:
         f.write("\n".join(latex_lines))
 
 
-def generate_t_test_table_for_resampling(
+def generate_t_test_table_for_avg_values_for_pruning(
         fairness_t_test_results: Dict[
             str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[str, Tuple[float, float]]]]
         ],
         save_path: str
 ):
     """
-    Generate a LaTeX table with Recall, Precision, and F1 as superrows (multirow),
-    and strategies as subrows. Each fairness metric uses delta notation.
+    Generate a LaTeX table for pruning results:
+    - avg_value only
+    - Recall, Precision, and F1
     """
 
-    def preferred_sort(strategies: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
-        order = ['random', 'SMOTE', 'rEDM', 'aEDM', 'hEDM', 'holdout']
-        def keyfn(s):
-            try:
-                return order.index(s[0])
-            except ValueError:
-                return len(order)
-        return sorted(strategies, key=keyfn)
+    metrics = ['Recall', 'Precision', 'F1']
+    strategies = ['random', 'SMOTE', 'holdout']
 
-    # Extract strategies
+    strategy_names = {
+        'random': 'random oversampling',
+        'SMOTE': 'SMOTE oversampling',
+        'holdout': 'holdout oversampling'
+    }
+
+    pruning_rates = sorted(next(iter(fairness_t_test_results.values()))[strategies[0]].keys())
+
+    latex_lines = [
+        "\\begin{table}[h!]",
+        "\\centering",
+        "\\caption{t-statistics for $\\Delta_{avg}$ under pruning. "
+        "Significant results $(p<0.05)$ are \\textbf{bolded}.}",
+        "\\begin{tabular}{lc|" + "ccc|" * 2 + "ccc}",
+        "\\toprule",
+        "\\makecell{Metric} & \\makecell{Pruning\\\\rate} " +
+        "".join(
+            f"& \\multicolumn{{3}}{{c|}}{{{strategy_names[s]}}} "
+            if s != strategies[-1]
+            else f"& \\multicolumn{{3}}{{c}}{{{strategy_names[s]}}}"
+            for s in strategies
+        ) + " \\\\",
+        " & & " + " & ".join(["Recall & Precision & F1"] * len(strategies)) + " \\\\",
+        "\\midrule"
+    ]
+
+    for metric in metrics:
+        latex_lines.append(f"\\multirow{{{len(pruning_rates)}}}{{*}}{{{metric}}}")
+        for rate in pruning_rates:
+            row = [f" & {rate}"]
+            for strategy in strategies:
+                t, p = fairness_t_test_results[metric][strategy][rate]['avg_value']
+                row.append(f"& \\textbf{{{t:.2f}}}" if p < 0.05 else f"& {t:.2f}")
+            latex_lines.append(" ".join(row) + " \\\\")
+        latex_lines.append("\\midrule")
+
+    latex_lines.extend(["\\end{tabular}", "\\end{table}"])
+
+    filename = os.path.join(save_path, "t_test_avg_for_pruning.tex")
+    with open(filename, "w") as f:
+        f.write("\n".join(latex_lines))
+
+
+def generate_t_test_table_for_fairness_metrics_for_resampling(
+        fairness_t_test_results: Dict[
+            str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[str, Tuple[float, float]]]]
+        ],
+        save_path: str
+):
+    """Generate a LaTeX table for all fairness metrics."""
+
+    def preferred_sort(strategies):
+        order = ['random', 'SMOTE', 'rEDM', 'aEDM', 'hEDM']
+        return sorted(
+            strategies,
+            key=lambda s: order.index(s[0]) if s[0] in order else len(order)
+        )
+
     sample_metric = next(iter(fairness_t_test_results.keys()))
     all_strategies = list(fairness_t_test_results[sample_metric].keys())
-    strategies_none = preferred_sort([s for s in all_strategies if s[1] == "none"])
     strategies_easy = preferred_sort([s for s in all_strategies if s[1] == "easy"])
 
-    # Fairness metrics (key, delta acronym)
     fairness_metrics = [
         ("max_min_gap", "m"),
         ("quant_diff", "q"),
         ("hard_easy", "he"),
         ("std_dev", "\\sigma"),
         ("mad", "MAD"),
-        ("avg_value", "avg")
     ]
 
-    # Alphas
-    sample_strategy = strategies_none[0] if strategies_none else strategies_easy[0]
-    alphas = sorted(fairness_t_test_results[sample_metric][sample_strategy].keys())
-
-    # Column spec: Metric | Strategy | fairness metric blocks
+    alphas = sorted(fairness_t_test_results[sample_metric][strategies_easy[0]].keys())
     per_group = "c" * len(alphas)
     col_spec = "l l|" + ("{}|".format(per_group) * (len(fairness_metrics) - 1)) + "{}".format(per_group)
 
-    # Start LaTeX
     latex_lines = [
-        "\\begin{table}[htbp]",
+        "\\begin{sidewaystable}[htbp]",
         "    \\centering",
-        "    \\caption{t-statistics (two decimals) with p-values for fairness metrics. "
+        "    \\caption{t-statistics (two decimals) for fairness metrics "
         "Significant results $(p<0.05)$ are \\textbf{bold}.}",
-        "    \\resizebox{\\textwidth}{!}{%",
         f"    \\begin{{tabular}}{{{col_spec}}}",
         "        \\toprule"
     ]
 
-    # Header row: fairness metrics with Δ notation
-    metric_header_parts = []
-    for i, (_, acronym) in enumerate(fairness_metrics):
-        if i < len(fairness_metrics) - 1:
-            metric_header_parts.append(f"& \\multicolumn{{{len(alphas)}}}{{c|}}{{$\\Delta_{{{acronym}}}$}} ")
-        else:
-            metric_header_parts.append(f"& \\multicolumn{{{len(alphas)}}}{{c}}{{$\\Delta_{{{acronym}}}$}} ")
-    header_line1 = "            Metric & Strategy " + "".join(metric_header_parts) + "\\\\"
+    header1 = "            Metric & Oversampling " + "".join(
+        f"& \\multicolumn{{{len(alphas)}}}{{c|}}{{$\\Delta_{{{a}}}$}} "
+        for _, a in fairness_metrics[:-1]
+    ) + f"& \\multicolumn{{{len(alphas)}}}{{c}}{{$\\Delta_{{{fairness_metrics[-1][1]}}}$}} \\\\"
 
-    # Second header row: alphas
-    alpha_cells = []
-    for _ in fairness_metrics:
-        for a in alphas:
-            alpha_cells.append(f"$\\alpha={a}$")
-    header_line2 = "            & " + " & ".join([""] + alpha_cells) + " \\\\"
+    header2 = "            & " + \
+              " & ".join([""] + [f"$\\alpha={a}$" for _ in fairness_metrics for a in alphas]) + \
+              " \\\\"
 
-    latex_lines.extend([header_line1, header_line2, "        \\midrule"])
+    latex_lines.extend([header1, header2, "        \\midrule"])
 
-    main_metrics = ["Recall", "Precision", "F1"]
+    main_metrics = ["Recall", "Precision"]
 
-    def format_row(strategy: Tuple[str, str], main_metric: str) -> str:
-        strategy_label = f"({strategy[0]}, {strategy[1]})"
-        row_items = [strategy_label]
+    def format_row(strategy, main_metric):
+        row = [strategy[0]]
         for fm, _ in fairness_metrics:
             for a in alphas:
                 try:
                     t_stat, p_val = fairness_t_test_results[main_metric][strategy][a][fm]
+                    row.append(f"\\textbf{{{t_stat:.2f}}}" if p_val < 0.05 else f"{t_stat:.2f}")
                 except KeyError:
-                    row_items.append("--")
-                    continue
-                if p_val < 0.05:
-                    formatted = f"\\textbf{{{t_stat:.2f}}}"
-                else:
-                    formatted = f"{t_stat:.2f}"
-                row_items.append(formatted)
-        return " & ".join(row_items) + " \\\\"
+                    row.append("--")
+        return " & ".join(row) + " \\\\"
 
-    # Add rows with multirow for each main metric
-    for mi, main_metric in enumerate(main_metrics):
-        n_rows = len(strategies_none) + len(strategies_easy)
-        # First strategy row with multirow
-        first_strategy = strategies_none[0] if strategies_none else strategies_easy[0]
-        metric_cell = f"\\multirow{{{n_rows}}}{{*}}{{{main_metric}}}"
-        latex_lines.append("            " + metric_cell + " & " + format_row(first_strategy, main_metric))
-
-        # Rest of 'none'
-        for s in strategies_none[1:]:
-            latex_lines.append("            & " + format_row(s, main_metric))
-
-        # Thin line between none/easy
-        if strategies_easy:
-            latex_lines.append("        \\cmidrule(lr){2-" + f"{2 + len(fairness_metrics) * len(alphas)}")
-
-        # Easy strategies
-        for s in strategies_easy:
-            latex_lines.append("            & " + format_row(s, main_metric))
-
-        # Thick line between metrics
+    for mi, metric in enumerate(main_metrics):
+        first = strategies_easy[0]
+        latex_lines.append(
+            f"            \\multirow{{{len(strategies_easy)}}}{{*}}{{{metric}}} & "
+            + format_row(first, metric)
+        )
+        for s in strategies_easy[1:]:
+            latex_lines.append("            & " + format_row(s, metric))
         if mi < len(main_metrics) - 1:
             latex_lines.append("        \\midrule")
 
-    # End table
-    latex_lines.extend([
-        "        \\bottomrule",
-        "    \\end{tabular}}",
-        "\\end{table}"
-    ])
+    latex_lines.extend(["        \\bottomrule", "    \\end{tabular}", "\\end{sidewaystable}"])
 
-    filename = os.path.join(save_path, f"t_test_resampling_superrows.tex")
+    filename = os.path.join(save_path, "t_test_fairness_for_resampling.tex")
     with open(filename, "w") as f:
         f.write("\n".join(latex_lines))
 
     return filename
+
+
+def generate_t_test_table_for_avg_values_for_resampling(
+        fairness_t_test_results: Dict[
+            str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[str, Tuple[float, float]]]]
+        ],
+        save_path: str
+):
+    """Generate a LaTeX table for avg_value only. Includes Recall, Precision, and F1."""
+
+    def preferred_sort(strategies):
+        order = ['random', 'SMOTE', 'rEDM', 'aEDM', 'hEDM']
+        return sorted(
+            strategies,
+            key=lambda s: order.index(s[0]) if s[0] in order else len(order)
+        )
+
+    sample_metric = next(iter(fairness_t_test_results.keys()))
+    all_strategies = list(fairness_t_test_results[sample_metric].keys())
+    strategies_easy = preferred_sort([s for s in all_strategies if s[1] == "easy"])
+
+    alphas = sorted(fairness_t_test_results[sample_metric][strategies_easy[0]].keys())
+    col_spec = "l l|" + "c" * len(alphas)
+
+    latex_lines = [
+        "\\begin{table}[htbp]",
+        "    \\centering",
+        "    \\caption{t-statistics for $\\Delta_{avg}$ across metrics. "
+        "Significant results $(p<0.05)$ are \\textbf{bold}.}",
+        f"    \\begin{{tabular}}{{{col_spec}}}",
+        "        \\toprule",
+        "            Metric & Oversampling & " +
+        " & ".join(f"$\\alpha={a}$" for a in alphas) + " \\\\",
+        "        \\midrule"
+    ]
+
+    main_metrics = ["Recall", "Precision", "F1"]
+
+    def format_row(strategy, main_metric):
+        row = [strategy[0]]
+        for a in alphas:
+            try:
+                t, p = fairness_t_test_results[main_metric][strategy][a]["avg_value"]
+                row.append(f"\\textbf{{{t:.2f}}}" if p < 0.05 else f"{t:.2f}")
+            except KeyError:
+                row.append("--")
+        return " & ".join(row) + " \\\\"
+
+    for mi, metric in enumerate(main_metrics):
+        first = strategies_easy[0]
+        latex_lines.append(
+            f"            \\multirow{{{len(strategies_easy)}}}{{*}}{{{metric}}} & "
+            + format_row(first, metric)
+        )
+        for s in strategies_easy[1:]:
+            latex_lines.append("            & " + format_row(s, metric))
+        if mi < len(main_metrics) - 1:
+            latex_lines.append("        \\midrule")
+
+    latex_lines.extend([
+        "        \\bottomrule",
+        "    \\end{tabular}",
+        "\\end{table}"
+    ])
+
+    filename = os.path.join(save_path, "t_test_avg_for_resampling.tex")
+    with open(filename, "w") as f:
+        f.write("\n".join(latex_lines))
+
+    return filename
+

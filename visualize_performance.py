@@ -9,19 +9,12 @@ running experiment2.py!
 
 """
 import argparse
-import os
-import pickle
-from typing import Dict, List, Tuple, Union
 
-import matplotlib
-import matplotlib.pyplot as plt
-import numpy as np
 from fiona.crs import defaultdict
 
 from data import load_dataset
-from config import get_config, ROOT
-from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_t_test_table_for_pruning, load_results,
-                   obtain_results, perform_paired_t_tests, plot_fairness_dual_axis, plot_fairness_stability)
+from config import get_config
+from utils import *
 
 
 class PerformanceVisualizer:
@@ -56,12 +49,12 @@ class PerformanceVisualizer:
         models_dir = os.path.join(ROOT, "Models/")
         models_by_strategy, pruning_rate = defaultdict(lambda: defaultdict(lambda: defaultdict(list))), None
 
-        for pruning_strategy in ['clp', 'random_dlp', 'holdout_dlp', 'SMOTE_dlp']:
+        for pruning_strategy in ['none', 'random', 'holdout', 'SMOTE']:
             # Walk through each folder in the Models directory
             for root, dirs, files in os.walk(models_dir):
                 # Ensure the dataset name matches exactly (avoid partial matches like "cifar10" in "cifar100")
-                if f"{pruning_strategy}" in root and os.path.basename(root) == f'unclean{self.dataset_name}':
-                    pruning_rate = int(root.split(pruning_strategy)[1].split("_alpha_")[0])
+                if f"{pruning_strategy}_pruning" in root and os.path.basename(root) == f'unclean{self.dataset_name}':
+                    pruning_rate = int(root.split("pruning_rate_")[1].split("_alpha_")[0])
                     alpha = int(root.split("_alpha_")[1].split("/")[0])
 
                     for file in files:
@@ -89,318 +82,22 @@ class PerformanceVisualizer:
         print(models_by_strategy)
         return defaultdict_to_dict(models_by_strategy)
 
-    def compute_pruned_percentages(self, models_by_rate: Dict[str, Dict[int, Dict[int, List[str]]]]
-                                   ) -> Dict[str, Dict[int, List[float]]]:
-        """Computes the percentage of samples that were pruned per class for each of the pruning rate and pruning
-        strategy."""
-        pruned_percentages = {}
-        for pruning_strategy in models_by_rate.keys():
-            pruning_rates = models_by_rate[pruning_strategy].keys()
-            pruned_percentages[pruning_strategy] = {pruning_rate: [] for pruning_rate in pruning_rates}
-
-            # Iterate over each pruning rate in models_by_rate
-            for pruning_rate in pruning_rates:
-                if pruning_rate == 58:
-                    pruning_rate = 57
-                pkl_path = os.path.join(ROOT, "Results", pruning_strategy + str(pruning_rate), self.dataset_name,
-                                        f"class_level_sample_counts.pkl")
-                with open(pkl_path, "rb") as file:
-                    class_level_sample_counts = pickle.load(file)
-                if pruning_rate == 57:
-                    pruning_rate = 58
-                pkey = 'clp' if 'clp' in pruning_strategy else 'dlp'
-                remaining_data_count = class_level_sample_counts[pkey][pruning_rate]
-                for c in range(self.num_classes):
-                    pruned_percentage = 100.0 * (self.num_training_samples[c] - remaining_data_count[c]) / \
-                                        self.num_training_samples[c]
-                    pruned_percentages[pruning_strategy][pruning_rate].append(pruned_percentage)
-                else:
-                    pruned_percentages[pruning_strategy][0] = [0.0 for _ in range(self.num_classes)]
-        print('Pruned percentages: ', pruned_percentages)
-
-        return pruned_percentages
-
-    def plot_pruned_percentages(self, pruned_percentages: Dict[int, List[float]]):
-        """Visualizes the differences between pruned samples for class- and dataset-level pruning for the top-5 easiest
-        and hardest classes."""
-        plt.figure(figsize=(10, 6))
-
-        pruning_rates = sorted(pruned_percentages.keys())
-        class_means = {}
-        for class_idx in range(self.num_classes):
-            class_pruning_percentages = [pruned_percentages[pr][class_idx] for pr in pruning_rates]
-            class_means[class_idx] = np.mean(class_pruning_percentages)
-
-        sorted_classes = sorted(class_means.items(), key=lambda x: x[1])
-        easiest = [cls_idx for cls_idx, _ in sorted_classes[-5:]]
-        hardest = [cls_idx for cls_idx, _ in sorted_classes[:5]]
-
-        selected_classes = easiest + hardest
-        for class_idx in selected_classes:
-            class_pruning_percentages = [pruned_percentages[pruning_rate][class_idx] for pruning_rate in pruning_rates]
-            plt.plot(pruning_rates[1:], class_pruning_percentages[1:], marker='o')
-
-        plt.xlabel("Percentage of samples removed from the dataset (DLP rate)")
-        plt.ylabel("Class-Level Pruning Percentage (%)")
-        plt.grid(True)
-        plt.savefig(os.path.join(self.figure_save_dir, f'class_vs_dataset_pruning_values.pdf'))
-        # TODO: maybe modify later to compute percentages here to include more points for smoother lines...
-
-    def plot_classwise_recall_vs_pruning(
-            self,
-            results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]]
-    ):
-        """This visualization goes through all pruning rates and for which visually compares the per-class recall,
-        averaged across datasets and models, across different pruning strategies. The idea is to introduce another way
-        to compare the effect of different pruning strategies on performance on easy and hard classes - lower/higher
-        performance on easy/hard classes for clp-based results than dlp-based ones."""
-        def flatten(d):
-            """Helper function for transforming Dict[int, Dict[int, float]] into List[float]"""
-            return [v for inner in d.values() for v in inner.values()]
-
-        pruning_rates = sorted(list(results['Recall']['clp'].keys()))
-        print('Pruning rates:', pruning_rates)
-        colors = matplotlib.colormaps["tab10"]
-
-        fig, axes = plt.subplots(ncols=len(pruning_rates), figsize=(4 * len(pruning_rates), 8),
-                                 sharey='all')
-        for ax, pruning_rate in zip(axes, pruning_rates):
-            clp_recalls = [np.mean(flatten(results['Recall']['clp'][pruning_rate][cls]))
-                           for cls in range(self.num_classes)]
-            random_dlp_recalls = [np.mean(flatten(results['Recall']['random_dlp'][pruning_rate][cls]))
-                                  for cls in range(self.num_classes)]
-            SMOTE_dlp_recalls = [np.mean(flatten(results['Recall']['SMOTE_dlp'][pruning_rate][cls]))
-                                 for cls in range(self.num_classes)]
-            holdout_dlp_recalls = [np.mean(flatten(results['Recall']['holdout_dlp'][pruning_rate][cls]))
-                                   for cls in range(self.num_classes)]
-
-            sorted_classes = np.argsort(clp_recalls)[::-1]
-            clp_sorted = np.array(clp_recalls)[sorted_classes]
-            random_dlp_sorted = np.array(random_dlp_recalls)[sorted_classes]
-            SMOTE_dlp_sorted = np.array(SMOTE_dlp_recalls)[sorted_classes]  # noqa
-            holdout_dlp_sorted = np.array(holdout_dlp_recalls)[sorted_classes]
-
-            ax.plot(clp_sorted, label=f'CLP', color=colors(0))
-            ax.plot(random_dlp_sorted, label=f'random DLP', color=colors(1))
-            ax.plot(SMOTE_dlp_sorted, label=f'SMOTE DLP', color=colors(2))
-            ax.plot(holdout_dlp_sorted, label=f'holdout DLP', color=colors(3))
-
-            ax.set_title(f'Class-wise Recall @ pruning_rate={pruning_rate}')
-            ax.legend()
-            ax.grid(True, linestyle='--', alpha=0.6)
-
-        fig.supxlabel('Class (sorted by baseline recall)')
-        fig.supylabel('Recall')
-        plt.tight_layout()
-        filename = f"class_level_recall_changes_investigation.pdf"
-        plt.savefig(os.path.join(self.figure_save_dir, filename))
-
-    def plot_class_level_results(
-            self,
-            results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]],
-            pruned_percentages: Dict[str, Dict[int, List[float]]]
-    ):
-        """This visualization also compares the class-level recalls across different pruning strategies and pruning
-        thresholds, but in a different manner. This time we focus on 10 most extreme classes (5 easiest and 5 hardest)
-        and also show the differences in pruned thresholds (e.g., pruning threshold of 20% leads to removal of way more
-         samples on the hardest classes)."""
-        def compute_statistic(pruning_strategy, reducer):
-            """Helper function"""
-            values = []
-            for p in pruning_rates:
-                stat = reducer([
-                    results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx]
-                    for dataset_idx in range(self.num_datasets)
-                    for model_idx in range(self.num_models_per_dataset)
-                    if results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx] != 0.0
-                ])
-                values.append(stat)
-            return np.array(values)
-
-        pruning_rates = sorted(results['Recall']['clp'].keys())
-        colors = matplotlib.colormaps["tab10"]
-        for metric_name in results.keys():
-            # Identify 5 easiest and 5 hardest classes (based on Recall values of a single model)
-            hardness = [results['Recall']['clp'][50][cls][0][0] for cls in range(self.num_classes)]
-            sorted_classes = np.argsort(np.array(hardness))
-            selected_classes = list(sorted_classes[-5:][::-1]) + list(sorted_classes[:5])
-            plot_indices = list(range(5)) + list(range(9, 4, -1))  # map to top and bottom row
-
-            num_plots, num_cols, num_rows = 10, 5, 2
-            fig, axes = plt.subplots(num_rows, num_cols, figsize=(4 * num_cols, 4 * num_rows), sharey='all')
-            fig.suptitle(f"Class-Level {metric_name} Across Pruning Rates", fontsize=16)
-            axes = axes.flatten()
-
-            for idx, class_id in enumerate(selected_classes):
-                avg_metric_values_clp = compute_statistic('clp', np.mean)
-                # std_metric_values_clp = compute_statistic('clp', np.std)
-                pruning_clp = [pruned_percentages['clp'][p][class_id] for p in pruning_rates]
-
-                ax = axes[plot_indices[idx]]
-                ax.plot(pruning_clp, avg_metric_values_clp, marker='o', linestyle='-', color=colors(0), label='clp')
-                """ax.fill_between(pruning_clp, avg_metric_values_clp - std_metric_values_clp,
-                                avg_metric_values_clp + std_metric_values_clp, color=colors(0), alpha=0.2)"""
-                ax.set_xlabel("Pruning %")
-                # ax.set_xlim(0, 100)
-
-                for i, strategy in enumerate(['random_dlp', 'SMOTE_dlp', 'holdout_dlp']):
-                    avg_metric_values_dlp = compute_statistic(strategy, np.mean)
-                    # std_metric_values_dlp = compute_statistic(strategy, np.std)
-                    pruning_dlp = [pruned_percentages[strategy][p][class_id] for p in pruning_rates]
-
-                    ax.plot(pruning_dlp, avg_metric_values_dlp, marker='o', linestyle='-', color=colors(i + 1),
-                            label=strategy)
-                    """ax.fill_between(pruning_dlp, avg_metric_values_dlp - std_metric_values_dlp,
-                                    avg_metric_values_dlp + std_metric_values_dlp, color=colors(i + 1), alpha=0.2)"""
-
-                ax.set_ylabel(f"{metric_name}")
-                ax.set_title(f"Class {class_id}")
-                ax.grid(True, linestyle='--', alpha=0.6)
-                lines_1, labels_1 = ax.get_legend_handles_labels()
-                ax.legend(lines_1, labels_1, ncol=2)
-
-            plt.tight_layout(rect=[0, 0, 1, 0.96])
-            plt.savefig(os.path.join(self.figure_save_dir, f'Class_Level_{metric_name}.pdf'))
-            plt.close()
-
-    def compare_clp_with_dlp(
-            self,
-            results: Dict[str, Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]]
-    ):
-        """This visualization provides the final comparison across pruning techniques. This time the comparison is
-        performed at dataset leve. On one hand it provides the least information, but at the same time this should be
-        the easiest to understand due to simplicity and clarity."""
-        def compute_statistic(pruning_strategy, reducer):
-            """Helper function"""
-            values = []
-            for p in pruning_rates:
-                # Normal structure: results[metric][strategy][p][class_id][dataset_idx][model_idx]
-                stat = reducer([
-                    results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx]
-                    for class_id in range(self.num_classes)
-                    for dataset_idx in range(self.num_datasets)
-                    for model_idx in range(self.num_models_per_dataset)
-                    if results[metric_name][pruning_strategy][p][class_id][dataset_idx][model_idx] != 0.0
-                ])
-                values.append(stat)
-            return np.array(values)
-
-        pruning_rates = sorted(results['Recall']['clp'].keys())
-        x_labels = [f"{r}" for r in pruning_rates]
-        colors = matplotlib.colormaps["tab10"]
-
-        for metric_name in results.keys():
-            avg_metric_clp = compute_statistic('clp', np.mean)
-            std_metric_clp = compute_statistic('clp', np.std)
-
-            plt.figure(figsize=(8, 6))
-            plt.plot(x_labels, avg_metric_clp, marker='o', linestyle='-', color=colors(0), label='CLP')
-            plt.fill_between(x_labels, avg_metric_clp - std_metric_clp, avg_metric_clp + std_metric_clp,
-                             color=colors(0), alpha=0.2)
-
-            for i, strategy in enumerate(['holdout_dlp']):
-                avg_metric_dlp = compute_statistic(strategy, np.mean)
-                std_metric_dlp = compute_statistic(strategy, np.std)
-                if metric_name == 'Recall':
-                    print(avg_metric_dlp)
-
-                plt.plot(x_labels, avg_metric_dlp, marker='s', linestyle='--', color=colors(i + 1),
-                         label='Holdout' if 'dlp' in strategy else 'CLP')
-                plt.fill_between(x_labels, avg_metric_dlp - std_metric_dlp, avg_metric_dlp + std_metric_dlp,
-                                 color=colors(i + 1), alpha=0.2)
-
-            plt.xlabel("Percentage of samples removed from the dataset", fontsize=12)
-            plt.ylabel(f"Average {metric_name}", fontsize=12)
-            plt.legend(ncol=2)
-            plt.savefig(os.path.join(self.figure_save_dir, f'{metric_name}_clp_vs_dlp.pdf'))
-
-    def compute_recall_instability(
-            self,
-            results: Dict[Union[str, Tuple[str, str]], Dict[int, Dict[int, Dict[int, Dict[int, float]]]]]
-    ) -> Dict[str, Dict[int, Dict[str, float]]]:
-        """
-        Computes instability of class-level recall values when increasing ensemble size
-        (max dataset_idx, max model_idx) from i to i+1.
-
-        Returns:
-            Dict[str, Dict[int, Dict[str, float]]]
-            Format: results[pruning_strategy][i] = {"mean": float, "std": float}
-        """
-        def compute_statistic(j, class_id, reducer):
-            """Helper function"""
-            return np.array([
-                reducer([
-                    results[pruning_strategy][75][class_id][dataset_idx][model_idx]
-                    for dataset_idx in range(j)
-                    for model_idx in range(j)
-                    if results[pruning_strategy][75][class_id][dataset_idx][model_idx] != 0.0
-                ])
-            ])
-
-        instability_results = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
-        for pruning_strategy in ['clp', 'random_dlp', 'holdout_dlp', 'SMOTE_dlp']:
-            for i in range(1, min(self.num_datasets, self.num_models_per_dataset)):
-                recalls_i = np.array([compute_statistic(i, class_id, np.mean) for class_id in range(self.num_classes)])
-                recalls_ip1 = np.array(
-                    [compute_statistic(i + 1, class_id, np.mean) for class_id in range(self.num_classes)])
-
-                # per-class instability
-                instability_per_class = np.abs(recalls_ip1 - recalls_i).flatten()
-
-                instability_results[pruning_strategy][i]["mean"] = float(np.mean(instability_per_class))
-                instability_results[pruning_strategy][i]["std"] = float(np.std(instability_per_class))
-
-        return defaultdict_to_dict(instability_results)
-
-    def plot_recall_instability(self, instability_results: Dict[str, Dict[int, Dict[str, float]]]):
-        """Line plot: Recall instability (mean ± std) vs ensemble size. One curve per pruning strategy."""
-        plt.figure(figsize=(10, 6))
-        colors = matplotlib.colormaps["tab10"]
-
-        for idx, pruning_strategy in enumerate(['clp', 'random_dlp', 'holdout_dlp', 'SMOTE_dlp']):
-            ensemble_sizes = sorted(instability_results[pruning_strategy].keys())
-            means = [instability_results[pruning_strategy][i]["mean"] for i in ensemble_sizes]
-            stds = [instability_results[pruning_strategy][i]["std"] for i in ensemble_sizes]
-
-            plt.plot(ensemble_sizes, means, label=pruning_strategy, color=colors(idx), marker="o")
-            plt.fill_between(ensemble_sizes,
-                             np.array(means) - np.array(stds),
-                             np.array(means) + np.array(stds),
-                             color=colors(idx), alpha=0.2)
-
-        plt.xlabel("Ensemble Size (i vs i+1)", fontsize=12)
-        plt.xticks([1, 2, 3, 4])
-        plt.ylabel("Recall Instability (mean ± std)", fontsize=12)
-        plt.title("Recall Instability across Ensemble Sizes", fontsize=14)
-        plt.legend(loc="upper right", ncol=2)
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.figure_save_dir, "recall_instability_all.pdf"))
-        plt.close()
-
     def main(self):
         """Main method for producing the visualizations."""
         models = self.load_models()
-        pruned_percentages = self.compute_pruned_percentages(models)
-        self.plot_pruned_percentages(pruned_percentages[f'random_dlp'])
         _, _, test_loader, _ = load_dataset(self.dataset_name, apply_augmentation=True)
 
         results = obtain_results(os.path.join(self.results_dir, self.dataset_name), self.num_classes, test_loader,
                                  "ensemble_results.pkl", models)
-        self.plot_classwise_recall_vs_pruning(results)
-        self.plot_class_level_results(results, pruned_percentages)
-        self.compare_clp_with_dlp(results)
-
-        instability_results = self.compute_recall_instability(results['Recall'])
-        self.plot_recall_instability(instability_results)
 
         samples_per_class = load_results(os.path.join(self.results_dir, f'unclean{self.dataset_name}', f'alpha_1',
                                                       'samples_per_class.pkl'))
-        pruning_strategies = ['clp', 'random_dlp', 'holdout_dlp', 'SMOTE_dlp']
+        pruning_strategies = list(models.keys())
         fairness_results = compute_fairness_metrics(results, samples_per_class, pruning_strategies, self.num_classes)
-        plot_fairness_stability(fairness_results, self.figure_save_dir)
         plot_fairness_dual_axis(fairness_results, self.figure_save_dir, 'pruning')
         fairness_t_test_results = perform_paired_t_tests(fairness_results, 'pruning')
-        generate_t_test_table_for_pruning(fairness_t_test_results, self.figure_save_dir)
+        generate_t_test_table_for_fairness_metrics_for_pruning(fairness_t_test_results, self.figure_save_dir)
+        generate_t_test_table_for_avg_values_for_pruning(fairness_t_test_results, self.figure_save_dir)
 
 
 if __name__ == "__main__":

@@ -11,18 +11,11 @@ Important information:
 running experiment3.py!
 """
 import argparse
-from collections import defaultdict
-import os
-from typing import Dict, List, Tuple, Union
-
-import matplotlib.pyplot as plt
-import numpy as np
 from numpy.typing import NDArray
 
-from config import get_config, ROOT
+from config import get_config
 from data import load_dataset
-from utils import (compute_fairness_metrics, defaultdict_to_dict, generate_t_test_table_for_resampling, load_results,
-                   obtain_results, perform_paired_t_tests, plot_fairness_dual_axis, plot_fairness_stability)
+from utils import *
 
 
 class ResamplingVisualizer:
@@ -64,6 +57,8 @@ class ResamplingVisualizer:
                 undersampling_strategy = root.split("_under_")[1].split("_alpha_")[0]
                 alpha = root.split("_alpha_")[1].split("_hardness_")[0]
                 key = (oversampling_strategy, undersampling_strategy)
+                if alpha == 3 and self.dataset_name == 'CIFAR100':
+                    continue
 
                 for file in files:
                     if file.endswith(".pth") and f"_epoch_{self.num_epochs}" in file:
@@ -131,7 +126,7 @@ class ResamplingVisualizer:
 
         ax.set_xlabel('Classes sorted based on hardness (hardest to the right)')
         ax.set_xticklabels([])
-        ax.set_xticks(np.arange(1, self.num_classes + 1))
+        ax.set_xticks(np.arange(0, self.num_classes + 1))
         ax.set_ylabel('Class-wise sample count after resampling')
         ax.set_title(self.dataset_name)
         ax.legend()
@@ -250,28 +245,34 @@ class ResamplingVisualizer:
         number_of_easy_classes, alpha_values = self.visualize_resampling_results(samples_per_class)
         # the alpha value (in samples_per_class[alpha] below) doesn't matter as long as its valid
         class_order = np.argsort(samples_per_class[1])
-        for base_metric in ['F1', 'MCC', 'Precision', 'Recall']:
-            for strategy in results['Recall'].keys():
+        for base_metric in ['Precision', 'Recall']:
+            for strategy in results[base_metric].keys():
                 self.plot_all_metrics_sorted(results, class_order, base_metric, number_of_easy_classes, strategy,
                                              alpha_values)
                 print(f'{"-" * 70}\n\tResults of {strategy} for {base_metric}:\n{"-" * 70}')
                 self.plot_metric_changes(results, class_order, base_metric, number_of_easy_classes, strategy,
                                          alpha_values)
 
+        # Copy the results for alpha=0 that is saved in results[metric_name][('none', 'none')][1]
         for metric_name in ['Recall', 'F1', 'MCC', 'Precision']:
             for strategy in results[metric_name]:
                 if strategy is not ('none', 'none'):
                     results[metric_name][strategy][0] = results[metric_name][('none', 'none')][1]
+                if self.dataset_name == 'CIFAR100' and 3 in results[metric_name][strategy].keys():
+                    print(f'Deleting results for alpha=3 for {metric_name} and {strategy}.')
+                    del results[metric_name][strategy][3]
+                print('The remaining alphas - ', results[metric_name][strategy].keys())
             del results[metric_name][('none', 'none')]
+
         resampling_strategies = list(results['Recall'].keys())
 
         fairness_results = compute_fairness_metrics(results, samples_per_class[1], resampling_strategies,
                                                     self.num_classes)
 
-        plot_fairness_stability(fairness_results, self.figure_save_dir)
         plot_fairness_dual_axis(fairness_results, self.figure_save_dir, 'resampling')
         t_test_results = perform_paired_t_tests(fairness_results, 'resampling')
-        generate_t_test_table_for_resampling(t_test_results, self.figure_save_dir)
+        generate_t_test_table_for_fairness_metrics_for_resampling(t_test_results, self.figure_save_dir)
+        generate_t_test_table_for_avg_values_for_resampling(t_test_results, self.figure_save_dir)
 
 
 if __name__ == "__main__":
@@ -285,3 +286,6 @@ if __name__ == "__main__":
 
 # TODO: Plot class-level recall vs AUM to show that the correlation exists but it's not 1 to 1.
 # TODO: If time allows rerun the experiments with Recall being used as the hardness estimator for resampling.
+
+
+# TODO: Check the sorting for plotting (we should be sorting by hardness_estimator (and we chose it to be Recall now)

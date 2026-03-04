@@ -127,7 +127,7 @@ if __name__ == "__main__":
     parser.add_argument('--instance_hardness_estimator', type=str, default='AUM',
                         help='Specifies which hardness estimator to use for pruning.')
     parser.add_argument('--remove_noise', action='store_true', help='Raise this flag to remove noise from the data.')
-    parser.add_argument('--alpha', type=int, default=1, help='Used to control the degree of introduced imbalance.')
+    parser.add_argument('--alpha', type=float, default=1, help='Used to control the degree of introduced imbalance.')
     args = parser.parse_args()
 
     experiment = Experiment3(**vars(args))
