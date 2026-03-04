@@ -35,9 +35,6 @@ def evaluate_model_per_class_precision_recall(model, dataloader, num_classes):
     precision = tp / (tp + fp)
     recall = tp / (tp + fn)
 
-    precision *= 100
-    recall *= 100
-
     return precision.cpu().numpy(), recall.cpu().numpy()
 
 
