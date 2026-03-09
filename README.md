@@ -1,145 +1,235 @@
-# Experiment 1
+# Class Hardness Importance
 
-This is the first part of our experimental pipeline - training and ensemble of networks on the original datasets.
-This program accepts two parameters ``dataset_name``, and ``remove_noise``. To obtain the results on CIFAR-10 please 
-run the below.
+## Quick Start
 
+To reproduce the main experiments:
+
+Case Study 1
+
+> bash scripts/run_case_study_1_experiments.sh
+
+Case Study 2
+
+> bash scripts/run_case_study_2_experiments.sh
+
+## Motivation
+
+Even in balanced datasets such as CIFAR-10 or CIFAR-100, model performance can vary substantially across classes. 
+Some classes are consistently harder to learn than others, leading to uneven classification accuracy.
+
+This repository investigates whether dataset resampling strategies can be improved by accounting for **class hardness** 
+rather than class frequency. Specifically, we explore *hardness-based resampling*, where harder classes are oversampled 
+and easier classes are undersampled.
+
+This shifts the focus from **class balance** to **hardness balance**, allowing us to study whether addressing the latter 
+leads to improved model performance.
+
+### Class performance disparities
+
+![Class performance disparities](Figures/Figure1.png)
+
+## Experimental Design
+
+The experimental pipeline is organized around **two case studies** that investigate the role of class hardness under different data availability scenarios.
+
+Both case studies begin with **baseline ensemble training**, which provides the hardness estimates used in later stages.
+
+### Step 1 — Baseline Model Training
+
+Script: `train_baseline_models.py`
+
+An ensemble of neural networks is trained on the original balanced dataset. During training we estimate **sample hardness**, which is later used to:
+
+- perform dataset pruning
+- estimate **class hardness**
+- guide resampling strategies
+
+The resulting hardness estimates are stored and reused by both case studies.
+
+---
+
+### Case Study 1 — Resampling with Holdout Set
+
+Script: `case_study_1.py`
+
+This experiment simulates a scenario where **limited subset of real data** is available.
+
+The pipeline proceeds as follows:
+
+1. **Holdout data for oversampling** - Dataset is randomly pruned at class-level with removed samples forming a *holdout set* that simulates access to additional real data.
+
+2. **Hardness-based resampling** - We apply hardness-based resampling to the pruned subdataset using the holdout set for oversampling.
+
+The goal of this case study is to compare models trained on:
+
+- pruned datasets
+- pruned datasets augmented with hardness-based resampling
+
+---
+
+### Case Study 2 — Resampling with Synthetic Data
+
+Script: `case_study_2.py`
+
+This experiment evaluates resampling strategies when large amounts of synthetic data are available.
+
+Resampling is applied directly to the **full dataset** using several techniques, including:
+
+- classical oversampling methods
+- **EDM-generated synthetic data**
+
+For EDM, we use a dataset containing **1 million synthetic samples** generated using the diffusion model from:
+
+> (insert citation here)
+
+The goal is to study whether introducing data imbalance via hardness-based resampling reduced performance disparities across classes.
+
+## Repository Structure
+
+
+### Directory description
+
+- **scripts/** - Bash scripts used to run complete experimental pipelines.
+
+- **src/analysis** - Scripts used to analyze results, perform statistical tests, and generate figures (Fig. 1, Fig. 2, Fig. 3, and Fig. 7).
+
+- **src/config** - Configuration files controlling experiment settings.
+
+- **src/data** - Dataset loading and simple preprocessing (not pruning or resampling) utilities.
+
+- **src/experiments** - Main experimental modules used in the paper.
+
+- **src/hardness** - Methods used to estimate sample hardness.
+
+- **src/models** - Modified ResNet18 for CIFAR-10 and CIFAR-100 and related utilities for loading pretrained models.
+
+- **src/pruning** - Dataset pruning strategies.
+
+- **src/resampling** - Dataset resampling strategies.
+
+- **src/training** - Training utilities for neural network ensembles.
+
+- **src/utils** - General helper functions used across modules.
+
+- **src/visualization** - Functions used to generate figures (Fig. 5, Fig. 6, and Fig. 8) and tables (appendix).
+
+## Running Experiments
+
+Complete experimental pipelines can be executed using the provided scripts in the `scripts/` directory.
+
+### Case Study 1
+
+> bash scripts/run_case_study_1_experiments.sh
+
+This script performs the following steps:
+
+1. Train baseline ensemble models and estimate sample hardness.
+2. Run pruning experiments.
+3. Optionally perform hardness-based resampling.
+4. Generate visualizations and statistical analyses.
+
+---
+
+### Case Study 2
+
+> bash scripts/run_case_study_2_experiments.sh
+
+
+This script runs the resampling experiments on the full dataset, including experiments using synthetic data.
+
+### Pipeline Diagram
+```text
+                                 Baseline Training
+                                        │
+                                        ▼
+                              Hardness Estimation
+                                        │
+                                        ▼
+                  ┌────────────────────────────────────────────┐
+                  │                                            │
+                  ▼                                            ▼
+              Case Study 1                                 Case Study 2
+               (Pruning)                                   (Resampling)
+                  │                                            │
+                  ▼                                            ▼
+   Pruned Dataset vs Pruned + Resampled           Full Dataset vs. Resampled
 ```
-python3 experiment3.py --dataset_name CIFAR10
-```
 
-Running the above will result in training an ensemble of 20 networks (see `dataset_configs[CIFAR10][num_models]` in `config.py`) and 
-save it in `dataset_configs[CIFAR10][save_dir]`. On top of that the time taken for training will be recorder in 
-`dataset_configs[CIFAR10][timings_dir]`, and the hardness estimates, produced via AUM and Forgetting, will be recorded 
-in the directory specified by the `hardness_save_dir` variable in the `save_results` method of the `train_ensemle.py`.
-*Therefore, please modify the `ROOT` variable from config.py.*
+## Experimental Robustness
 
-### Parameters
+To obtain statistically reliable results, the experiments account for two sources of randomness:
 
-  - ``dataset_name`` - string that specifies the name of the dataset. Currently, only supports `CIFAR10` and `CIFAR100`.
-  - ``remove_noise`` - boolean flag that, if called, removes a subset of the hardest samples that were identified as 
-noise by AUM before training. In order to raise this flag you firstly need to run `experiment1.py` without raising this 
-flag to compute the hardness estimates via AUM that are required for noise removal.
+1. **Model initialization randomness**
+2. **Dataset generation randomness** (caused by pruning or resampling)
 
-### Important
+To control for both sources, the experiments follow a two-level design:
 
-To reiterate, make sure to alter the `ROOT` variable from `config.py`, to determine the saving locations. This is also 
-important for other programs in this pipeline.
+- Multiple **dataset variants** are generated using different random seeds.
+- For each dataset variant, an **ensemble of models** is trained.
 
-# Verify Statistical Significance
+This results in a grid-like experimental setting:
 
-The purpose of this part is to perform the robustness analysis of the trained ensemble with respect to the data pruning 
-and resampling ratio computation.
+| Setting | Description |
+|-------|-------------|
+| 1×1 | One dataset variant, one trained model |
+| 2×2 | Two dataset variants, two models per dataset |
+| 4×4 | Four dataset variants, four models per dataset |
 
-```
-python3 verify_statistical_significance.py --dataset_name CIFAR10
-```
+For example, the **4×4 configuration** used in the paper means:
 
-This program takes the same parameters as `experiment1.py`. Running it will produce the EL2N hardness estimates, as 
-well as:
-  - parts of Figure 7 corresponding to CIFAR-10 (compute_and_visualize_stability_of_pruning) - percentage change in the 
-pruned indices after adding a model to an ensemble of size $j$ across hardness estimators, and pruning thresholds.
-  - Figure 10 (pruned_indices_vs_hardness_estimator) - overlap between the indices pruned by different hardness 
-estimators.
-  - parts of Figure 8 corresponding to CIFAR-10 (visualize_stability_of_resampling) - *Absolute Differences* as a function
-of the ensemble size during hardness estimation for different hardness estimators.
+- 4 independently generated dataset variants (e.g., resampling 4 times using different seeds)
+- 4 models trained on each dataset variant  
 
-# Experiment 2
+This results in **16 trained models per experiment**.
 
-This program is responsible for the data pruning case study (Sec. III-C).
+This design allows us to:
 
-### Parameters
+- reduce variance caused by model initialization
+- reduce variance caused by pruning/resampling randomness
+- perform **paired statistical tests** when comparing experimental conditions.
 
-  - ``dataset_name`` - same as in other programs
-  - ``pruning_strategy`` - specifies the pruning strategy. Choose either `clp`—class-level pruning, which we call class-level pruning in our paper for simplicity—or `dlp`—dataset-level-pruning.
-  - ``pruning_rate`` - specifies the percentage of data samples that will be removed during data pruning (please use integers). In our paper we used pruning rates of 10, 20, 30, 40, 50, 60, 70 (and 80 for CIFAR-10).
-  - ``hardness_estimator`` - allows the used to select the hardness estimator used for pruning. Our experiments were performed for AUM.
+The configuration can be adjusted in:
 
-### Example
+> src/config/config.py
 
-Running 
+Smaller settings such as **2×2** can be used for faster experimentation.
 
-```
-python3 experiment2.py --dataset_name CIFAR10, --pruning_strategy dlp --pruning_rate 30 --hardness_esimator AUM
-``` 
+ 
+## Generating Figures
 
-will result in training an ensemble of 20 models (see `dataset_configs[CIFAR10][num_models]` in `config.py`) that was
-trained on a subset of CIFAR-10 obtained by pruning 30% of the easiest samples from the dataset, as specified by AUM.
-This type of pruning will result in an introduction of data imbalance into the pruned subset, which is visualized in the 
-Figure saved in `{ROOT}/Figures/{pruning_strategy}{pruning_rate}/{dataset_name}/sorted_class_level_sample_distribution.pdf`.
+Figures from the paper are generated using scripts in `src/analysis` and
+`src/visualization`.
 
-# Visualize Pruning Performance
+### Figures 1, 2, 3, and 7
 
-After running `experiment2.py` for different pruning rates and pruning strategy you can visualize the result using 
-`visualize_performance.py`. This program takes only `--dataset_name` as parameter, and creates:
+These figures are produced using standalone analysis scripts located in:
 
-  - Figure 4 from Supplementary Material (plot_pruned_percentages) - class-level vs dataset-level pruned percentages to 
-show the imbalanced introduced by dataset-level pruning (DLP).
-  - Figure 6 from Supplementary Material (plot_class_level_results) - recall averaged over models of ensembles 
-trained on subsets of datasets obtained via DLP and class-level pruning (CLP). Not implemented for CIFAR-100 due to too 
-many classes.
-  - Figure 12 from the main text and Figure 5 from Supplementary Material (compare_clp_with_dlp) - recall averaged over 
-classes for ensembles trained on subsets of datasets obtained via DLP and CLP.
+> src/analysis/
 
-### Important
+Example: 
 
-Make sure you have run `experiment2.py` sufficient number of times producing enough results for the visualizations to 
-make sense. To reduce computational complexity we suggest reducing the number of models in config.py.
+> python -m src.analysis.plot_figure_1
 
-# Experiment 3
 
-This is the main part responsible for the resampling experiments. The program firstly resamples the specified dataset
-using specified over- and undersampling techniques, and using the resampling ratios obtained using specified hardness
-estimator and alpha.
+These scripts generate the plots used in the paper. In some cases the scripts
+produce individual components which were later combined into the final figures.
 
-### Parameters
+---
 
-  - `--dataset_name` - the same as in previous programs
-  - `--oversampling` - string specifying the strategy used for oversampling. The allowed options are: 1) random; 2) 
-easy; 3) hard; 4) SMOTE; and 5) none (indicating no oversampling, which is important for ablation study).
-  - `--undersampling` - string specifying the strategy used for undersampling. The allowed options are: 1) easy; and 2) 
-none (indicating no undersampling, which is important for ablation study).
-  - `--hardness_estimator` - string specifying the hardness estimator used to compute the resampling ratios. The allowed
-options are: 1) EL2N, 2) AUM; and 3) Forgetting. In our paper we report only results for AUM as it was found to be the 
-most robust.
-  - `--remove_noise` - the same as in previous programs.
-  - `--alpha` - integer that controls the degree of introduced imbalance (see Equation 4 from the main text).
+### Figures 5, 6, and 8
 
-### Important
+These figures are generated as part of the experimental pipelines for the two
+case studies.
 
-Make sure you have run `experiment1.py` before this one to ensure the hardness estimates have been computed (and 
-`verify_statistical_siginificance` if you want to use EL2N as the hardness estimator).
+Running the experiment scripts will automatically generate the necessary
+visualizations. The visualization logic used by these scripts is implemented in:
 
-# Visualize Resampling Performance
+> src/visualization/figures.py
 
-After running `experiment3.py` for different alphas you cna visualize the results using 
-`visualise_resampling_effects.py`. This program takes only `--dataset_name` as parameter, and creates:
+The scripts produce figure components that were combined to obtain the final
+figures used in the paper.
 
-  - Figure 4 (visualize_resampling_results) - sorted distribution of samples across classes after resampling.
-  - variant of Figure 9 with results for different alphas (plot_all_accuracies_sorted) - class-level metric values (F1, 
-MCC, Recall, Precision, Accuracy, ...) with classes sorted based on their hardness (computed from `experiment1.py`).
-  - Figure 11 (plot_metric_changes) - changes in class-level metric values due to resampling with classes sorted based
-on their hardness (computed from `experiment1.py`).
 
-### Important
+## Citation
 
-Make sure you have run `experiment3.py` for at least one resampling strategy pair (oversampling, undersampling), one 
-hardness estimator and one alpha. To reduce computational complexity we suggest reducing the number of models in 
-config.py.
-
-# Noise Removal
-
-This program is being executed when you raise the `--remove_noise` flag in `experiment1.py` or `experiment3.py`. Its
-purpose is to identify the label noise using AUM and remove it from the dataset. On top of that it also produces the
-following:
-
-  - Figure 5b (plot_cumulative_distribution) - the cumulative distribution of hardness across all data samples in the
-dataset.
-  - Figure 5a (plot_removed_samples_distribution) - the distribution of the removed samples (the ones that we 
-identified as noise) across classes.
-  - Figure 6 (visualize_lowest_aum_samples) - top 30 hardest samples, which are also the samples most likely to be 
-mislabeled according to AUM.
-
-# Contact
-
-In case you have any questions regarding the code please contact *ppukowski1@sheffield.ac.uk*
+TBD
