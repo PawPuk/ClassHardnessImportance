@@ -76,7 +76,7 @@ dataset_configs = {
         'num_classes': 10,
         'mean': (0.4914, 0.4822, 0.4465),
         'std': (0.2023, 0.1994, 0.2010),
-        'num_training_samples': [100 for _ in range(10)],
+        'num_training_samples': [5000 for _ in range(10)],
         'num_test_samples': [1000 for _ in range(10)],
         'class_names': ['plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck'],
 

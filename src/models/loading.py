@@ -69,8 +69,8 @@ def load_models_from_cs2(dataset_name: str, num_epochs: int, num_datasets: int,
     return defaultdict_to_dict(models_by_strategy)
 
 
-def load_models_from_cs1(dataset_name: str, num_epochs: int, num_datasets: int, num_models_per_dataset: int,
-                         alpha: int = 0) -> Dict[str, Dict[int, Dict[int, List[str]]]]:
+def load_models_from_cs1(dataset_name: str, num_epochs: int, num_datasets: int,
+                         num_models_per_dataset: int) -> Dict[str, Dict[int, Dict[int, List[str]]]]:
     """Used to load models trained in the first case study (resampling on pruned datasets)."""
     models_dir = os.path.join(ROOT, "Models/")
     models_by_strategy, pruning_rate = defaultdict(lambda: defaultdict(lambda: defaultdict(list))), None
@@ -80,11 +80,10 @@ def load_models_from_cs1(dataset_name: str, num_epochs: int, num_datasets: int, 
         for root, dirs, files in os.walk(models_dir):
             # Ensure the dataset name matches exactly (avoid partial matches like "cifar10" in "cifar100")
             if f"{pruning_strategy}_pruning" in root and os.path.basename(root) == dataset_name:
-                pruning_rate = int(root.split("pruning_rate_")[1].split("_alpha_")[0])
-                model_alpha = int(root.split("_alpha_")[1].split("/")[0])
+                pruning_rate = int(root.split("pruning_rate_")[1].split("/CIFAR")[0])
 
                 for file in files:
-                    if file.endswith(".pth") and f"_epoch_{num_epochs}" in file and model_alpha == alpha:
+                    if file.endswith(".pth") and f"_epoch_{num_epochs}" in file:
                         dataset_index = int(file.split("_")[1])
                         model_index = int(file.split("_")[3])
                         if dataset_index >= num_datasets or model_index >= num_models_per_dataset:

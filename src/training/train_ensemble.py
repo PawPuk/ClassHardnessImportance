@@ -61,7 +61,13 @@ class ModelTrainer:
         self.num_epochs = self.config['num_epochs']
         # For experiment1.py we train single ensemble as there is only one dataset (unlike experiment2.py or
         # experiment3.py where we train on multiple versions of a dataset to account for variability in its creation)
-        self.dataset_count = 1 if for_experiment_1 else self.config['num_datasets']
+        if for_experiment_1:
+            self.num_models_to_train_per_dataset = self.config['num_datasets'] * self.config['num_models_per_dataset']
+            self.dataset_count = 1
+        else:
+            self.num_models_to_train_per_dataset = self.config['num_models_per_dataset']
+            self.dataset_count = self.config['num_datasets']
+
         self.save_dir = os.path.join(self.config['save_dir'], pruning_type, dataset_name)
         os.makedirs(self.save_dir, exist_ok=True)
 
@@ -91,7 +97,7 @@ class ModelTrainer:
             hardness_estimates[dataset_model_id]['Forgetting'] = [0 for _ in range(self.training_set_size)]
         remembering = [False for _ in range(self.training_set_size)]  # Required to computing Forgetting
 
-        for epoch in tqdm(range(self.config['num_epochs'])):
+        for epoch in range(self.config['num_epochs']):
             model.train()
             running_loss, correct_train, total_train = 0.0, 0, 0
 
@@ -146,16 +152,15 @@ class ModelTrainer:
         """Train an ensemble of models."""
 
         latest_model_indices = get_latest_model_index(self.save_dir, self.config['num_epochs'], self.dataset_count)
-        num_models_to_train_per_dataset = self.config['num_models_per_dataset']
 
-        print(f"Starting training {self.dataset_count} ensembles of {num_models_to_train_per_dataset} models each on "
-              f"{self.dataset_name}.")
+        print(f"Starting training {self.dataset_count} ensembles of {self.num_models_to_train_per_dataset} models each "
+              f"on {self.dataset_name}.")
         print(f"Number of samples in the training loader: {len(cast(Sized, self.training_loaders[0].dataset))}")
         print(f"Number of samples in the test loader: {len(cast(Sized, self.test_loader.dataset))}")
         print('-'*20)
 
         for dataset_id in tqdm(range(self.dataset_count)):
-            for model_id in tqdm(range(latest_model_indices[dataset_id] + 1, num_models_to_train_per_dataset)):
+            for model_id in tqdm(range(latest_model_indices[dataset_id] + 1, self.num_models_to_train_per_dataset)):
                 hardness_estimates = {(dataset_id, model_id): {}}
                 self.train_model(dataset_id, model_id, hardness_estimates)
                 if self.estimate_hardness:

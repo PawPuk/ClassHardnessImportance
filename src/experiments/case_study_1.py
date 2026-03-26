@@ -71,7 +71,8 @@ class Experiment2:
         _, training_dataset, test_loader, _ = load_dataset(self.dataset_name)
         labels = [training_dataset[idx][1].item() for idx in range(len(training_dataset))]
 
-        hardness_estimates = load_hardness_estimates('unclean', self.dataset_name, self.NUM_MODELS_FOR_HARDNESS)
+        hardness_estimates = load_hardness_estimates(self.dataset_name, self.hardness_estimator,
+                                                     self.NUM_MODELS_FOR_HARDNESS)
         samples_per_class, hardness_by_class = compute_sample_allocation_after_resampling(
             hardness_estimates, labels, self.NUM_CLASSES, self.NUM_TRAINING_SAMPLES, self.hardness_estimator,
             self.pruning_rate

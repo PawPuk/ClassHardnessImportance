@@ -115,7 +115,9 @@ The goal is to study whether introducing data imbalance via hardness-based resam
 
 ## Running Experiments
 
-Complete experimental pipelines can be executed using the provided scripts in the `scripts/` directory.
+The most basic experimental pipelines can be executed using the provided scripts in the `scripts/` directory. The 
+complete pipeline can be executed using the provided scripts in the `scripts/slurm/` directory; specifically, 
+`case_study_1_full_pipeline.sh` and `case_study_2_full_pipeline.sh`.
 
 ### Case Study 1
 
